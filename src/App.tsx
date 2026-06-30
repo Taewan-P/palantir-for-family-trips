@@ -35,6 +35,7 @@ import { twMerge } from 'tailwind-merge'
 import palantirLogo from './assets/palantir-logo.svg'
 import CommandMap from './CommandMap'
 import InspectorRail from './InspectorRail'
+import { TripSettingsPanel } from './app/TripSettingsPanel'
 import { useTripRoom } from './app/useTripRoom'
 import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
 import { createId } from './shared/ids'
@@ -5655,25 +5656,34 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   const mainWithInspector = (
     <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_auto] overflow-hidden">
       <div className="flex min-h-0 min-w-0 overflow-hidden">{content}</div>
-      <InspectorRail
-        doc={displayDoc}
-        pageId={displayDoc.selectedPage}
-        selection={selection}
-        activeFamilyId={currentFamilyId}
-        readOnly={readOnly}
-        showCrudPanel={Boolean(serviceTripId)}
-        onSelectEntity={selectEntity}
-        onCreateEntity={createEntity}
-        onDeleteEntity={deleteEntity}
-        canDeleteEntity={canDeleteCurrentEntity}
-        onUpdateLocationFields={updateLocationFields}
-        onToggleTask={toggleTask}
-        onUpdateEntityNote={updateEntityNote}
-        onAddTask={addTask}
-        onConvertNoteToTask={convertNoteToTask}
-        onToggleMealStatus={toggleMealStatus}
-        onToggleExpenseSettled={toggleExpenseSettled}
-      />
+      <div className="flex min-h-0 w-[360px] flex-col">
+        <div className="min-h-0 flex-1 overflow-hidden [&>aside]:h-full">
+          <InspectorRail
+            doc={displayDoc}
+            pageId={displayDoc.selectedPage}
+            selection={selection}
+            activeFamilyId={currentFamilyId}
+            readOnly={readOnly}
+            showCrudPanel={Boolean(serviceTripId)}
+            onSelectEntity={selectEntity}
+            onCreateEntity={createEntity}
+            onDeleteEntity={deleteEntity}
+            canDeleteEntity={canDeleteCurrentEntity}
+            onUpdateLocationFields={updateLocationFields}
+            onToggleTask={toggleTask}
+            onUpdateEntityNote={updateEntityNote}
+            onAddTask={addTask}
+            onConvertNoteToTask={convertNoteToTask}
+            onToggleMealStatus={toggleMealStatus}
+            onToggleExpenseSettled={toggleExpenseSettled}
+          />
+        </div>
+        {serviceTripId ? (
+          <div className="border-l border-t border-[#30363D] bg-[#0d1117] p-3">
+            <TripSettingsPanel tripId={serviceTripId} readOnly={readOnly} />
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 
