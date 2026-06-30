@@ -1,7 +1,9 @@
 node_modules
 dist
 test-results
+.wrangler/
 .env
 .env.local
 .env.*
 !.env.example
+.dev.vars*

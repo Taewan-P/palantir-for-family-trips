@@ -20,6 +20,14 @@ Run the Worker:
 npm run dev:worker
 ```
 
+For local auth/share-link smoke tests, create an ignored `.dev.vars` file:
+
+```bash
+GOOGLE_CLIENT_ID=local-dev-client
+GOOGLE_CLIENT_SECRET=local-dev-secret
+SESSION_SECRET=local-dev-secret
+```
+
 Apply D1 migrations locally:
 
 ```bash
