@@ -1,0 +1,22 @@
+name = "family-trip-command-center-api"
+main = "worker/index.ts"
+compatibility_date = "2026-07-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "family-trip-command-center"
+database_id = "local-family-trip-command-center"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "TRIP_ROOM"
+class_name = "TripRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TripRoom"]
+
+[vars]
+APP_ORIGIN = "http://127.0.0.1:5173"
+GOOGLE_REDIRECT_URI = "http://127.0.0.1:8787/api/auth/google/callback"
+SESSION_COOKIE_NAME = "trip_session"
