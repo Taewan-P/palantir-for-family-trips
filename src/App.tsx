@@ -83,6 +83,7 @@ import type {
   LocationEntity,
   MealEntity,
   RouteEntity,
+  StayItemEntity,
   TaskEntity,
   TripDocument,
   TripEntity,
@@ -263,6 +264,256 @@ function buildCommand<Type extends TripEvent['type']>(
 function toEntityUpdatePatch<Type extends TripEntityType>(patch: Partial<EntityByType[Type]>): EntityUpdatePatch<Type> {
   const { id: _id, type: _type, ...safePatch } = patch
   return safePatch as EntityUpdatePatch<Type>
+}
+
+function createDefaultEntity(entityType: TripEntityType): TripEntity {
+  if (entityType === 'family') {
+    const entity: FamilyEntity = {
+      id: createId('family'),
+      type: 'family',
+      title: 'New family',
+      origin: 'Origin TBD',
+      status: 'Pending',
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  if (entityType === 'location') {
+    const entity: LocationEntity = {
+      id: createId('location'),
+      type: 'location',
+      title: 'New location',
+      category: 'custom',
+      address: '',
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  if (entityType === 'route') {
+    const entity: RouteEntity = {
+      id: createId('route'),
+      type: 'route',
+      title: 'New route',
+      dayId: 'all',
+      tone: 'info',
+      path: [],
+      stopLocationIds: [],
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  if (entityType === 'itineraryItem') {
+    const entity: ItineraryItemEntity = {
+      id: createId('itineraryItem'),
+      type: 'itineraryItem',
+      title: 'New itinerary item',
+      dayId: 'all',
+      rowId: 'custom',
+      startSlot: 0,
+      span: 1,
+      color: 'info',
+      familyIds: [],
+      status: 'Open',
+      riskLevel: 'Low',
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  if (entityType === 'meal') {
+    const entity: MealEntity = {
+      id: createId('meal'),
+      type: 'meal',
+      title: 'New meal',
+      dayId: 'all',
+      timeLabel: 'TBD',
+      startSlot: 0,
+      status: 'Pending',
+      owner: 'Unassigned',
+      locationId: null,
+      reservationType: 'TBD',
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  if (entityType === 'activity') {
+    const entity: ActivityEntity = {
+      id: createId('activity'),
+      type: 'activity',
+      title: 'New activity',
+      dayId: 'all',
+      window: 'Flexible',
+      status: 'Pending',
+      description: 'Describe the plan, owner, timing, and fallback.',
+      backup: 'Pick the simplest fallback if conditions change.',
+      locationId: null,
+      riskLevel: 'Low',
+      weatherSensitivity: 'Low',
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  if (entityType === 'stayItem') {
+    const entity: StayItemEntity = {
+      id: createId('stayItem'),
+      type: 'stayItem',
+      title: 'New stay item',
+      category: 'Planning',
+      summary: 'Add stay logistics, ownership, and access details.',
+      locationId: null,
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  if (entityType === 'expense') {
+    const entity: ExpenseEntity = {
+      id: createId('expense'),
+      type: 'expense',
+      title: 'New shared expense',
+      payer: 'Unassigned',
+      amount: 0,
+      split: EXPENSE_SPLIT_LABELS.equal,
+      allocationMode: 'equal',
+      allocations: {},
+      settled: false,
+      linkedEntityKeys: [],
+      taskIds: [],
+      note: '',
+    }
+    return entity
+  }
+
+  const entity: TaskEntity = {
+    id: createId('task'),
+    type: 'task',
+    title: 'New task',
+    dayId: 'all',
+    status: 'open',
+    ownerFamilyId: null,
+    linkedEntityKeys: [],
+    taskIds: [],
+    note: '',
+  }
+  return entity
+}
+
+function pageForEntityType(entityType: TripEntityType): PageId {
+  return ENTITY_PAGE[entityType] as PageId
+}
+
+function appendEntityToDocument(document: TripDocument, entity: TripEntity): TripDocument {
+  switch (entity.type) {
+    case 'family':
+      return { ...document, families: [...document.families, entity] }
+    case 'location':
+      return { ...document, locations: [...document.locations, entity] }
+    case 'route':
+      return { ...document, routes: [...document.routes, entity] }
+    case 'itineraryItem':
+      return { ...document, itineraryItems: [...document.itineraryItems, entity] }
+    case 'meal':
+      return { ...document, meals: [...document.meals, entity] }
+    case 'activity':
+      return { ...document, activities: [...document.activities, entity] }
+    case 'stayItem':
+      return { ...document, stayItems: [...document.stayItems, entity] }
+    case 'expense':
+      return { ...document, expenses: [...document.expenses, entity] }
+    case 'task':
+      return { ...document, tasks: [...document.tasks, entity] }
+    default:
+      return document
+  }
+}
+
+function removeEntityFromDocument(document: TripDocument, entityType: TripEntityType, id: string): TripDocument {
+  switch (entityType) {
+    case 'family':
+      return { ...document, families: document.families.filter((entity) => entity.id !== id) }
+    case 'location':
+      return { ...document, locations: document.locations.filter((entity) => entity.id !== id) }
+    case 'route':
+      return { ...document, routes: document.routes.filter((entity) => entity.id !== id) }
+    case 'itineraryItem':
+      return { ...document, itineraryItems: document.itineraryItems.filter((entity) => entity.id !== id) }
+    case 'meal':
+      return { ...document, meals: document.meals.filter((entity) => entity.id !== id) }
+    case 'activity':
+      return { ...document, activities: document.activities.filter((entity) => entity.id !== id) }
+    case 'stayItem':
+      return { ...document, stayItems: document.stayItems.filter((entity) => entity.id !== id) }
+    case 'expense':
+      return { ...document, expenses: document.expenses.filter((entity) => entity.id !== id) }
+    case 'task':
+      return { ...document, tasks: document.tasks.filter((entity) => entity.id !== id) }
+    default:
+      return document
+  }
+}
+
+function allTripEntities(document: TripDocument): TripEntity[] {
+  return [
+    ...document.families,
+    ...document.locations,
+    ...document.routes,
+    ...document.itineraryItems,
+    ...document.meals,
+    ...document.activities,
+    ...document.stayItems,
+    ...document.expenses,
+    ...document.tasks,
+  ]
+}
+
+function canDeleteEntity(document: TripDocument, entityType: TripEntityType, id: string): boolean {
+  const entityKey = makeEntityKey(entityType, id)
+
+  return !allTripEntities(document).some((entity) => {
+    if (entity.type === entityType && entity.id === id) return false
+
+    const reference = entity as TripEntity & {
+      destinationLocationId?: string
+      familyId?: string
+      ownerFamilyId?: string | null
+      plannedStopIds?: string[]
+    }
+
+    if (entity.linkedEntityKeys?.includes(entityKey)) return true
+    if (entityType === 'task' && entity.taskIds?.includes(id)) return true
+    if (entityType === 'family' && (entity.familyIds?.includes(id) || reference.familyId === id || reference.ownerFamilyId === id)) return true
+    if (
+      entityType === 'location' &&
+      (entity.locationId === id ||
+        entity.stopLocationIds?.includes(id) ||
+        reference.destinationLocationId === id ||
+        reference.plannedStopIds?.includes(id))
+    ) {
+      return true
+    }
+    if (entityType === 'route' && entity.routeId === id) return true
+
+    return false
+  })
 }
 
 declare global {
@@ -5254,6 +5505,62 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
     })
   }
 
+  const createEntity = useCallback((entityType: TripEntityType) => {
+    if (readOnly) return
+
+    const entity = createDefaultEntity(entityType)
+    const selectedPage = pageForEntityType(entity.type)
+
+    if (sendTripCommand('entity.create', { entityType: entity.type, entity } as TripEventPayload<'entity.create'>)) {
+      setServiceDoc((current) => ({
+        ...current,
+        selectedPage,
+        selection: { type: entity.type, id: entity.id },
+      }))
+      return
+    }
+
+    setDoc((current) => ({
+      ...appendEntityToDocument(current, entity),
+      selectedPage,
+      selection: { type: entity.type, id: entity.id },
+    }))
+  }, [readOnly, sendTripCommand, setDoc])
+
+  const deleteEntity = useCallback((entityType: TripEntityType, id: string) => {
+    if (readOnly) return
+    if (!canDeleteEntity(doc, entityType, id)) return
+
+    if (sendTripCommand('entity.delete', { entityType, id } as TripEventPayload<'entity.delete'>)) {
+      if (doc.selection?.type === entityType && doc.selection.id === id) {
+        const nextDoc = removeEntityFromDocument(doc, entityType, id)
+        setServiceDoc((current) => ({
+          ...current,
+          selection: ensureSelectionForPage(nextDoc, doc.selectedPage),
+        }))
+      }
+      return
+    }
+
+    setDoc((current) => {
+      if (!canDeleteEntity(current, entityType, id)) return current
+
+      const nextDoc = removeEntityFromDocument(current, entityType, id)
+      return {
+        ...nextDoc,
+        selection:
+          current.selection?.type === entityType && current.selection.id === id
+            ? ensureSelectionForPage(nextDoc, current.selectedPage)
+            : current.selection,
+      }
+    })
+  }, [doc, readOnly, sendTripCommand, setDoc])
+
+  const canDeleteCurrentEntity = useCallback(
+    (entityType: TripEntityType, id: string) => canDeleteEntity(doc, entityType, id),
+    [doc],
+  )
+
   const updateMapUi = (patch: Partial<TripDocument['ui']['map']>) => {
     if (sendTripCommand('uiState.update', { map: patch })) return
 
@@ -5353,7 +5660,12 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         pageId={displayDoc.selectedPage}
         selection={selection}
         activeFamilyId={currentFamilyId}
+        readOnly={readOnly}
+        showCrudPanel={Boolean(serviceTripId)}
         onSelectEntity={selectEntity}
+        onCreateEntity={createEntity}
+        onDeleteEntity={deleteEntity}
+        canDeleteEntity={canDeleteCurrentEntity}
         onUpdateLocationFields={updateLocationFields}
         onToggleTask={toggleTask}
         onUpdateEntityNote={updateEntityNote}

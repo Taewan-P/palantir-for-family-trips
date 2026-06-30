@@ -14,6 +14,7 @@ import {
   Square,
   UtensilsCrossed,
 } from 'lucide-react'
+import { EntityCrudPanel } from './components/EntityCrudPanel'
 import {
   getDependencyPrompts,
   getEntitySummary,
@@ -55,7 +56,12 @@ type InspectorRailProps = {
   pageId: string
   selection: EntitySelection | null
   activeFamilyId: string | null
+  readOnly: boolean
+  showCrudPanel: boolean
   onSelectEntity: (type: TripEntityType, id: string) => void
+  onCreateEntity: (entityType: TripEntityType) => void
+  onDeleteEntity: (entityType: TripEntityType, id: string) => void
+  canDeleteEntity: (entityType: TripEntityType, id: string) => boolean
   onUpdateLocationFields: (locationId: string, patch: LocationPatch) => void
   onToggleTask: (taskId: string) => void
   onUpdateEntityNote: (type: TripEntityType, id: string, value: string) => void
@@ -378,7 +384,12 @@ export default function InspectorRail({
   pageId,
   selection,
   activeFamilyId,
+  readOnly,
+  showCrudPanel,
   onSelectEntity,
+  onCreateEntity,
+  onDeleteEntity,
+  canDeleteEntity,
   onUpdateLocationFields,
   onToggleTask,
   onUpdateEntityNote,
@@ -583,6 +594,17 @@ export default function InspectorRail({
           recentlyUpdated ? 'translate-y-[1px]' : ''
         }`}
       >
+        {showCrudPanel ? (
+          <EntityCrudPanel
+            document={doc}
+            entityType={entity.type}
+            readOnly={readOnly}
+            canDelete={canDeleteEntity}
+            onCreate={onCreateEntity}
+            onDelete={onDeleteEntity}
+          />
+        ) : null}
+
         {familyDriveMode ? (
           <section className="border border-[#30363D] bg-[#161b22]">
             <div className="border-b border-[#30363D] px-4 py-3">
