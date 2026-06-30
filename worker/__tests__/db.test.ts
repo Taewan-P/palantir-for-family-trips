@@ -1,4 +1,4 @@
-import { claimActiveInvite, decodeTripEventRow, encodeTripEventPayload, getTripAccess, loadHydratedTripSnapshot, rotateShareLink } from '../db'
+import { claimActiveInvite, commitTripEvent, decodeTripEventRow, encodeTripEventPayload, getTripAccess, loadHydratedTripSnapshot, rotateShareLink } from '../db'
 import { replayTripEvents } from '../../src/shared/trip-reducer'
 import type { TripDocument } from '../../src/shared/trip-types'
 
@@ -54,6 +54,60 @@ describe('db event codecs', () => {
     expect(calls).toEqual([
       ['2026-07-01T00:00:00.000Z', 'trip_1'],
       ['share_2', 'trip_1', 'token_hash', 'user_1', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'],
+    ])
+    expect(batched).toHaveLength(2)
+  })
+
+  it('commits accepted events and snapshots in one D1 batch', async () => {
+    const calls: unknown[][] = []
+    const batched: unknown[] = []
+    const document = baseDoc()
+
+    await commitTripEvent(dbWithBatch(calls, batched), {
+      event: {
+        id: 'event_25',
+        tripId: 'trip_1',
+        version: 25,
+        previousVersion: 24,
+        actorUserId: 'user_1',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        type: 'entity.update',
+        payload: { entityType: 'task', id: 'task_1', patch: { status: 'done' } },
+      },
+      updatedAt: '2026-07-01T00:00:01.000Z',
+      snapshot: { id: 'snapshot_25', document, userId: 'user_1' },
+    })
+
+    expect(calls).toEqual([
+      ['event_25', 'trip_1', 25, 24, 'user_1', 'entity.update', '{"entityType":"task","id":"task_1","patch":{"status":"done"}}', '2026-07-01T00:00:00.000Z'],
+      [25, '2026-07-01T00:00:01.000Z', 'trip_1'],
+      ['snapshot_25', 'trip_1', 25, JSON.stringify(document), 'user_1', '2026-07-01T00:00:00.000Z'],
+      ['snapshot_25', 'trip_1'],
+    ])
+    expect(batched).toHaveLength(4)
+  })
+
+  it('commits accepted events without snapshots in one D1 batch', async () => {
+    const calls: unknown[][] = []
+    const batched: unknown[] = []
+
+    await commitTripEvent(dbWithBatch(calls, batched), {
+      event: {
+        id: 'event_1',
+        tripId: 'trip_1',
+        version: 1,
+        previousVersion: 0,
+        actorUserId: 'user_1',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        type: 'uiState.update',
+        payload: { searchQuery: 'lunch' },
+      },
+      updatedAt: '2026-07-01T00:00:01.000Z',
+    })
+
+    expect(calls).toEqual([
+      ['event_1', 'trip_1', 1, 0, 'user_1', 'uiState.update', '{"searchQuery":"lunch"}', '2026-07-01T00:00:00.000Z'],
+      [1, '2026-07-01T00:00:01.000Z', 'trip_1'],
     ])
     expect(batched).toHaveLength(2)
   })

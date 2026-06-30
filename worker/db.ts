@@ -49,6 +49,12 @@ export type TripEventRow = {
 
 export type AuthoredTripEvent = TripEvent & { actorUserId: string }
 
+export type TripEventSnapshotWrite = {
+  id: string
+  document: TripDocument
+  userId: string | null
+}
+
 export function encodeTripEventPayload(payload: JsonValue | object): string {
   const encoded = JSON.stringify(payload)
   if (typeof encoded !== 'string') {
@@ -70,19 +76,38 @@ export function decodeTripEventRow(row: TripEventRow): TripEvent {
 
   switch (row.type) {
     case 'entity.create':
-      return buildEntityCreateEvent(base, decodeEntityCreatePayload(row.id, payload))
+      return buildEntityCreateEvent(base, decodeTripEventPayload(row.type, payload, row.id) as Extract<TripEvent, { type: 'entity.create' }>['payload'])
     case 'entity.update':
-      return buildEntityUpdateEvent(base, decodeEntityUpdatePayload(row.id, payload))
+      return buildEntityUpdateEvent(base, decodeTripEventPayload(row.type, payload, row.id) as Extract<TripEvent, { type: 'entity.update' }>['payload'])
     case 'entity.delete':
-      return buildEntityDeleteEvent(base, decodeEntityDeletePayload(row.id, payload))
+      return buildEntityDeleteEvent(base, decodeTripEventPayload(row.type, payload, row.id) as Extract<TripEvent, { type: 'entity.delete' }>['payload'])
     case 'pageNote.update':
-      return { ...base, type: row.type, payload: decodePageNoteUpdatePayload(row.id, payload) }
     case 'uiState.update':
-      return { ...base, type: row.type, payload: decodeUiStateUpdatePayload(row.id, payload) }
     case 'trip.meta.update':
-      return { ...base, type: row.type, payload: decodeTripMetaUpdatePayload(row.id, payload) }
+      return { ...base, type: row.type, payload: decodeTripEventPayload(row.type, payload, row.id) } as TripEvent
     default:
       throw new Error(`Trip event ${row.id} has unsupported type ${row.type}`)
+  }
+}
+
+export function decodeTripEventPayload(
+  type: TripEvent['type'],
+  payload: JsonObject,
+  eventId: string,
+): TripEvent['payload'] {
+  switch (type) {
+    case 'entity.create':
+      return decodeEntityCreatePayload(eventId, payload)
+    case 'entity.update':
+      return decodeEntityUpdatePayload(eventId, payload)
+    case 'entity.delete':
+      return decodeEntityDeletePayload(eventId, payload)
+    case 'pageNote.update':
+      return decodePageNoteUpdatePayload(eventId, payload)
+    case 'uiState.update':
+      return decodeUiStateUpdatePayload(eventId, payload)
+    case 'trip.meta.update':
+      return decodeTripMetaUpdatePayload(eventId, payload)
   }
 }
 
@@ -343,6 +368,52 @@ export async function updateTripLatestSnapshot(db: D1Database, tripId: string, s
   await db.prepare(`
     UPDATE trips SET latest_snapshot_id = ? WHERE id = ?
   `).bind(snapshotId, tripId).run()
+}
+
+export async function commitTripEvent(db: D1Database, input: {
+  event: AuthoredTripEvent
+  updatedAt: string
+  snapshot?: TripEventSnapshotWrite
+}): Promise<void> {
+  const statements = [
+    db.prepare(`
+      INSERT INTO trip_events (id, trip_id, version, previous_version, actor_user_id, type, payload_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      input.event.id,
+      input.event.tripId,
+      input.event.version,
+      input.event.previousVersion,
+      input.event.actorUserId,
+      input.event.type,
+      encodeTripEventPayload(input.event.payload),
+      input.event.createdAt,
+    ),
+    db.prepare(`
+      UPDATE trips SET current_version = ?, updated_at = ? WHERE id = ?
+    `).bind(input.event.version, input.updatedAt, input.event.tripId),
+  ]
+
+  if (input.snapshot) {
+    statements.push(
+      db.prepare(`
+        INSERT INTO trip_snapshots (id, trip_id, version, document_json, created_by_user_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(
+        input.snapshot.id,
+        input.event.tripId,
+        input.event.version,
+        JSON.stringify(input.snapshot.document),
+        input.snapshot.userId,
+        input.event.createdAt,
+      ),
+      db.prepare(`
+        UPDATE trips SET latest_snapshot_id = ? WHERE id = ?
+      `).bind(input.snapshot.id, input.event.tripId),
+    )
+  }
+
+  await db.batch(statements)
 }
 
 function parsePayload(row: TripEventRow): JsonObject {

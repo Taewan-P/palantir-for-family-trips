@@ -1,32 +1,19 @@
 import { createId } from '../src/shared/ids'
 import { isJsonObject } from '../src/shared/json'
 import { applyTripEvent } from '../src/shared/trip-reducer'
-import type { TripDocument, TripEntityType, TripEvent } from '../src/shared/trip-types'
+import type { TripDocument, TripEvent } from '../src/shared/trip-types'
 import { hashToken } from './auth'
 import {
+  commitTripEvent,
+  decodeTripEventPayload,
   findMembership,
   findSessionUser,
-  insertSnapshot,
-  insertTripEvent,
   loadHydratedTripSnapshotWithVersion,
-  updateTripCurrentVersion,
-  updateTripLatestSnapshot,
 } from './db'
 import type { Env } from './env'
 import { parseCookie } from './http'
 
 const SNAPSHOT_INTERVAL = 25
-const TRIP_ENTITY_TYPES = new Set<string>([
-  'family',
-  'location',
-  'route',
-  'itineraryItem',
-  'meal',
-  'activity',
-  'stayItem',
-  'expense',
-  'task',
-])
 
 export type TripCommand = Omit<TripEvent, 'id' | 'tripId' | 'version' | 'previousVersion' | 'actorUserId' | 'createdAt'> & {
   id: string
@@ -130,7 +117,7 @@ export class TripRoom implements DurableObject {
       return
     }
 
-    const command = parseCommand(data)
+    const command = parseTripCommand(data)
     if (!command) {
       this.send(socket, { type: 'event.rejected', reason: 'malformed_command' })
       return
@@ -157,25 +144,21 @@ export class TripRoom implements DurableObject {
       return
     }
 
-    await insertTripEvent(this.env.DB, result.event as TripEvent & { actorUserId: string })
-    await updateTripCurrentVersion(this.env.DB, tripId, result.version, now)
+    const shouldSnapshot = this.acceptedSinceSnapshot + 1 >= SNAPSHOT_INTERVAL
+    await commitTripEvent(this.env.DB, {
+      event: result.event as TripEvent & { actorUserId: string },
+      updatedAt: now,
+      snapshot: shouldSnapshot
+        ? { id: createId('snapshot'), document: result.document, userId: actorUserId }
+        : undefined,
+    })
 
     this.document = result.document
     this.version = result.version
-    this.acceptedSinceSnapshot += 1
-
-    if (this.acceptedSinceSnapshot >= SNAPSHOT_INTERVAL) {
-      const snapshotId = createId('snapshot')
-      await insertSnapshot(this.env.DB, {
-        id: snapshotId,
-        tripId,
-        version: this.version,
-        document: this.document,
-        userId: actorUserId,
-        createdAt: now,
-      })
-      await updateTripLatestSnapshot(this.env.DB, tripId, snapshotId)
+    if (shouldSnapshot) {
       this.acceptedSinceSnapshot = 0
+    } else {
+      this.acceptedSinceSnapshot += 1
     }
 
     this.broadcast({ type: 'event.accepted', event: result.event, version: result.version })
@@ -208,7 +191,7 @@ function tripIdFromPath(pathname: string): string | null {
   return /^\/api\/trips\/([^/]+)\/live$/.exec(pathname)?.[1] ?? null
 }
 
-function parseCommand(data: unknown): TripCommand | null {
+export function parseTripCommand(data: unknown): TripCommand | null {
   if (typeof data !== 'string') return null
 
   let parsed: unknown
@@ -222,13 +205,19 @@ function parseCommand(data: unknown): TripCommand | null {
   if (!isJsonObject(value) || typeof value.id !== 'string' || !Number.isInteger(value.baseVersion)) return null
   if (typeof value.type !== 'string' || !isJsonObject(value.payload)) return null
   if (!isTripEventType(value.type)) return null
-  if (!isTripCommandPayload(value.type, value.payload)) return null
+
+  let payload: TripEvent['payload']
+  try {
+    payload = decodeTripEventPayload(value.type, value.payload, value.id)
+  } catch {
+    return null
+  }
 
   return {
     id: value.id,
     baseVersion: value.baseVersion,
     type: value.type,
-    payload: value.payload,
+    payload,
   } as TripCommand
 }
 
@@ -239,31 +228,4 @@ function isTripEventType(type: string): type is TripEvent['type'] {
     || type === 'pageNote.update'
     || type === 'uiState.update'
     || type === 'trip.meta.update'
-}
-
-function isTripCommandPayload(type: TripEvent['type'], payload: Record<string, unknown>): boolean {
-  if (type === 'entity.create') {
-    return isTripEntityType(payload.entityType) && isJsonObject(payload.entity) && payload.entity.type === payload.entityType
-  }
-  if (type === 'entity.update') {
-    return isTripEntityType(payload.entityType)
-      && typeof payload.id === 'string'
-      && isJsonObject(payload.patch)
-      && !Object.hasOwn(payload.patch, 'id')
-      && !Object.hasOwn(payload.patch, 'type')
-  }
-  if (type === 'entity.delete') {
-    return isTripEntityType(payload.entityType) && typeof payload.id === 'string'
-  }
-  if (type === 'pageNote.update') {
-    return typeof payload.pageId === 'string' && typeof payload.value === 'string'
-  }
-  if (type === 'uiState.update') {
-    return true
-  }
-  return !Object.hasOwn(payload, 'title') || typeof payload.title === 'string'
-}
-
-function isTripEntityType(value: unknown): value is TripEntityType {
-  return typeof value === 'string' && TRIP_ENTITY_TYPES.has(value)
 }

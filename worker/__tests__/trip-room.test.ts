@@ -1,4 +1,4 @@
-import { acceptCommand, type TripCommand } from '../trip-room'
+import { acceptCommand, parseTripCommand, TripRoom, type TripCommand } from '../trip-room'
 import type { TripDocument } from '../../src/shared/trip-types'
 
 describe('acceptCommand', () => {
@@ -43,6 +43,62 @@ describe('acceptCommand', () => {
     })
     expect(result.event.id).toMatch(/^event_/)
     expect(result.document.tasks[0]?.status).toBe('done')
+  })
+})
+
+describe('parseTripCommand', () => {
+  it('rejects entity update payloads that persisted event hydration rejects', () => {
+    expect(parseTripCommand(JSON.stringify({
+      id: 'cmd_1',
+      baseVersion: 2,
+      type: 'entity.update',
+      payload: { entityType: 'task', id: 'task_1', patch: { status: false } },
+    }))).toBeNull()
+  })
+
+  it('rejects malformed ui state payloads that persisted event hydration rejects', () => {
+    for (const payload of [
+      { searchQuery: 1 },
+      { timeline: { mode: 'plan', cursorSlot: 'soon' } },
+      { map: { showRoutes: 'yes' } },
+    ]) {
+      expect(parseTripCommand(JSON.stringify({
+        id: 'cmd_1',
+        baseVersion: 2,
+        type: 'uiState.update',
+        payload,
+      }))).toBeNull()
+    }
+  })
+})
+
+describe('TripRoom command handling', () => {
+  it('rejects malformed commands before accepting or persisting', async () => {
+    const db = {
+      batch: vi.fn(async () => {
+        throw new Error('invalid command reached persistence')
+      }),
+    }
+    const room = new TripRoom({} as DurableObjectState, { DB: db } as never)
+    const sent: unknown[] = []
+    const socket = {
+      send: vi.fn((message: string) => sent.push(JSON.parse(message))),
+    } as unknown as WebSocket
+
+    ;(room as unknown as { document: TripDocument; version: number }).document = baseDoc()
+    ;(room as unknown as { document: TripDocument; version: number }).version = 2
+
+    await (room as unknown as {
+      handleMessage(socket: WebSocket, tripId: string, actorUserId: string, data: unknown): Promise<void>
+    }).handleMessage(socket, 'trip_1', 'user_1', JSON.stringify({
+      id: 'cmd_1',
+      baseVersion: 2,
+      type: 'entity.update',
+      payload: { entityType: 'task', id: 'task_1', patch: { status: false } },
+    }))
+
+    expect(sent).toEqual([{ type: 'event.rejected', reason: 'malformed_command' }])
+    expect(db.batch).not.toHaveBeenCalled()
   })
 })
 
