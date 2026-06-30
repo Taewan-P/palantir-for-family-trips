@@ -1,6 +1,23 @@
 import { isJsonObject, type JsonObject, type JsonValue } from '../src/shared/json'
 import type { TripDocument, TripEntityType, TripEvent, TripUiState } from '../src/shared/trip-types'
 
+export type AppUserRow = {
+  id: string
+  email: string
+  name: string
+  avatar_url: string | null
+}
+
+export type TripListRow = {
+  id: string
+  title: string
+  slug: string
+  current_version: number
+  role: 'owner' | 'editor'
+  created_at: string
+  updated_at: string
+}
+
 const TRIP_ENTITY_TYPES = new Set<TripEntityType>([
   'family',
   'location',
@@ -76,6 +93,152 @@ export async function findMembership(db: D1Database, tripId: string, userId: str
   return db.prepare(`
     SELECT role FROM memberships WHERE trip_id = ? AND user_id = ?
   `).bind(tripId, userId).first<{ role: 'owner' | 'editor' }>()
+}
+
+export async function upsertGoogleUser(db: D1Database, input: {
+  id: string
+  googleSub: string
+  email: string
+  name: string
+  avatarUrl: string | null
+  now: string
+}): Promise<AppUserRow> {
+  const row = await db.prepare(`
+    INSERT INTO users (id, google_sub, email, name, avatar_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(google_sub) DO UPDATE SET
+      email = excluded.email,
+      name = excluded.name,
+      avatar_url = excluded.avatar_url,
+      updated_at = excluded.updated_at
+    RETURNING id, email, name, avatar_url
+  `).bind(
+    input.id,
+    input.googleSub,
+    input.email,
+    input.name,
+    input.avatarUrl,
+    input.now,
+    input.now,
+  ).first<AppUserRow>()
+
+  if (!row) throw new Error('Failed to upsert Google user')
+  return row
+}
+
+export async function createSession(db: D1Database, input: {
+  id: string
+  userId: string
+  tokenHash: string
+  expiresAt: string
+  createdAt: string
+}): Promise<void> {
+  await db.prepare(`
+    INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).bind(input.id, input.userId, input.tokenHash, input.expiresAt, input.createdAt).run()
+}
+
+export async function listVisibleTrips(db: D1Database, userId: string): Promise<TripListRow[]> {
+  const result = await db.prepare(`
+    SELECT trips.id, trips.title, trips.slug, trips.current_version, memberships.role, trips.created_at, trips.updated_at
+    FROM memberships
+    INNER JOIN trips ON trips.id = memberships.trip_id
+    WHERE memberships.user_id = ? AND trips.archived_at IS NULL
+    ORDER BY trips.updated_at DESC
+  `).bind(userId).all<TripListRow>()
+
+  return result.results
+}
+
+export async function createTrip(db: D1Database, input: {
+  id: string
+  title: string
+  slug: string
+  ownerUserId: string
+  now: string
+}): Promise<void> {
+  await db.prepare(`
+    INSERT INTO trips (id, title, slug, owner_user_id, current_version, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 0, ?, ?)
+  `).bind(input.id, input.title, input.slug, input.ownerUserId, input.now, input.now).run()
+}
+
+export async function createMembership(db: D1Database, input: {
+  tripId: string
+  userId: string
+  role: 'owner' | 'editor'
+  createdAt: string
+}): Promise<void> {
+  await db.prepare(`
+    INSERT INTO memberships (trip_id, user_id, role, created_at)
+    VALUES (?, ?, ?, ?)
+  `).bind(input.tripId, input.userId, input.role, input.createdAt).run()
+}
+
+export async function createInvite(db: D1Database, input: {
+  id: string
+  tripId: string
+  tokenHash: string
+  expiresAt: string
+  createdByUserId: string
+  createdAt: string
+}): Promise<void> {
+  await db.prepare(`
+    INSERT INTO invites (id, trip_id, token_hash, role, expires_at, created_by_user_id, created_at)
+    VALUES (?, ?, ?, 'editor', ?, ?, ?)
+  `).bind(input.id, input.tripId, input.tokenHash, input.expiresAt, input.createdByUserId, input.createdAt).run()
+}
+
+export async function findActiveInvite(db: D1Database, tokenHash: string, now: string) {
+  return db.prepare(`
+    SELECT id, trip_id, role
+    FROM invites
+    WHERE token_hash = ? AND expires_at > ? AND accepted_at IS NULL
+  `).bind(tokenHash, now).first<{ id: string; trip_id: string; role: 'editor' }>()
+}
+
+export async function markInviteAccepted(db: D1Database, input: {
+  inviteId: string
+  userId: string
+  acceptedAt: string
+}): Promise<void> {
+  await db.prepare(`
+    UPDATE invites SET accepted_by_user_id = ?, accepted_at = ? WHERE id = ?
+  `).bind(input.userId, input.acceptedAt, input.inviteId).run()
+}
+
+export async function disableShareLinks(db: D1Database, tripId: string, now: string): Promise<void> {
+  await db.prepare(`
+    UPDATE share_links SET enabled = 0, updated_at = ? WHERE trip_id = ? AND enabled = 1
+  `).bind(now, tripId).run()
+}
+
+export async function createShareLink(db: D1Database, input: {
+  id: string
+  tripId: string
+  tokenHash: string
+  createdByUserId: string
+  now: string
+}): Promise<void> {
+  await db.prepare(`
+    INSERT INTO share_links (id, trip_id, token_hash, enabled, policy, created_by_user_id, created_at, updated_at)
+    VALUES (?, ?, ?, 1, 'sanitized', ?, ?, ?)
+  `).bind(input.id, input.tripId, input.tokenHash, input.createdByUserId, input.now, input.now).run()
+}
+
+export async function findActiveShareLink(db: D1Database, tokenHash: string) {
+  return db.prepare(`
+    SELECT trip_id FROM share_links WHERE token_hash = ? AND enabled = 1 AND policy = 'sanitized'
+  `).bind(tokenHash).first<{ trip_id: string }>()
+}
+
+export async function loadLatestTripSnapshot(db: D1Database, tripId: string): Promise<TripDocument | null> {
+  const row = await db.prepare(`
+    SELECT document_json FROM trip_snapshots WHERE trip_id = ? ORDER BY version DESC LIMIT 1
+  `).bind(tripId).first<{ document_json: string }>()
+  if (!row) return null
+  return JSON.parse(row.document_json) as TripDocument
 }
 
 export async function insertSnapshot(db: D1Database, input: {
