@@ -28,7 +28,7 @@ type TripRoomMessage = TripRoomSnapshotMessage | TripRoomEventAcceptedMessage | 
 
 export type TripRoomState = {
   document: TripDocument | null
-  version: number | null
+  version: number
   status: TripRoomStatus
   sendCommand: (command: object) => void
 }
@@ -36,7 +36,7 @@ export type TripRoomState = {
 export function useTripRoom(tripId: string): TripRoomState {
   const socketRef = useRef<WebSocket | null>(null)
   const [document, setDocument] = useState<TripDocument | null>(null)
-  const [version, setVersion] = useState<number | null>(null)
+  const [version, setVersion] = useState(0)
   const [status, setStatus] = useState<TripRoomStatus>('connecting')
 
   useEffect(() => {
