@@ -17,10 +17,10 @@ export function jsonOk<T extends JsonValue>(data: T, init?: ResponseInit): Respo
   })
 }
 
-export function jsonError(status: number, code: ApiErrorCode, message: string): Response {
+export function jsonError(status: number, code: ApiErrorCode, message: string, init?: ResponseInit): Response {
   return new Response(JSON.stringify(err(code, message)), {
     status,
-    headers: JSON_HEADERS,
+    headers: jsonHeaders(init?.headers),
   })
 }
 

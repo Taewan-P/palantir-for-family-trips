@@ -44,6 +44,14 @@ export function clearSessionCookie(name: string): string {
   return `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax`
 }
 
+export function oauthStateCookie(name: string, stateHash: string, expiresAt: Date): string {
+  return `${name}=${encodeURIComponent(stateHash)}; Path=/api/auth/google/callback; Expires=${expiresAt.toUTCString()}; HttpOnly; Secure; SameSite=Lax`
+}
+
+export function clearOauthStateCookie(name: string): string {
+  return `${name}=; Path=/api/auth/google/callback; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax`
+}
+
 export async function exchangeGoogleCode(env: Env, code: string): Promise<string> {
   const body = new URLSearchParams({
     code,

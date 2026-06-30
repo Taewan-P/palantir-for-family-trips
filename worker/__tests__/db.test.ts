@@ -1,4 +1,4 @@
-import { decodeTripEventRow, encodeTripEventPayload, getTripAccess, loadHydratedTripSnapshot } from '../db'
+import { claimActiveInvite, decodeTripEventRow, encodeTripEventPayload, getTripAccess, loadHydratedTripSnapshot, rotateShareLink } from '../db'
 import { replayTripEvents } from '../../src/shared/trip-reducer'
 import type { TripDocument } from '../../src/shared/trip-types'
 
@@ -16,6 +16,46 @@ describe('db event codecs', () => {
       exists: true,
       role: 'owner',
     })
+  })
+
+  it('claims only an active unaccepted invite', async () => {
+    const calls: unknown[][] = []
+    const claimed = { id: 'invite_1', trip_id: 'trip_1', role: 'editor' }
+
+    await expect(claimActiveInvite(dbWithFirst(claimed, calls), {
+      tokenHash: 'token_hash',
+      userId: 'user_1',
+      now: '2026-07-01T00:00:00.000Z',
+    })).resolves.toEqual(claimed)
+
+    expect(calls).toEqual([['user_1', '2026-07-01T00:00:00.000Z', 'token_hash', '2026-07-01T00:00:00.000Z']])
+  })
+
+  it('returns no invite when the conditional claim finds no active row', async () => {
+    await expect(claimActiveInvite(dbWithFirst(null), {
+      tokenHash: 'token_hash',
+      userId: 'user_1',
+      now: '2026-07-01T00:00:00.000Z',
+    })).resolves.toBeNull()
+  })
+
+  it('rotates sanitized share links in one D1 batch', async () => {
+    const calls: unknown[][] = []
+    const batched: unknown[] = []
+
+    await rotateShareLink(dbWithBatch(calls, batched), {
+      id: 'share_2',
+      tripId: 'trip_1',
+      tokenHash: 'token_hash',
+      createdByUserId: 'user_1',
+      now: '2026-07-01T00:00:00.000Z',
+    })
+
+    expect(calls).toEqual([
+      ['2026-07-01T00:00:00.000Z', 'trip_1'],
+      ['share_2', 'trip_1', 'token_hash', 'user_1', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'],
+    ])
+    expect(batched).toHaveLength(2)
   })
 
   it('hydrates the latest snapshot with later events', async () => {
@@ -235,8 +275,8 @@ function baseDoc(): TripDocument {
   }
 }
 
-function dbWithFirst(row: unknown): D1Database {
-  return dbWithResults([{ first: row }])
+function dbWithFirst(row: unknown, calls?: unknown[][]): D1Database {
+  return dbWithResults([{ first: row }], calls)
 }
 
 function dbWithResults(results: Array<{ first?: unknown; all?: unknown[] }>, calls: unknown[][] = []): D1Database {
@@ -253,6 +293,24 @@ function dbWithResults(results: Array<{ first?: unknown; all?: unknown[] }>, cal
           }
         },
       }
+    },
+  } as unknown as D1Database
+}
+
+function dbWithBatch(calls: unknown[][], batched: unknown[]): D1Database {
+  return {
+    prepare() {
+      return {
+        bind(...args: unknown[]) {
+          calls.push(args)
+          const statement = { args }
+          return statement
+        },
+      }
+    },
+    async batch(statements: unknown[]) {
+      batched.push(...statements)
+      return []
     },
   } as unknown as D1Database
 }

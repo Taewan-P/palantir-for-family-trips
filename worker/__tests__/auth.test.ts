@@ -1,4 +1,4 @@
-import { buildGoogleAuthUrl, hashToken, sessionCookie } from '../auth'
+import { buildGoogleAuthUrl, hashToken, oauthStateCookie, sessionCookie } from '../auth'
 
 describe('auth helpers', () => {
   it('builds a Google auth URL with state', () => {
@@ -21,6 +21,15 @@ describe('auth helpers', () => {
   it('creates a secure session cookie', () => {
     const cookie = sessionCookie('trip_session', 'raw-token', new Date('2026-07-02T00:00:00.000Z'))
     expect(cookie).toContain('trip_session=raw-token')
+    expect(cookie).toContain('HttpOnly')
+    expect(cookie).toContain('Secure')
+    expect(cookie).toContain('SameSite=Lax')
+  })
+
+  it('creates a scoped OAuth state cookie', () => {
+    const cookie = oauthStateCookie('trip_oauth_state', 'hashed-state', new Date('2026-07-01T00:10:00.000Z'))
+    expect(cookie).toContain('trip_oauth_state=hashed-state')
+    expect(cookie).toContain('Path=/api/auth/google/callback')
     expect(cookie).toContain('HttpOnly')
     expect(cookie).toContain('Secure')
     expect(cookie).toContain('SameSite=Lax')

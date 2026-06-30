@@ -1,4 +1,5 @@
 import worker from '../index'
+import { hashToken } from '../auth'
 
 describe('worker api', () => {
   it('returns 404 for unknown routes', async () => {
@@ -12,9 +13,36 @@ describe('worker api', () => {
       GOOGLE_REDIRECT_URI: 'http://localhost/api/auth/google/callback',
       APP_ORIGIN: 'http://localhost:5173',
       SESSION_COOKIE_NAME: 'trip_session',
+      SESSION_SECRET: 'session-secret',
     }
     const response = await worker.fetch(new Request('http://localhost/api/auth/google/start'), env as never, {} as never)
     expect(response.status).toBe(302)
-    expect(response.headers.get('location')).toContain('https://accounts.google.com')
+    const location = new URL(response.headers.get('location') ?? '')
+    expect(location.origin).toBe('https://accounts.google.com')
+    expect(location.searchParams.get('state')).toBeTruthy()
+    expect(response.headers.get('set-cookie')).toContain('trip_oauth_state=')
+  })
+
+  it('rejects Google auth callback without state', async () => {
+    const response = await worker.fetch(
+      new Request('http://localhost/api/auth/google/callback?code=code'),
+      {} as never,
+      {} as never,
+    )
+    expect(response.status).toBe(400)
+    expect(response.headers.get('set-cookie')).toContain('trip_oauth_state=;')
+  })
+
+  it('rejects Google auth callback with mismatched state', async () => {
+    const cookie = `trip_oauth_state=${await hashToken('other-state', 'session-secret')}`
+    const response = await worker.fetch(
+      new Request('http://localhost/api/auth/google/callback?code=code&state=returned-state', {
+        headers: { cookie },
+      }),
+      { SESSION_SECRET: 'session-secret' } as never,
+      {} as never,
+    )
+    expect(response.status).toBe(400)
+    expect(response.headers.get('set-cookie')).toContain('trip_oauth_state=;')
   })
 })

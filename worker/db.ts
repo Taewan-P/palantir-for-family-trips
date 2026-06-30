@@ -215,14 +215,17 @@ export async function findActiveInvite(db: D1Database, tokenHash: string, now: s
   `).bind(tokenHash, now).first<{ id: string; trip_id: string; role: 'editor' }>()
 }
 
-export async function markInviteAccepted(db: D1Database, input: {
-  inviteId: string
+export async function claimActiveInvite(db: D1Database, input: {
+  tokenHash: string
   userId: string
-  acceptedAt: string
-}): Promise<void> {
-  await db.prepare(`
-    UPDATE invites SET accepted_by_user_id = ?, accepted_at = ? WHERE id = ?
-  `).bind(input.userId, input.acceptedAt, input.inviteId).run()
+  now: string
+}) {
+  return db.prepare(`
+    UPDATE invites
+    SET accepted_by_user_id = ?, accepted_at = ?
+    WHERE token_hash = ? AND expires_at > ? AND accepted_at IS NULL
+    RETURNING id, trip_id, role
+  `).bind(input.userId, input.now, input.tokenHash, input.now).first<{ id: string; trip_id: string; role: 'editor' }>()
 }
 
 export async function disableShareLinks(db: D1Database, tripId: string, now: string): Promise<void> {
@@ -231,17 +234,23 @@ export async function disableShareLinks(db: D1Database, tripId: string, now: str
   `).bind(now, tripId).run()
 }
 
-export async function createShareLink(db: D1Database, input: {
+export async function rotateShareLink(db: D1Database, input: {
   id: string
   tripId: string
   tokenHash: string
   createdByUserId: string
   now: string
 }): Promise<void> {
-  await db.prepare(`
-    INSERT INTO share_links (id, trip_id, token_hash, enabled, policy, created_by_user_id, created_at, updated_at)
-    VALUES (?, ?, ?, 1, 'sanitized', ?, ?, ?)
-  `).bind(input.id, input.tripId, input.tokenHash, input.createdByUserId, input.now, input.now).run()
+  await db.batch([
+    db.prepare(`
+      UPDATE share_links SET enabled = 0, updated_at = ?
+      WHERE trip_id = ? AND enabled = 1 AND policy = 'sanitized'
+    `).bind(input.now, input.tripId),
+    db.prepare(`
+      INSERT INTO share_links (id, trip_id, token_hash, enabled, policy, created_by_user_id, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 'sanitized', ?, ?, ?)
+    `).bind(input.id, input.tripId, input.tokenHash, input.createdByUserId, input.now, input.now),
+  ])
 }
 
 export async function findActiveShareLink(db: D1Database, tokenHash: string) {

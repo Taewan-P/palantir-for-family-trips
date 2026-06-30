@@ -1,13 +1,13 @@
-import { createId, createToken } from '../src/shared/ids'
+import { createId, createToken, timingSafeEqualString } from '../src/shared/ids'
 import type { JsonValue } from '../src/shared/json'
 import { createTripFromTemplate } from '../src/shared/trip-template'
 import { sanitizeTripForShare } from '../src/shared/trip-sanitizer'
-import { buildGoogleAuthUrl, clearSessionCookie, exchangeGoogleCode, hashToken, sessionCookie, verifyGoogleIdToken } from './auth'
+import { buildGoogleAuthUrl, clearOauthStateCookie, clearSessionCookie, exchangeGoogleCode, hashToken, oauthStateCookie, sessionCookie, verifyGoogleIdToken } from './auth'
 import {
+  claimActiveInvite,
   createInvite,
   createMembership,
   createSession,
-  createShareLink,
   createTrip,
   disableShareLinks,
   findActiveInvite,
@@ -18,7 +18,7 @@ import {
   insertSnapshot,
   listVisibleTrips,
   loadHydratedTripSnapshot,
-  markInviteAccepted,
+  rotateShareLink,
   upsertGoogleUser,
 } from './db'
 import type { Env } from './env'
@@ -37,6 +37,9 @@ type SignedInUser = {
 }
 
 export type TripRole = 'owner' | 'editor'
+
+const OAUTH_STATE_COOKIE_NAME = 'trip_oauth_state'
+const OAUTH_STATE_TTL_MINUTES = 10
 
 export function canWriteTrip(role: TripRole | null): boolean {
   return role === 'owner' || role === 'editor'
@@ -57,6 +60,12 @@ function nowIso(): string {
 function daysFromNow(days: number): Date {
   const date = new Date()
   date.setUTCDate(date.getUTCDate() + days)
+  return date
+}
+
+function minutesFromNow(minutes: number): Date {
+  const date = new Date()
+  date.setUTCMinutes(date.getUTCMinutes() + minutes)
   return date
 }
 
@@ -117,16 +126,32 @@ const worker = {
 
       if (request.method === 'GET' && path === '/api/auth/google/start') {
         const state = crypto.randomUUID()
+        const stateHash = await hashToken(state, env.SESSION_SECRET)
         return redirect(buildGoogleAuthUrl({
           clientId: env.GOOGLE_CLIENT_ID,
           redirectUri: env.GOOGLE_REDIRECT_URI,
           state,
-        }))
+        }), {
+          'set-cookie': oauthStateCookie(OAUTH_STATE_COOKIE_NAME, stateHash, minutesFromNow(OAUTH_STATE_TTL_MINUTES)),
+        })
       }
 
     if (request.method === 'GET' && path === '/api/auth/google/callback') {
+      const clearStateHeader = { 'set-cookie': clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME) }
+      const state = new URL(request.url).searchParams.get('state')
+      const stateCookie = parseCookie(request.headers.get('cookie'), OAUTH_STATE_COOKIE_NAME)
+      if (!state || !stateCookie) {
+        return jsonError(400, 'bad_request', 'Invalid Google OAuth state', { headers: clearStateHeader })
+      }
+      const stateHash = await hashToken(state, env.SESSION_SECRET)
+      if (!timingSafeEqualString(stateHash, stateCookie)) {
+        return jsonError(400, 'bad_request', 'Invalid Google OAuth state', { headers: clearStateHeader })
+      }
+
       const code = new URL(request.url).searchParams.get('code')
-      if (!code) return jsonError(400, 'bad_request', 'Missing Google authorization code')
+      if (!code) {
+        return jsonError(400, 'bad_request', 'Missing Google authorization code', { headers: clearStateHeader })
+      }
 
       const signedInAt = nowIso()
       const expiresAt = daysFromNow(30)
@@ -149,9 +174,10 @@ const worker = {
         createdAt: signedInAt,
       })
 
-      return redirect(appUrl(env, '/trips'), {
-        'set-cookie': sessionCookie(env.SESSION_COOKIE_NAME, token, expiresAt),
-      })
+      const headers = new Headers()
+      headers.append('set-cookie', sessionCookie(env.SESSION_COOKIE_NAME, token, expiresAt))
+      headers.append('set-cookie', clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME))
+      return redirect(appUrl(env, '/trips'), headers)
     }
 
     if (request.method === 'POST' && path === '/api/auth/logout') {
@@ -250,25 +276,28 @@ const worker = {
       if (user instanceof Response) return user
 
       const acceptedAt = nowIso()
-      const invite = await findActiveInvite(env.DB, await hashToken(acceptToken, env.SESSION_SECRET), acceptedAt)
+      const tokenHash = await hashToken(acceptToken, env.SESSION_SECRET)
+      const invite = await findActiveInvite(env.DB, tokenHash, acceptedAt)
       if (!invite) return jsonError(404, 'not_found', 'Invite not found')
       if (await findMembership(env.DB, invite.trip_id, user.id)) {
         return jsonError(409, 'conflict', 'User is already a trip member')
       }
 
-      await createMembership(env.DB, {
-        tripId: invite.trip_id,
+      const claimedInvite = await claimActiveInvite(env.DB, {
+        tokenHash,
         userId: user.id,
-        role: invite.role,
+        now: acceptedAt,
+      })
+      if (!claimedInvite) return jsonError(404, 'not_found', 'Invite not found')
+
+      await createMembership(env.DB, {
+        tripId: claimedInvite.trip_id,
+        userId: user.id,
+        role: claimedInvite.role,
         createdAt: acceptedAt,
       })
-      await markInviteAccepted(env.DB, {
-        inviteId: invite.id,
-        userId: user.id,
-        acceptedAt,
-      })
 
-      return jsonOk({ tripId: invite.trip_id, role: invite.role })
+      return jsonOk({ tripId: claimedInvite.trip_id, role: claimedInvite.role })
     }
 
     const shareTripId = routeMatch(path, /^\/api\/trips\/([^/]+)\/share-link$/)
@@ -283,8 +312,7 @@ const worker = {
 
       const token = createToken()
       const createdAt = nowIso()
-      await disableShareLinks(env.DB, shareTripId, createdAt)
-      await createShareLink(env.DB, {
+      await rotateShareLink(env.DB, {
         id: createId('share'),
         tripId: shareTripId,
         tokenHash: await hashToken(token, env.SESSION_SECRET),
