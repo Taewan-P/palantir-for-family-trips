@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
 import {
   ArrowRight,
@@ -68,18 +69,117 @@ import {
   synchronizeRoutePaths,
   updateEntityInCollection,
 } from './tripModel'
+import type {
+  ActivityEntity,
+  EntitySelection,
+  EntityByType,
+  ExpenseEntity,
+  FamilyEntity,
+  ItineraryItemEntity,
+  LocationEntity,
+  MealEntity,
+  RouteEntity,
+  TaskEntity,
+  TripDocument,
+  TripEntity,
+  TripEntityType,
+} from './shared/trip-types'
 import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeather } from './weather'
+import type { MapWeather, MapWeatherTarget, TripDayWeather } from './weather'
+
+type ClassValue = Parameters<typeof clsx>[number]
+type Day = (typeof DAYS)[number]
+type DayId = Day['id']
+type ToneKey = keyof typeof STATUS_STYLES
+type TimelineColorKey = keyof typeof TIMELINE_COLORS
+type OpenEntityHandler = (type: TripEntityType, id: string) => void
+type PageId = (typeof NAV_ITEMS)[number]['id']
+type ViewerProfile = { familyId: string | null }
+type ExpenseAllocation = { familyId: string; title: string; amount: number }
+type TimelineGate = {
+  id: string
+  dayId: DayId
+  startSlot: number
+  title: string
+  subtitle: string
+  dayLabel: string
+  items: ItineraryItemEntity[]
+  type: string
+  autoAdvanceMs: number
+}
+type TimelineContext = ReturnType<typeof getTimelineContext>
+type DailyBriefing = {
+  day: Day
+  code: string
+  tone: string
+  summary: string
+  lookouts: string[]
+  meals: MealEntity[]
+  activities: ActivityEntity[]
+  tasks: TaskEntity[]
+  liveItems: TripEntity[]
+  soonItems: TripEntity[]
+}
+type FeedItem = {
+  key: string
+  kind: string
+  title: string
+  subtitle: string
+  caption: string
+  tone: string
+  phase?: string
+  entityType?: TripEntityType | null
+  entityId?: string | null
+  createdAt?: number
+}
+type ActivityDraft = {
+  title: string
+  dayId: DayId
+  window?: string
+  description?: string
+}
+type LocationWithIntel = LocationEntity & {
+  basecampDrive?: { durationText?: string }
+  livePhotos?: MediaItem[]
+  photos?: MediaItem[]
+  stopType?: string
+  rating?: number
+  userRatingsTotal?: number
+  openingHours?: string[]
+  phoneNumber?: string | null
+}
+type MediaItem = {
+  id?: string
+  label?: string
+  imageUrl?: string
+  sourceUrl?: string | null
+}
+type EntityWithStatus = TripEntity & { status?: string }
+type EntityWithDay = TripEntity & { dayId?: string }
+type Legacy = any
+type LegacyProps = any
+
+declare global {
+  interface Window {
+    __tripCommandCenterMapsConfigured?: boolean
+    google?: Legacy
+  }
+}
+
+function getTypedEntityById<T extends TripEntityType>(doc: TripDocument, type: T, id: string): EntityByType[T] | null {
+  return getEntityById(doc, type, id) as EntityByType[T] | null
+}
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
 const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID
 const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = import.meta.env.VITE_DISABLE_LEGACY_GOOGLE_ROUTING === 'true'
 const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = Boolean(import.meta.env?.DEV)
 
-function cn(...inputs) {
+function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-const PAGE_ICONS = {
+const PAGE_ICONS: Record<string, Legacy> = {
   itinerary: LayoutGrid,
   stay: Home,
   meals: Utensils,
@@ -88,7 +188,7 @@ const PAGE_ICONS = {
   families: Users,
 }
 
-const WEATHER_ICONS = {
+const WEATHER_ICONS: Record<string, Legacy> = {
   sun: Sun,
   partly: Cloud,
   cloud: Cloud,
@@ -99,7 +199,7 @@ const WEATHER_ICONS = {
   snow: Cloud,
 }
 
-const STATUS_STYLES = {
+const STATUS_STYLES: Record<string, string> = {
   Transit: 'bg-[#58A6FF]/18 text-[#58A6FF]',
   'Friday Arrival': 'bg-[#D29922]/18 text-[#D29922]',
   Assigned: 'bg-[#58A6FF]/18 text-[#58A6FF]',
@@ -110,7 +210,7 @@ const STATUS_STYLES = {
   Watch: 'bg-[#D29922]/18 text-[#D29922]',
 }
 
-const TIMELINE_COLORS = {
+const TIMELINE_COLORS: Record<string, string> = {
   info: 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#C9D1D9]',
   warning: 'border-[#D29922] bg-[#D29922]/10 text-[#D29922]',
   success: 'border-[#3FB950] bg-[#3FB950]/10 text-[#3FB950]',
@@ -119,7 +219,7 @@ const TIMELINE_COLORS = {
   muted: 'border-[#4B5563] bg-[#4B5563]/10 text-[#8B949E]',
 }
 
-const EXPENSE_SPLIT_LABELS = {
+const EXPENSE_SPLIT_LABELS: Record<string, string> = {
   equal: 'Equal split',
   manual: 'Manual allocation',
   individual: 'Individual',
@@ -215,7 +315,7 @@ const OBSOLETE_PLAN_ITINERARY_IDS = new Set([
   'desert-bloom-mountain-room-return',
 ])
 
-const DAY_BRIEFING_COPY = {
+const DAY_BRIEFING_COPY: Record<string, Legacy> = {
   thu: {
     code: 'Insertion / Consolidation',
     tone: 'Amber',
@@ -262,14 +362,14 @@ const DAY_BRIEFING_COPY = {
   },
 }
 
-const MISSION_OBJECTIVE_COPY = {
+const MISSION_OBJECTIVE_COPY: Record<string, string> = {
   thu: 'Get inbound units through the gate, staged at basecamp, and settled before evening tempo begins.',
   fri: 'Push the local ops window cleanly, keep coordination light, and preserve energy for the main park day.',
   sat: 'Launch the park convoy on time, keep the group inside a realistic scope, and hold margin for a calm return.',
   sun: 'Run a controlled pack-out and stagger departures without turning checkout into the whole mood.',
 }
 
-const MISSION_LAUNCH_THEME = {
+const MISSION_LAUNCH_THEME: Record<string, Legacy> = {
   thu: {
     accent: '#F2CC60',
     accentStrong: '#FFD76B',
@@ -343,7 +443,7 @@ const MISSION_LAUNCH_KEYFRAMES = `
   }
 `
 
-function formatCurrency(amount) {
+function formatCurrency(amount: number) {
   const value = Number.isFinite(amount) ? amount : Number(amount) || 0
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -353,18 +453,18 @@ function formatCurrency(amount) {
   }).format(value)
 }
 
-function parseCurrencyInput(value) {
+function parseCurrencyInput(value: string | number) {
   if (typeof value !== 'string') return Number(value) || 0
   const normalized = value.replace(/[^0-9.]/g, '')
   if (!normalized.trim()) return 0
   return Number(normalized) || 0
 }
 
-function getFamilyLabel(families, familyId) {
-  return families.find((family) => family.id === familyId)?.title || 'Unknown family'
+function getFamilyLabel(families: FamilyEntity[], familyId: string) {
+  return families.find((family: Legacy) => family.id === familyId)?.title || 'Unknown family'
 }
 
-function stampFamilyMetadata(item, familyId) {
+function stampFamilyMetadata<T extends TripEntity>(item: T, familyId: string | null): T {
   if (!familyId) return item
 
   const timestamp = new Date().toISOString()
@@ -377,31 +477,31 @@ function stampFamilyMetadata(item, familyId) {
   }
 }
 
-function buildEqualExpenseAllocations(amount, families) {
+function buildEqualExpenseAllocations(amount: number, families: FamilyEntity[]): ExpenseAllocation[] {
   if (!families.length) return []
 
   const totalCents = Math.max(Math.round((Number(amount) || 0) * 100), 0)
   const baseCents = Math.floor(totalCents / families.length)
   const remainder = totalCents - baseCents * families.length
 
-  return families.map((family, index) => ({
+  return families.map((family: Legacy,  index: Legacy) => ({
     familyId: family.id,
     title: family.title,
     amount: (baseCents + (index < remainder ? 1 : 0)) / 100,
   }))
 }
 
-function getExpenseAllocations(expense, families) {
+function getExpenseAllocations(expense: ExpenseEntity | null | undefined, families: FamilyEntity[]): ExpenseAllocation[] {
   if (!expense || !families.length) return []
   if (expense.allocationMode === 'individual') {
-    return families.map((family) => ({
+    return families.map((family: Legacy) => ({
       familyId: family.id,
       title: family.title,
       amount: 0,
     }))
   }
   if (expense.allocationMode === 'manual') {
-    return families.map((family) => ({
+    return families.map((family: Legacy) => ({
       familyId: family.id,
       title: family.title,
       amount: Number(expense.allocations?.[family.id]) || 0,
@@ -410,35 +510,35 @@ function getExpenseAllocations(expense, families) {
   return buildEqualExpenseAllocations(expense.amount, families)
 }
 
-function buildManualAllocationSeed(amount, families) {
+function buildManualAllocationSeed(amount: number, families: FamilyEntity[]): Record<string, number> {
   return Object.fromEntries(
-    buildEqualExpenseAllocations(amount, families).map((item) => [item.familyId, item.amount]),
+    buildEqualExpenseAllocations(amount, families).map((item: Legacy) => [item.familyId, item.amount]),
   )
 }
 
-function getFamilyExpenseBurden(expenses, families) {
-  const totals = Object.fromEntries(families.map((family) => [family.id, 0]))
+function getFamilyExpenseBurden(expenses: ExpenseEntity[], families: FamilyEntity[]): ExpenseAllocation[] {
+  const totals = Object.fromEntries(families.map((family: Legacy) => [family.id, 0]))
 
-  expenses.forEach((expense) => {
+  expenses.forEach((expense: Legacy) => {
     if (expense.allocationMode === 'individual') return
-    getExpenseAllocations(expense, families).forEach((allocation) => {
+    getExpenseAllocations(expense, families).forEach((allocation: Legacy) => {
       totals[allocation.familyId] = (totals[allocation.familyId] || 0) + allocation.amount
     })
   })
 
-  return families.map((family) => ({
+  return families.map((family: Legacy) => ({
     familyId: family.id,
     title: family.title,
     amount: totals[family.id] || 0,
   }))
 }
 
-function clampTimelineCursor(slot) {
+function clampTimelineCursor(slot: number) {
   const maxCursor = DAYS.length * TIME_SLOTS.length - 0.001
   return Math.min(Math.max(slot, 0), maxCursor)
 }
 
-function getDayVisibleCursorRange(dayIndex) {
+function getDayVisibleCursorRange(dayIndex: number) {
   const dayStart = dayIndex * TIME_SLOTS.length
   return {
     start: dayStart + VISIBLE_TIMELINE_SLOT_START,
@@ -446,7 +546,7 @@ function getDayVisibleCursorRange(dayIndex) {
   }
 }
 
-function projectCursorToVisibleTimelineRatio(cursorSlot, dayCount = DAYS.length) {
+function projectCursorToVisibleTimelineRatio(cursorSlot: number, dayCount = DAYS.length) {
   const normalizedCursor = clampTimelineCursor(cursorSlot)
   const dayIndex = Math.min(Math.max(Math.floor(normalizedCursor / TIME_SLOTS.length), 0), dayCount - 1)
   const dayOffset = normalizedCursor - dayIndex * TIME_SLOTS.length
@@ -456,7 +556,7 @@ function projectCursorToVisibleTimelineRatio(cursorSlot, dayCount = DAYS.length)
   return Math.min(Math.max(visibleCursor / totalVisibleSlots, 0), 0.999999)
 }
 
-function projectVisibleTimelineRatioToCursor(ratio, dayCount = DAYS.length) {
+function projectVisibleTimelineRatioToCursor(ratio: number, dayCount = DAYS.length) {
   const totalVisibleSlots = Math.max(dayCount * VISIBLE_TIMELINE_SLOT_SPAN, 0.0001)
   const clampedRatio = Math.min(Math.max(ratio, 0), 0.999999)
   const visibleCursor = clampedRatio * totalVisibleSlots
@@ -465,35 +565,35 @@ function projectVisibleTimelineRatioToCursor(ratio, dayCount = DAYS.length) {
   return clampTimelineCursor(dayIndex * TIME_SLOTS.length + VISIBLE_TIMELINE_SLOT_START + dayVisibleOffset)
 }
 
-function getCursorHourInDay(cursorSlot) {
+function getCursorHourInDay(cursorSlot: number) {
   const normalizedCursor = clampTimelineCursor(cursorSlot)
   const dayOffset = normalizedCursor - Math.floor(normalizedCursor / TIME_SLOTS.length) * TIME_SLOTS.length
   return dayOffset * TIMELINE_HOURS_PER_SLOT
 }
 
-function getMissionLaunchCursor(dayIndex) {
+function getMissionLaunchCursor(dayIndex: number) {
   return clampTimelineCursor(dayIndex * TIME_SLOTS.length + MISSION_LAUNCH_HOUR / TIMELINE_HOURS_PER_SLOT)
 }
 
-function getSuggestedPlaybackStartCursor(doc, cursorSlot, operationCheckpoints = []) {
+function getSuggestedPlaybackStartCursor(doc: TripDocument, cursorSlot: number, operationCheckpoints: TimelineGate[] = []) {
   const windows = (doc.routes || [])
-    .map((route) => getRouteSimulationWindow(doc, route))
-    .filter((window) => Number.isFinite(window.start) && Number.isFinite(window.end))
-    .sort((left, right) => left.start - right.start)
+    .map((route: Legacy) => getRouteSimulationWindow(doc, route))
+    .filter((window: Legacy) => Number.isFinite(window.start) && Number.isFinite(window.end))
+    .sort((left: Legacy,  right: Legacy) => left.start - right.start)
   const checkpoints = (operationCheckpoints || [])
-    .filter((checkpoint) => Number.isFinite(checkpoint?.startSlot))
-    .sort((left, right) => left.startSlot - right.startSlot)
+    .filter((checkpoint: Legacy) => Number.isFinite(checkpoint?.startSlot))
+    .sort((left: Legacy,  right: Legacy) => left.startSlot - right.startSlot)
   const routeLeadIn = 0.08
   const checkpointLeadIn = 0.03
 
   const normalizedCursor = clampTimelineCursor(cursorSlot)
   if (!windows.length && !checkpoints.length) return normalizedCursor
 
-  const activeWindow = windows.find((window) => normalizedCursor >= window.start && normalizedCursor <= window.end)
+  const activeWindow = windows.find((window: Legacy) => normalizedCursor >= window.start && normalizedCursor <= window.end)
   if (activeWindow) return normalizedCursor
 
-  const nextWindow = windows.find((window) => window.start > normalizedCursor)
-  const nextCheckpoint = checkpoints.find((checkpoint) => checkpoint.startSlot > normalizedCursor)
+  const nextWindow = windows.find((window: Legacy) => window.start > normalizedCursor)
+  const nextCheckpoint = checkpoints.find((checkpoint: Legacy) => checkpoint.startSlot > normalizedCursor)
 
   if (nextCheckpoint && (!nextWindow || nextCheckpoint.startSlot <= nextWindow.start)) {
     return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0))
@@ -524,7 +624,7 @@ function getCurrentTripCursor(now = new Date()) {
   return clampTimelineCursor(clampedHours / TIMELINE_HOURS_PER_SLOT)
 }
 
-function getCompactTravelLabel(item) {
+function getCompactTravelLabel(item: ItineraryItemEntity) {
   const status = (item?.status || '').toLowerCase()
   const title = (item?.title || '').toLowerCase()
 
@@ -539,12 +639,12 @@ function getCompactTravelLabel(item) {
   return fallback.replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase() || 'DRV'
 }
 
-function getCursorDay(cursorSlot) {
+function getCursorDay(cursorSlot: number): Day {
   const dayIndex = Math.min(Math.floor(cursorSlot / TIME_SLOTS.length), DAYS.length - 1)
   return DAYS[Math.max(dayIndex, 0)] || DAYS[0]
 }
 
-function formatNameList(labels) {
+function formatNameList(labels: string[]) {
   const cleanLabels = labels.filter(Boolean)
   if (!cleanLabels.length) return ''
   if (cleanLabels.length === 1) return cleanLabels[0]
@@ -552,13 +652,13 @@ function formatNameList(labels) {
   return `${cleanLabels.slice(0, -1).join(', ')} + ${cleanLabels[cleanLabels.length - 1]}`
 }
 
-function stripDayPrefix(label) {
+function stripDayPrefix(label: string) {
   return (label || '').replace(/^[A-Za-z]{3}\s+/, '')
 }
 
-function dedupeById(items) {
-  const seen = new Set()
-  return items.filter((item) => {
+function dedupeById<T extends { id: string }>(items: (T | null | undefined)[]): T[] {
+  const seen = new Set<Legacy>()
+  return items.filter((item): item is T => {
     if (!item?.id) return false
     if (seen.has(item.id)) return false
     seen.add(item.id)
@@ -566,12 +666,12 @@ function dedupeById(items) {
   })
 }
 
-function pickMostFrequentEntity(items) {
-  const counts = new Map()
-  let bestItem = null
+function pickMostFrequentEntity<T extends { id: string }>(items: T[]): T | null {
+  const counts = new Map<string, number>()
+  let bestItem: T | null = null
   let bestCount = 0
 
-  items.forEach((item) => {
+  items.forEach((item: Legacy) => {
     if (!item?.id) return
     const nextCount = (counts.get(item.id) || 0) + 1
     counts.set(item.id, nextCount)
@@ -584,72 +684,72 @@ function pickMostFrequentEntity(items) {
   return bestItem || items.find(Boolean) || null
 }
 
-function getRelatedTravelItemsForGate(doc, gate) {
+function getRelatedTravelItemsForGate(doc: TripDocument, gate: TimelineGate): ItineraryItemEntity[] {
   const gateItems = gate?.items || []
   const primaryItem = gateItems[0]
   if (!primaryItem) return []
 
   const gateEntityKeys = new Set(
-    gateItems.flatMap((item) => [makeEntityKey('itineraryItem', item.id), ...(item.linkedEntityKeys || [])]),
+    gateItems.flatMap((item: Legacy) => [makeEntityKey('itineraryItem', item.id), ...(item.linkedEntityKeys || [])]),
   )
-  const sameDayTravelItems = doc.itineraryItems.filter((item) => item.rowId === 'travel' && item.dayId === primaryItem.dayId)
-  const directlyLinkedTravelItems = sameDayTravelItems.filter((item) =>
-    (item.linkedEntityKeys || []).some((key) => gateEntityKeys.has(key)),
+  const sameDayTravelItems = doc.itineraryItems.filter((item: Legacy) => item.rowId === 'travel' && item.dayId === primaryItem.dayId)
+  const directlyLinkedTravelItems = sameDayTravelItems.filter((item: Legacy) =>
+    (item.linkedEntityKeys || []).some((key: Legacy) => gateEntityKeys.has(key)),
   )
   if (directlyLinkedTravelItems.length) return directlyLinkedTravelItems
 
   const launchWaveEnd = gate.startSlot + 1.2
-  const sameWaveTravelItems = sameDayTravelItems.filter((item) => {
+  const sameWaveTravelItems = sameDayTravelItems.filter((item: Legacy) => {
     const itemEnd = item.startSlot + getItineraryItemEffectiveSpan(doc, item)
     return itemEnd >= gate.startSlot - 0.1 && item.startSlot <= launchWaveEnd
   })
   if (sameWaveTravelItems.length) return sameWaveTravelItems
 
-  return sameDayTravelItems.filter((item) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
+  return sameDayTravelItems.filter((item: Legacy) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
 }
 
-function buildOperationGateContext(doc, gate) {
+function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null) {
   if (!gate?.items?.length) return null
 
   const primaryItem = gate.items[0]
-  const dayId = primaryItem.dayId || gate.dayId || 'thu'
+  const dayId = (primaryItem.dayId || gate.dayId || 'thu') as DayId
   const dayMeta = getDayMeta(dayId) || getCursorDay(gate.startSlot)
   const theme = MISSION_LAUNCH_THEME[dayId] || MISSION_LAUNCH_THEME.fri
   const briefing = DAY_BRIEFING_COPY[dayId] || DAY_BRIEFING_COPY.thu
-  const gateItemsWithType = gate.items.map((item) => ({ ...item, type: 'itineraryItem' }))
+  const gateItemsWithType = gate.items.map((item: Legacy) => ({ ...item, type: 'itineraryItem' }))
   const linkedEntities = dedupeById(
-    gateItemsWithType.flatMap((item) => getLinkedEntities(doc, item)),
+    gateItemsWithType.flatMap((item: Legacy) => getLinkedEntities(doc, item)),
   )
   const relatedTravelItems = getRelatedTravelItemsForGate(doc, gate)
   const relatedRoutes = dedupeById(
     relatedTravelItems
-      .map((item) => getRouteForEntity(doc, { ...item, type: 'itineraryItem' }))
+      .map((item: Legacy) => getRouteForEntity(doc, { ...item, type: 'itineraryItem' }))
       .filter(Boolean),
   )
   const gateLocations = dedupeById(
     [
       getLocationForEntity(doc, { ...primaryItem, type: 'itineraryItem' }),
-      ...linkedEntities.filter((entity) => entity.type === 'location'),
+      ...linkedEntities.filter((entity: Legacy) => entity.type === 'location'),
       ...relatedRoutes
-        .map((route) => getEntityById(doc, 'location', route.destinationLocationId))
+        .map((route: Legacy) => getTypedEntityById(doc, 'location', route.destinationLocationId))
         .filter(Boolean),
     ].filter(Boolean),
   )
   const targetLocation = pickMostFrequentEntity(gateLocations)
   const familyIds = [
-    ...gate.items.flatMap((item) => item.familyIds || []),
-    ...relatedTravelItems.flatMap((item) => item.familyIds || []),
-    ...relatedRoutes.map((route) => route.familyId).filter((familyId) => familyId && familyId !== 'all'),
+    ...gate.items.flatMap((item: Legacy) => item.familyIds || []),
+    ...relatedTravelItems.flatMap((item: Legacy) => item.familyIds || []),
+    ...relatedRoutes.map((route: Legacy) => route.familyId).filter((familyId): familyId is string => Boolean(familyId && familyId !== 'all')),
   ]
   const families = dedupeById(
     familyIds
-      .map((familyId) => getEntityById(doc, 'family', familyId))
+      .map((familyId: Legacy) => getTypedEntityById(doc, 'family', familyId))
       .filter(Boolean),
   )
   const unitCount = families.length || Math.max(relatedRoutes.length, 1)
   const launchLabel = stripDayPrefix(getSlotLabel(gate.startSlot))
   const etaSlot = relatedTravelItems.length
-    ? Math.max(...relatedTravelItems.map((item) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
+    ? Math.max(...relatedTravelItems.map((item: Legacy) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
     : gate.startSlot + getItineraryItemEffectiveSpan(doc, primaryItem)
   const etaLabel = stripDayPrefix(getSlotLabel(etaSlot))
   const participantLabel =
@@ -657,7 +757,7 @@ function buildOperationGateContext(doc, gate) {
       ? gate.dayLabel || 'All units'
       : families.length === doc.families.length
         ? 'All families'
-        : formatNameList(families.map((family) => family.title))
+        : formatNameList(families.map((family: Legacy) => family.title))
   const targetTitle = targetLocation?.title || gate.title
   const targetMeta = targetLocation ? getEntitySummary(targetLocation) : primaryItem.status || gate.subtitle
   const routeCount = relatedRoutes.length || Math.max(relatedTravelItems.length, 1)
@@ -686,11 +786,11 @@ function buildOperationGateContext(doc, gate) {
   }
 }
 
-function buildOperationCheckpoints(doc) {
-  return DAYS.map((day, dayIndex) => {
+function buildOperationCheckpoints(doc: TripDocument): TimelineGate[] {
+  return DAYS.map((day, dayIndex): TimelineGate | null => {
     const mainOp = doc.itineraryItems
-      .filter((item) => item.rowId === 'activities' && item.dayId === day.id)
-      .sort((left, right) => left.startSlot - right.startSlot)[0]
+      .filter((item: Legacy) => item.rowId === 'activities' && item.dayId === day.id)
+      .sort((left: Legacy,  right: Legacy) => left.startSlot - right.startSlot)[0]
 
     if (!mainOp) return null
 
@@ -705,34 +805,34 @@ function buildOperationCheckpoints(doc) {
       type: 'main-op',
       autoAdvanceMs: 4200,
     }
-  }).filter(Boolean)
+  }).filter((item): item is TimelineGate => Boolean(item))
 }
 
-function findUpcomingOperationCheckpoint(checkpoints, cursorSlot, threshold = 0.14) {
-  return checkpoints.find((item) => item.startSlot >= cursorSlot && item.startSlot - cursorSlot <= threshold) || null
+function findUpcomingOperationCheckpoint(checkpoints: TimelineGate[], cursorSlot: number, threshold = 0.14): TimelineGate | null {
+  return checkpoints.find((item: Legacy) => item.startSlot >= cursorSlot && item.startSlot - cursorSlot <= threshold) || null
 }
 
-function findCrossedOperationCheckpoint(checkpoints, previousCursor, nextCursor, triggeredIds) {
-  return checkpoints.find((item) =>
+function findCrossedOperationCheckpoint(checkpoints: TimelineGate[], previousCursor: number, nextCursor: number, triggeredIds: Set<string>): TimelineGate | null {
+  return checkpoints.find((item: Legacy) =>
     !triggeredIds.has(item.id)
     && previousCursor <= item.startSlot
     && nextCursor >= item.startSlot,
   ) || null
 }
 
-function getPlaybackHighlightLocation(doc, context) {
+function getPlaybackHighlightLocation(doc: TripDocument, context: TimelineContext) {
   return null
 }
 
-function buildDailyBriefing(doc, context) {
+function buildDailyBriefing(doc: TripDocument, context: TimelineContext): DailyBriefing {
   const day = getCursorDay(context.cursorSlot)
-  const base = DAY_BRIEFING_COPY[day.id] || DAY_BRIEFING_COPY.thu
-  const meals = doc.meals.filter((meal) => meal.dayId === day.id).slice(0, 3)
-  const activities = doc.activities.filter((activity) => activity.dayId === day.id).slice(0, 3)
-  const tasks = getTasksForDay(doc, day.id).filter((task) => task.status !== 'done').slice(0, 4)
-  const liveItems = context.liveEntities.filter((item) => item.dayId === day.id)
+  const base = DAY_BRIEFING_COPY[day.id as DayId] || DAY_BRIEFING_COPY.thu
+  const meals = doc.meals.filter((meal: Legacy) => meal.dayId === day.id).slice(0, 3)
+  const activities = doc.activities.filter((activity: Legacy) => activity.dayId === day.id).slice(0, 3)
+  const tasks = getTasksForDay(doc, day.id).filter((task: Legacy) => task.status !== 'done').slice(0, 4)
+  const liveItems = context.liveEntities.filter((item: Legacy) => item.dayId === day.id)
   const soonItems = [...context.nextEntities, ...context.prepSoon]
-    .filter((item) => item.dayId === day.id)
+    .filter((item: Legacy) => item.dayId === day.id)
     .slice(0, 4)
 
   return {
@@ -749,12 +849,12 @@ function buildDailyBriefing(doc, context) {
   }
 }
 
-function StatusPill({ children, tone = 'Transit', className }) {
+function StatusPill({ children, tone = 'Transit', className = '' }: { children: ReactNode; tone?: string; className?: string }) {
   return (
     <span
       className={cn(
         'rounded-[2px] px-2 py-0.5 text-[9px] font-black uppercase tracking-wider',
-        STATUS_STYLES[tone] || 'bg-[#30363D] text-[#C9D1D9]',
+        STATUS_STYLES[tone as ToneKey] || 'bg-[#30363D] text-[#C9D1D9]',
         className,
       )}
     >
@@ -763,7 +863,7 @@ function StatusPill({ children, tone = 'Transit', className }) {
   )
 }
 
-function SectionTitle({ eyebrow, title, meta }) {
+function SectionTitle({ eyebrow, title, meta }: { eyebrow?: string; title: string; meta?: ReactNode }) {
   return (
     <div className="mb-4">
       {eyebrow ? (
@@ -781,18 +881,18 @@ function SectionTitle({ eyebrow, title, meta }) {
   )
 }
 
-function NotesBox({ value, onChange, placeholder }) {
+function NotesBox({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
   return (
     <textarea
       value={value}
-      onChange={(event) => onChange(event.target.value)}
+      onChange={(event: Legacy) => onChange(event.target.value)}
       placeholder={placeholder}
       className="min-h-24 w-full resize-none border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
     />
   )
 }
 
-function SelectableCard({ selected, onClick, children, className = '' }) {
+function SelectableCard({ selected, onClick, children, className = '' }: { selected?: boolean; onClick: () => void; children: ReactNode; className?: string }) {
   return (
     <button
       type="button"
@@ -808,7 +908,7 @@ function SelectableCard({ selected, onClick, children, className = '' }) {
   )
 }
 
-function PageNotesCard({ title, value, onChange, onConvert, placeholder }) {
+function PageNotesCard({ title, value, onChange, onConvert, placeholder }: { title: string; value: string; onChange: (value: string) => void; onConvert: () => void; placeholder?: string }) {
   return (
     <div className="border border-[#30363D] bg-[#161b22] p-4">
       <div className="mb-2 flex items-center justify-between">
@@ -837,6 +937,17 @@ function AppShell({
   activeFamily,
   onSetActiveFamily,
   children,
+}: {
+  doc: TripDocument
+  onSetSelectedPage: (pageId: PageId) => void
+  onExport: () => void
+  onSearchChange: (value: string) => void
+  searchResults: Legacy[]
+  onOpenEntity: OpenEntityHandler
+  families: FamilyEntity[]
+  activeFamily: FamilyEntity | null
+  onSetActiveFamily: (familyId: string) => void
+  children: ReactNode
 }) {
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-[#0d1117] font-sans text-[#C9D1D9] antialiased">
@@ -849,8 +960,8 @@ function AppShell({
             style={{ filter: 'invert(1) grayscale(1) brightness(1.15)' }}
           />
         </div>
-        {NAV_ITEMS.map((item) => {
-          const Icon = PAGE_ICONS[item.id]
+        {NAV_ITEMS.map((item: Legacy) => {
+          const Icon = PAGE_ICONS[item.id as keyof typeof PAGE_ICONS]
           const active = doc.selectedPage === item.id
           return (
             <button
@@ -912,7 +1023,7 @@ function AppShell({
                 Working as
               </div>
               <div className="flex items-center gap-1.5">
-                {families.map((family) => (
+                {families.map((family: Legacy) => (
                   <button
                     key={family.id}
                     type="button"
@@ -940,13 +1051,13 @@ function AppShell({
               <input
                 type="text"
                 value={doc.ui.searchQuery}
-                onChange={(event) => onSearchChange(event.target.value)}
+                onChange={(event: Legacy) => onSearchChange(event.target.value)}
                 placeholder="Search..."
                 className="w-64 rounded-[2px] border border-[#30363D] bg-[#0d1117] py-1.5 pl-10 pr-4 text-[11px] outline-none focus:border-[#58A6FF]"
               />
               {doc.ui.searchQuery && searchResults.length ? (
                 <div className="absolute right-0 top-10 z-40 w-80 border border-[#30363D] bg-[#161b22] shadow-xl">
-                  {searchResults.map((item) => (
+                  {searchResults.map((item: Legacy) => (
                     <button
                       key={`${item.type}:${item.id}`}
                       type="button"
@@ -985,7 +1096,7 @@ function AppShell({
               This stays local in your browser, personalizes the planner to your family, and attributes edits and new expenses to you.
             </div>
             <div className="mt-5 grid gap-2">
-              {families.map((family) => (
+              {families.map((family: Legacy) => (
                 <button
                   key={family.id}
                   type="button"
@@ -1011,10 +1122,10 @@ function AppShell({
   )
 }
 
-function FamilyList({ doc, selection, onSelectEntity }) {
+function FamilyList({ doc, selection, onSelectEntity }: { doc: TripDocument; selection: EntitySelection; onSelectEntity: OpenEntityHandler }) {
   return (
     <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-      {doc.families.map((family) => {
+      {doc.families.map((family: Legacy) => {
         const selected = selection.type === 'family' && selection.id === family.id
         return (
           <button
@@ -1042,12 +1153,12 @@ function FamilyList({ doc, selection, onSelectEntity }) {
   )
 }
 
-function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor }) {
+function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor }: { doc: TripDocument; cursorSlot?: number; onSetCursor: (cursorSlot: number) => void }) {
   const clampedCursor = clampTimelineCursor(cursorSlot)
   const cursorDayIndex = Math.min(Math.max(Math.floor(clampedCursor / TIME_SLOTS.length), 0), DAYS.length - 1)
   const selectedDay = DAYS[cursorDayIndex]
   const cursorHour = getCursorHourInDay(clampedCursor)
-  const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour, hour) => (
+  const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour: Legacy,  hour: Legacy) => (
     Math.abs(hour - cursorHour) < Math.abs(bestHour - cursorHour) ? hour : bestHour
   ), MISSION_TIME_PRESETS[0])
   const selectedSlotValue = String(selectedHour).padStart(2, '0')
@@ -1068,7 +1179,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
         </div>
       </div>
       <div className="mb-3 flex flex-wrap gap-2">
-        {DAYS.map((day, dayIndex) => (
+        {DAYS.map((day: Legacy,  dayIndex: Legacy) => (
           <button
             key={day.id}
             type="button"
@@ -1085,7 +1196,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
         ))}
       </div>
       <div className="flex gap-2">
-        {MISSION_TIME_PRESETS.map((hour) => {
+        {MISSION_TIME_PRESETS.map((hour: Legacy) => {
           const slot = String(hour).padStart(2, '0')
           return (
             <button
@@ -1108,17 +1219,17 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
   )
 }
 
-function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
+function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: DailyBriefing | null; onClose: () => void; onOpenEntity: OpenEntityHandler }) {
   if (!briefing) return null
 
-  const toneStyles = {
+  const toneStyles: Record<string, string> = {
     Amber: 'border-[#D29922]/40 text-[#D29922]',
     Blue: 'border-[#58A6FF]/40 text-[#58A6FF]',
     Red: 'border-[#F85149]/40 text-[#F85149]',
     Green: 'border-[#3FB950]/40 text-[#3FB950]',
   }
 
-  const railSection = (title, items, emptyLabel) => (
+  const railSection = (title: string, items: TripEntity[], emptyLabel: string) => (
     <div className="border border-[#30363D] bg-[#0d1117]">
       <div className="border-b border-[#30363D]/50 px-4 py-3 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
         {title}
@@ -1126,7 +1237,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
       <div className="p-4">
         {items.length ? (
           <div className="space-y-2">
-            {items.map((item) => (
+            {items.map((item: Legacy) => (
               <button
                 key={`${item.type}:${item.id}`}
                 type="button"
@@ -1163,7 +1274,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
       />
       <div
         className="relative max-h-full w-full max-w-5xl overflow-hidden border border-[#30363D] bg-[#10161e] shadow-[0_30px_80px_rgba(0,0,0,0.55)]"
-        onClick={(event) => event.stopPropagation()}
+        onClick={(event: Legacy) => event.stopPropagation()}
       >
         <div className="border-b border-[#30363D] bg-[linear-gradient(135deg,rgba(88,166,255,0.08),rgba(13,17,23,0.95)_58%)] px-6 py-5">
           <div className="mb-4 flex items-start justify-between gap-4">
@@ -1175,7 +1286,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
                 <h2 className="text-[22px] font-black uppercase tracking-[0.14em] text-[#F0F6FC]">
                   {briefing.day.title}
                 </h2>
-                <span className={`border px-2 py-1 text-[9px] font-black uppercase tracking-[0.18em] ${toneStyles[briefing.tone] || toneStyles.Blue}`}>
+        <span className={`border px-2 py-1 text-[9px] font-black uppercase tracking-[0.18em] ${toneStyles[briefing.tone] || toneStyles.Blue}`}>
                   {briefing.code}
                 </span>
               </div>
@@ -1217,7 +1328,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Watch For" title="What matters today" />
               <div className="space-y-3">
-                {briefing.lookouts.map((item) => (
+                {briefing.lookouts.map((item: Legacy) => (
                   <div key={item} className="border border-[#30363D] bg-[#0d1117] px-3 py-3 text-[11px] leading-relaxed text-[#C9D1D9]">
                     {item}
                   </div>
@@ -1233,7 +1344,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Planned beats" title="Activities + meals" />
               <div className="space-y-3">
-                {briefing.activities.map((activity) => (
+                {briefing.activities.map((activity: Legacy) => (
                   <button
                     key={activity.id}
                     type="button"
@@ -1247,7 +1358,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
                     <StatusPill tone={activity.status}>{activity.status}</StatusPill>
                   </button>
                 ))}
-                {briefing.meals.map((meal) => (
+                {briefing.meals.map((meal: Legacy) => (
                   <button
                     key={meal.id}
                     type="button"
@@ -1270,7 +1381,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Open loops" title="Tasks to keep in mind" />
               <div className="space-y-2">
-                {briefing.tasks.length ? briefing.tasks.map((task) => (
+                {briefing.tasks.length ? briefing.tasks.map((task: Legacy) => (
                   <button
                     key={task.id}
                     type="button"
@@ -1291,7 +1402,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
   )
 }
 
-function MissionLaunchModal({ doc, gate, remainingMs, onProceed, onAbort }) {
+function MissionLaunchModal({ doc, gate, remainingMs, onProceed, onAbort }: { doc: TripDocument; gate: TimelineGate | null; remainingMs: number; onProceed: () => void; onAbort: () => void }) {
   if (!gate) return null
 
   const context = buildOperationGateContext(doc, gate)
@@ -1356,7 +1467,7 @@ function MissionLaunchModal({ doc, gate, remainingMs, onProceed, onAbort }) {
               {context.deploymentLabel}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              {statusCards.map((card) => {
+              {statusCards.map((card: Legacy) => {
                 const Icon = card.icon
                 return (
                   <div
@@ -1462,13 +1573,13 @@ function MissionLaunchModal({ doc, gate, remainingMs, onProceed, onAbort }) {
   )
 }
 
-function MissionFeedTray({ items, onActivateItem }) {
+function MissionFeedTray({ items, onActivateItem }: { items: FeedItem[]; onActivateItem: (item: FeedItem) => void }) {
   if (!items.length) return null
 
   return (
     <div className="pointer-events-none absolute bottom-4 right-4 z-40 w-[320px]" aria-live="polite" aria-atomic="false">
       <div className="pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col-reverse gap-2 overflow-y-auto pr-1">
-        {items.map((item) => {
+        {items.map((item: Legacy) => {
           const FeedIcon =
             item.kind === 'departure'
               ? CarFront
@@ -1523,7 +1634,7 @@ function MissionFeedTray({ items, onActivateItem }) {
   )
 }
 
-function SituationBoard({ context, onOpenEntity, onOpenBriefing }) {
+function SituationBoard({ context, onOpenEntity, onOpenBriefing }: { context: TimelineContext; onOpenEntity: OpenEntityHandler; onOpenBriefing: () => void }) {
   const sections = [
     { title: 'Live now', items: context.liveEntities, emptyLabel: 'Nothing active in this window.' },
     { title: 'Coming up', items: [...context.nextEntities, ...context.prepSoon].slice(0, 4), emptyLabel: 'No immediate follow-ups.' },
@@ -1563,13 +1674,13 @@ function SituationBoard({ context, onOpenEntity, onOpenBriefing }) {
       </div>
 
       <div className="space-y-4 p-4">
-        {sections.map((section) => (
+        {sections.map((section: Legacy) => (
           <div key={section.title}>
             <div className="mb-2 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
               {section.title}
             </div>
             <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-              {section.items.length ? section.items.map((item) => (
+              {section.items.length ? section.items.map((item: Legacy) => (
                 <button
                   key={`${item.type}:${item.id}`}
                   type="button"
@@ -1607,15 +1718,33 @@ function TimelineBoard({
   onTogglePlayback,
   onRestartPlayback,
   onSetPlaybackSpeed,
+}: {
+  doc: TripDocument
+  selection: EntitySelection
+  onSelectEntity: OpenEntityHandler
+  onSetCursor?: (cursorSlot: number) => void
+  weatherDays?: TripDayWeather[]
+  cursorSlot?: number
+  isPlaying?: boolean
+  playbackSpeed?: number
+  onTogglePlayback?: () => void
+  onRestartPlayback?: () => void
+  onSetPlaybackSpeed?: (speed: number) => void
 }) {
-  const days = weatherDays?.length ? weatherDays : DAYS
+  const days: TripDayWeather[] = weatherDays?.length
+    ? weatherDays
+    : DAYS.map((day: Legacy) => ({
+      ...day,
+      weatherIconKey: 'cloud',
+      weatherLocation: day.title,
+    }))
   const totalVisibleSlots = days.length * VISIBLE_TIMELINE_SLOT_SPAN
   const visibleHoursPerDay = VISIBLE_TIMELINE_END_HOUR - VISIBLE_TIMELINE_START_HOUR
-  const timelineRef = useRef(null)
+  const timelineRef = useRef<HTMLDivElement | null>(null)
   const draggingRef = useRef(false)
   const [liveNow, setLiveNow] = useState(() => new Date())
-  const [hoverCursorSlot, setHoverCursorSlot] = useState(null)
-  const rowHeights = {
+  const [hoverCursorSlot, setHoverCursorSlot] = useState<number | null>(null)
+  const rowHeights: Record<string, number> = {
     travel: 72,
     activities: 44,
     support: 44,
@@ -1625,13 +1754,13 @@ function TimelineBoard({
     { id: 'activities', label: 'Main Ops' },
     { id: 'support', label: 'Support' },
   ]
-  const rowLayouts = rows.map((row, index) => ({
+  const rowLayouts = rows.map((row: Legacy,  index: Legacy) => ({
     ...row,
     height: rowHeights[row.id] || 40,
-    top: rows.slice(0, index).reduce((sum, item) => sum + (rowHeights[item.id] || 40), 0),
+    top: rows.slice(0, index).reduce((sum: Legacy,  item: Legacy) => sum + (rowHeights[item.id] || 40), 0),
   }))
-  const timelineHeight = rowLayouts.reduce((sum, row) => sum + row.height, 0)
-  const familyLaneMap = new Map(doc.families.map((family, index) => [family.id, index]))
+  const timelineHeight = rowLayouts.reduce((sum: Legacy,  row: Legacy) => sum + row.height, 0)
+  const familyLaneMap = new Map(doc.families.map((family: Legacy,  index: Legacy) => [family.id, index]))
   const actualTimelineRatio = projectCursorToVisibleTimelineRatio(getCurrentTripCursor(liveNow), days.length)
   const actualNowLabel = `${liveNow.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })} ${liveNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
   const hoverCursorLabel = hoverCursorSlot == null ? null : getSlotLabel(hoverCursorSlot)
@@ -1642,7 +1771,7 @@ function TimelineBoard({
     return () => window.clearInterval(timerId)
   }, [])
 
-  const scrubToClientX = useCallback((clientX) => {
+  const scrubToClientX = useCallback((clientX: number) => {
     if (!timelineRef.current) return null
     const bounds = timelineRef.current.getBoundingClientRect()
     const ratio = Math.min(Math.max((clientX - bounds.left) / bounds.width, 0), 0.999999)
@@ -1696,8 +1825,8 @@ function TimelineBoard({
           </div>
         </div>
         <div className="flex flex-1 divide-x divide-[#30363D]/30">
-          {days.map((day) => {
-            const WeatherIcon = WEATHER_ICONS[day.weatherIconKey] || Cloud
+          {days.map((day: Legacy) => {
+            const WeatherIcon = WEATHER_ICONS[day.weatherIconKey as keyof typeof WEATHER_ICONS] || Cloud
             return (
               <div key={day.id} className="flex flex-1 items-center gap-3 px-4">
                 <WeatherIcon size={18} className="text-[#58A6FF]" />
@@ -1718,7 +1847,7 @@ function TimelineBoard({
 
       <div className="flex" style={{ height: `${timelineHeight}px` }}>
         <div className="flex w-28 flex-col border-r border-[#30363D] bg-[#0d1117]/50">
-          {rowLayouts.map((row) => (
+          {rowLayouts.map((row: Legacy) => (
             <div
               key={row.id}
               className="flex items-center justify-center border-b border-[#30363D]/30 px-2 text-center text-[9px] font-black uppercase tracking-widest text-[#8B949E] last:border-b-0"
@@ -1736,7 +1865,7 @@ function TimelineBoard({
           onMouseLeave={() => {
             if (!draggingRef.current) setHoverCursorSlot(null)
           }}
-          onMouseDown={(event) => {
+          onMouseDown={(event: Legacy) => {
             draggingRef.current = true
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot != null) {
@@ -1744,7 +1873,7 @@ function TimelineBoard({
               onSetCursor?.(nextCursorSlot)
             }
           }}
-          onMouseMove={(event) => {
+          onMouseMove={(event: Legacy) => {
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot == null) return
             setHoverCursorSlot(nextCursorSlot)
@@ -1752,7 +1881,7 @@ function TimelineBoard({
               onSetCursor?.(nextCursorSlot)
             }
           }}
-          onClick={(event) => {
+          onClick={(event: Legacy) => {
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot != null) {
               onSetCursor?.(nextCursorSlot)
@@ -1760,7 +1889,7 @@ function TimelineBoard({
           }}
         >
           <div className="absolute inset-0">
-            {Array.from({ length: days.length * visibleHoursPerDay + 1 }).map((_, index) => {
+            {Array.from({ length: days.length * visibleHoursPerDay + 1 }).map((_: Legacy,  index: Legacy) => {
               const hour = index % visibleHoursPerDay
               const actualHour = VISIBLE_TIMELINE_START_HOUR + hour
               const isMajor = hour % TIMELINE_HOURS_PER_SLOT === 0
@@ -1779,8 +1908,8 @@ function TimelineBoard({
           </div>
 
           <div className="absolute inset-0">
-            {rowLayouts.map((row) => {
-              const rowItems = doc.itineraryItems.filter((item) => item.rowId === row.id)
+            {rowLayouts.map((row: Legacy) => {
+              const rowItems = doc.itineraryItems.filter((item: Legacy) => item.rowId === row.id)
               const laneCount = row.id === 'travel' ? Math.max(doc.families.length, 1) : 1
               const laneHeight = row.height / laneCount
 
@@ -1791,7 +1920,7 @@ function TimelineBoard({
                   style={{ top: `${row.top}px`, height: `${row.height}px` }}
                 >
                   {row.id === 'travel'
-                    ? doc.families.slice(1).map((_, index) => (
+                    ? doc.families.slice(1).map((_: Legacy,  index: Legacy) => (
                         <div
                           key={`travel-divider-${index}`}
                           className="absolute left-0 right-0 border-t border-[#30363D]/20"
@@ -1800,7 +1929,7 @@ function TimelineBoard({
                       ))
                     : null}
 
-                  {rowItems.map((item) => {
+                  {rowItems.map((item: Legacy) => {
                     const itemSpan = getItineraryItemEffectiveSpan(doc, item)
                     const itemEnd = item.startSlot + itemSpan
                     const itemDayIndex = Math.min(Math.max(Math.floor(item.startSlot / TIME_SLOTS.length), 0), days.length - 1)
@@ -1834,14 +1963,14 @@ function TimelineBoard({
                       <button
                         key={item.id}
                         type="button"
-                        onClick={(event) => {
+                        onClick={(event: Legacy) => {
                           event.stopPropagation()
                           onSetCursor?.(item.startSlot)
                           onSelectEntity(item.type, item.id)
                         }}
                         className={cn(
                           'absolute flex cursor-pointer items-center rounded-[1px] border px-2 text-left transition-[transform,box-shadow] hover:-translate-y-[1px]',
-                          TIMELINE_COLORS[item.color],
+                          TIMELINE_COLORS[item.color as TimelineColorKey],
                           selected ? 'ring-1 ring-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.15)]' : '',
                           compactTravelItem ? 'justify-center px-1' : '',
                         )}
@@ -1922,13 +2051,13 @@ function TimelineBoard({
           </div>
         </div>
         <div className="flex flex-1 divide-x divide-[#30363D]/50">
-          {days.map((day, dayIndex) => (
+          {days.map((day: Legacy,  dayIndex: Legacy) => (
             <div key={day.id} className="relative flex flex-1 flex-col">
               <div className="absolute -top-2 left-2 bg-[#0d1117] px-1.5 text-[8px] font-black uppercase tracking-widest text-[#58A6FF]">
                 {day.shortLabel}
               </div>
               <div className="flex h-full">
-                {Array.from({ length: visibleHoursPerDay }).map((_, hourOffset) => {
+                {Array.from({ length: visibleHoursPerDay }).map((_: Legacy,  hourOffset: Legacy) => {
                   const hour = VISIBLE_TIMELINE_START_HOUR + hourOffset
                   const hourCursor = clampTimelineCursor(dayIndex * TIME_SLOTS.length + hour / TIMELINE_HOURS_PER_SLOT)
                   const showLabel = (hour - VISIBLE_TIMELINE_START_HOUR) % 3 === 0
@@ -1963,8 +2092,8 @@ function TimelineBoard({
   )
 }
 
-function IntelAction({ icon: Icon, label, onClick, tone = 'default' }) {
-  const tones = {
+function IntelAction({ icon: Icon, label, onClick, tone = 'default' }: LegacyProps) {
+  const tones: Record<string, string> = {
     default: 'border-[#30363D] bg-[#0d1117] text-[#C9D1D9] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]',
     amber: 'border-[#D29922]/30 bg-[#D29922]/10 text-[#D29922] hover:border-[#D29922]',
   }
@@ -1984,7 +2113,7 @@ function IntelAction({ icon: Icon, label, onClick, tone = 'default' }) {
   )
 }
 
-function InfoRow({ icon: Icon, label, value, muted = false }) {
+function InfoRow({ icon: Icon, label, value, muted = false }: LegacyProps) {
   if (!value) return null
 
   return (
@@ -1998,7 +2127,7 @@ function InfoRow({ icon: Icon, label, value, muted = false }) {
   )
 }
 
-function formatMealTravelSignal(meal, location) {
+function formatMealTravelSignal(meal: Legacy,  location: Legacy) {
   if (!location) return 'Venue pending'
   if (location.id === 'pine-airbnb') return 'Basecamp meal'
   if (location.basecampDrive?.durationText) {
@@ -2008,7 +2137,7 @@ function formatMealTravelSignal(meal, location) {
   return 'Venue intel loading'
 }
 
-function getMealContextNarrative(meal, location, linkedMission) {
+function getMealContextNarrative(meal: Legacy,  location: Legacy,  linkedMission: Legacy) {
   if (location?.id === 'pine-airbnb') {
     return 'Cook-in coverage keeps the day flexible and reduces logistics overhead for families with kids.'
   }
@@ -2024,9 +2153,9 @@ function getMealContextNarrative(meal, location, linkedMission) {
   return linkedMission?.summary || location?.summary || meal.note
 }
 
-function getMealMedia(location) {
-  const seen = new Set()
-  return [...(location?.livePhotos || []), ...(location?.photos || [])].filter((media) => {
+function getMealMedia(location: Legacy) {
+  const seen = new Set<Legacy>()
+  return [...(location?.livePhotos || []), ...(location?.photos || [])].filter((media: Legacy) => {
     const key = media.imageUrl || media.id
     if (!key || seen.has(key)) return false
     seen.add(key)
@@ -2034,7 +2163,7 @@ function getMealMedia(location) {
   })
 }
 
-const ACTIVITY_RESEARCH = {
+const ACTIVITY_RESEARCH: Record<string, Legacy> = {
   'thu-transit': {
     headline: 'Arrival day should optimize for smooth landfall, not ambition.',
     cards: [
@@ -2164,7 +2293,7 @@ const JIANG_ROAD_TRIP_STOP_DEFAULTS = [
   },
 ]
 
-const FAMILY_VEHICLE_DEFAULTS = {
+const FAMILY_VEHICLE_DEFAULTS: Record<string, Legacy> = {
   'north-star': {
     originAddress: '2800 E Observatory Rd, Los Angeles, CA 90027',
     originCoordinates: { lat: 34.1184, lng: -118.3004 },
@@ -2198,7 +2327,7 @@ const YOSEMITE_ROUTE_DEFAULTS = {
     'Primary Saturday route anchor. Using the west entrance keeps park access, traffic watch, and drive planning grounded in a real checkpoint.',
 }
 
-const ROUTE_SIM_DEFAULTS = {
+const ROUTE_SIM_DEFAULTS: Record<string, Legacy> = {
   'route-la-north-star': {
     originCoordinates: { lat: 34.1184, lng: -118.3004 },
     stopLocationIds: ['north-star-kettleman-lunch', 'north-star-oakdale-break'],
@@ -2244,12 +2373,12 @@ const ROUTE_SIM_DEFAULTS = {
   },
 }
 
-function ActivityResearchCard({ eyebrow, title, bullets }) {
+function ActivityResearchCard({ eyebrow, title, bullets }: LegacyProps) {
   return (
     <div className="border border-[#30363D] bg-[#0d1117] p-4">
       <SectionTitle eyebrow={eyebrow} title={title} />
       <div className="space-y-2">
-        {bullets.map((bullet) => (
+        {bullets.map((bullet: Legacy) => (
           <div key={bullet} className="text-[11px] leading-relaxed text-[#C9D1D9]">
             {bullet}
           </div>
@@ -2259,7 +2388,7 @@ function ActivityResearchCard({ eyebrow, title, bullets }) {
   )
 }
 
-function TransitStopCard({ stop, onSelectEntity }) {
+function TransitStopCard({ stop, onSelectEntity }: LegacyProps) {
   return (
     <button
       type="button"
@@ -2289,19 +2418,19 @@ function ItineraryPage({
   weatherDays,
   mapWeather,
   mapWeatherTargets,
-}) {
+}: LegacyProps) {
   const [briefingOpen, setBriefingOpen] = useState(false)
-  const [playbackCursorSlot, setPlaybackCursorSlot] = useState(null)
+  const [playbackCursorSlot, setPlaybackCursorSlot] = useState<Legacy>(null)
   const [isPlaybackPlaying, setIsPlaybackPlaying] = useState(false)
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
-  const [missionFeedItems, setMissionFeedItems] = useState([])
+  const [missionFeedItems, setMissionFeedItems] = useState<Legacy[]>([])
   const [missionFeedNow, setMissionFeedNow] = useState(() => Date.now())
-  const [operationGate, setOperationGate] = useState(null)
+  const [operationGate, setOperationGate] = useState<Legacy>(null)
   const [operationGateRemainingMs, setOperationGateRemainingMs] = useState(0)
   const playbackCursorRef = useRef(doc.ui.timeline.cursorSlot)
   const playbackRunRef = useRef({ anchorCursor: doc.ui.timeline.cursorSlot, anchorTimestamp: null })
-  const operationGateRef = useRef(null)
-  const triggeredOperationCheckpointIdsRef = useRef(new Set())
+  const operationGateRef = useRef<Legacy>(null)
+  const triggeredOperationCheckpointIdsRef = useRef(new Set<Legacy>())
   const effectiveCursorSlot = playbackCursorSlot ?? doc.ui.timeline.cursorSlot
   const context = useMemo(() => getTimelineContext(doc, effectiveCursorSlot), [doc, effectiveCursorSlot])
   const dailyBriefing = useMemo(() => buildDailyBriefing(doc, context), [doc, context])
@@ -2313,7 +2442,7 @@ function ItineraryPage({
   const renderedMissionFeedItems = useMemo(() => {
     const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
     return missionFeedItems
-      .map((item) => {
+      .map((item: Legacy) => {
         const ageMs = Math.max(missionFeedNow - (item.createdAt || 0), 0)
         if (ageMs >= expirationMs) return null
         return {
@@ -2332,8 +2461,8 @@ function ItineraryPage({
     operationGateRef.current = operationGate
   }, [operationGate])
 
-  const updateMissionFeedItems = useCallback((updater) => {
-    setMissionFeedItems((current) => (typeof updater === 'function' ? updater(current) : updater))
+  const updateMissionFeedItems = useCallback((updater: Legacy) => {
+    setMissionFeedItems((current: Legacy) => (typeof updater === 'function' ? updater(current) : updater))
   }, [])
 
   const clearMissionFeed = useCallback(() => {
@@ -2348,8 +2477,8 @@ function ItineraryPage({
       const now = Date.now()
       const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
       setMissionFeedNow(now)
-      updateMissionFeedItems((current) => {
-        const next = current.filter((item) => now - (item.createdAt || 0) < expirationMs)
+      updateMissionFeedItems((current: Legacy) => {
+        const next = current.filter((item: Legacy) => now - (item.createdAt || 0) < expirationMs)
         return next.length === current.length ? current : next
       })
     }
@@ -2359,19 +2488,19 @@ function ItineraryPage({
     return () => window.clearInterval(intervalId)
   }, [missionFeedItems.length, updateMissionFeedItems])
 
-  const handlePlaybackFeedItems = useCallback((items) => {
+  const handlePlaybackFeedItems = useCallback((items: Legacy) => {
     const nextItems = (Array.isArray(items) ? items : [items]).filter(Boolean)
     if (!nextItems.length) return
 
     const createdAt = Date.now()
-    updateMissionFeedItems((current) => {
+    updateMissionFeedItems((current: Legacy) => {
       const next = [...current]
-      nextItems.forEach((item) => {
+      nextItems.forEach((item: Legacy) => {
         const nextItem = {
           ...item,
           createdAt,
         }
-        const existingIndex = next.findIndex((existing) => existing.key === item.key)
+        const existingIndex = next.findIndex((existing: Legacy) => existing.key === item.key)
         if (existingIndex >= 0) {
           next.splice(existingIndex, 1)
         }
@@ -2382,7 +2511,7 @@ function ItineraryPage({
     setMissionFeedNow(createdAt)
   }, [updateMissionFeedItems])
 
-  const handleMissionFeedActivate = useCallback((item) => {
+  const handleMissionFeedActivate = useCallback((item: Legacy) => {
     if (item.entityType && item.entityId) {
       onOpenEntity(item.entityType, item.entityId)
       return
@@ -2404,16 +2533,16 @@ function ItineraryPage({
     setOperationGateRemainingMs(0)
   }, [])
 
-  const armOperationCheckpointsFromCursor = useCallback((cursorSlot) => {
+  const armOperationCheckpointsFromCursor = useCallback((cursorSlot: Legacy) => {
     const normalizedCursor = clampTimelineCursor(cursorSlot)
     triggeredOperationCheckpointIdsRef.current = new Set(
       operationCheckpoints
-        .filter((checkpoint) => checkpoint.startSlot <= normalizedCursor + 0.001)
-        .map((checkpoint) => checkpoint.id),
+        .filter((checkpoint: Legacy) => checkpoint.startSlot <= normalizedCursor + 0.001)
+        .map((checkpoint: Legacy) => checkpoint.id),
     )
   }, [operationCheckpoints])
 
-  const triggerOperationGate = useCallback((checkpoint) => {
+  const triggerOperationGate = useCallback((checkpoint: Legacy) => {
     const holdCursor = clampTimelineCursor(checkpoint.startSlot)
     playbackCursorRef.current = holdCursor
     setPlaybackCursorSlot(holdCursor)
@@ -2460,7 +2589,7 @@ function ItineraryPage({
       day: dailyBriefing?.day?.id,
     })
 
-    const handleKeyDown = (event) => {
+    const handleKeyDown = (event: Legacy) => {
       if (event.key === 'Escape') {
         console.info('[TripCommand] Daily briefing closed via Escape')
         setBriefingOpen(false)
@@ -2474,14 +2603,14 @@ function ItineraryPage({
   useEffect(() => {
     if (!isPlaybackPlaying) return undefined
 
-    let frameId = null
+    let frameId: Legacy = null
     const maxCursor = clampTimelineCursor(DAYS.length * TIME_SLOTS.length)
     playbackRunRef.current = {
       anchorCursor: playbackCursorRef.current,
       anchorTimestamp: null,
     }
 
-    const animate = (timestamp) => {
+    const animate = (timestamp: Legacy) => {
       if (operationGateRef.current) {
         playbackRunRef.current.anchorTimestamp = timestamp
         frameId = window.requestAnimationFrame(animate)
@@ -2540,7 +2669,7 @@ function ItineraryPage({
   }, [isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed, triggerOperationGate])
 
   const handleTimelineCursorChange = useCallback(
-    (slot) => {
+    (slot: Legacy) => {
       const nextCursor = clampTimelineCursor(slot)
       setOperationGate(null)
       setOperationGateRemainingMs(0)
@@ -2639,7 +2768,7 @@ function ItineraryPage({
               <PageNotesCard
                 title="Planner note"
                 value={getPageNote(doc, 'itinerary')}
-                onChange={(value) => onUpdatePageNote('itinerary', value)}
+                onChange={(value: Legacy) => onUpdatePageNote('itinerary', value)}
                 onConvert={() => onConvertPageNote('itinerary')}
                 placeholder="Add a planning note..."
               />
@@ -2695,7 +2824,7 @@ function ItineraryPage({
         <DailyBriefingModal
           briefing={dailyBriefing}
           onClose={() => setBriefingOpen(false)}
-          onOpenEntity={(type, id) => {
+          onOpenEntity={(type: Legacy,  id: Legacy) => {
             onOpenEntity(type, id)
             setBriefingOpen(false)
           }}
@@ -2714,8 +2843,10 @@ function ItineraryPage({
   )
 }
 
-function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }) {
-  const airbnb = getEntityById(doc, 'location', 'pine-airbnb')
+function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: LegacyProps) {
+  const airbnb = getTypedEntityById(doc, 'location', 'pine-airbnb')
+  if (!airbnb) return null
+
   const showExternalListing = Boolean(airbnb?.externalUrl)
   const showManual = Boolean(airbnb?.manualUrl)
   const isSanitizedStay = !showExternalListing && !showManual
@@ -2738,7 +2869,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
           ) : null}
         </SelectableCard>
         <div className="space-y-4">
-          {doc.stayItems.map((item) => (
+          {doc.stayItems.map((item: Legacy) => (
             <SelectableCard
               key={item.id}
               selected={selection.type === item.type && selection.id === item.id}
@@ -2834,7 +2965,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               {showExternalListing ? (
                 <button
                   type="button"
-                  onClick={() => window.open(airbnb.externalUrl, '_blank', 'noreferrer')}
+                  onClick={() => (window.open as Legacy)(airbnb.externalUrl, '_blank', 'noreferrer')}
                   className="inline-flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]"
                 >
                   Open listing <ExternalLink size={12} />
@@ -2842,7 +2973,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               ) : null}
             </div>
             <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              {(airbnb.photos || []).slice(0, 2).map((media) => (
+              {(airbnb.photos || []).slice(0, 2).map((media: Legacy) => (
                 <a
                   key={media.id}
                   href={media.sourceUrl || media.imageUrl}
@@ -2865,7 +2996,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               {showManual ? (
                 <button
                   type="button"
-                  onClick={() => window.open(airbnb.manualUrl, '_blank', 'noreferrer')}
+                  onClick={() => (window.open as Legacy)(airbnb.manualUrl, '_blank', 'noreferrer')}
                   className="flex w-full items-center justify-between border border-[#30363D] bg-[#0d1117] px-3 py-3 text-left hover:border-[#58A6FF]/40"
                 >
                   <div>
@@ -2885,7 +3016,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
 
         <SectionTitle eyebrow="House Ops" title="Basecamp assignments" meta="Sleep + arrival + reset" />
         <div className="mb-6 grid gap-4 md:grid-cols-2">
-          {doc.families.map((family, index) => (
+          {doc.families.map((family: Legacy,  index: Legacy) => (
             <SelectableCard
               key={family.id}
               selected={selection.type === 'family' && selection.id === family.id}
@@ -2903,7 +3034,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
         <PageNotesCard
           title="Stay note"
           value={getPageNote(doc, 'stay')}
-          onChange={(value) => onUpdatePageNote('stay', value)}
+          onChange={(value: Legacy) => onUpdatePageNote('stay', value)}
           onConvert={() => onConvertPageNote('stay')}
           placeholder="Record gate instructions, sleeping concerns, quiet hours, or house logistics..."
         />
@@ -2912,14 +3043,14 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
   )
 }
 
-function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }) {
+function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }: LegacyProps) {
   const selectedMeal = selection.type === 'meal'
-    ? getEntityById(doc, 'meal', selection.id) || doc.meals[0]
+    ? getTypedEntityById(doc, 'meal', selection.id) || doc.meals[0]
     : doc.meals[0]
   const selectedLocation = getLocationForEntity(doc, selectedMeal)
-  const selectedTasks = getTasksForEntity(doc, selectedMeal).filter((task) => task.status !== 'done').slice(0, 2)
+  const selectedTasks = getTasksForEntity(doc, selectedMeal).filter((task: Legacy) => task.status !== 'done').slice(0, 2)
   const linkedMission = getLinkedEntities(doc, selectedMeal).find(
-    (entity) => entity.type === 'activity' || entity.type === 'itineraryItem',
+    (entity: Legacy) => entity.type === 'activity' || entity.type === 'itineraryItem',
   )
   const media = getMealMedia(selectedLocation).slice(0, 3)
   const travelSummary = selectedLocation?.basecampDrive
@@ -2937,7 +3068,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Meal Logistics" title="Shared feeding plan" meta="Ownership + prep + kid friendliness" />
         <div className="space-y-3">
-          {doc.meals.map((meal) => (
+          {doc.meals.map((meal: Legacy) => (
             <div
               key={meal.id}
               className={cn(
@@ -3011,14 +3142,14 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                   <IntelAction
                     icon={MapPin}
                     label="Open in Google Maps"
-                    onClick={() => window.open(selectedLocation.externalUrl, '_blank', 'noreferrer')}
+                    onClick={() => (window.open as Legacy)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {selectedLocation?.websiteUrl ? (
                   <IntelAction
                     icon={Globe}
                     label="Venue website"
-                    onClick={() => window.open(selectedLocation.websiteUrl, '_blank', 'noreferrer')}
+                    onClick={() => (window.open as Legacy)(selectedLocation.websiteUrl, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {linkedMission ? (
@@ -3068,7 +3199,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                           Critical calls
                         </div>
                         <div className="space-y-2">
-                          {selectedTasks.map((task) => (
+                          {selectedTasks.map((task: Legacy) => (
                             <div key={task.id} className="text-[11px] text-[#C9D1D9]">
                               {task.title}
                             </div>
@@ -3085,7 +3216,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
               <div className="mt-5 border border-[#30363D] bg-[#161b22] p-5">
                 <SectionTitle eyebrow="Visual Intel" title="Venue references" meta={`${media.length} asset${media.length > 1 ? 's' : ''}`} />
                 <div className="grid gap-4 md:grid-cols-3">
-                  {media.map((item) => (
+                  {media.map((item: Legacy) => (
                     <a
                       key={item.id}
                       href={item.sourceUrl || selectedLocation?.externalUrl || '#'}
@@ -3113,7 +3244,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
               <PageNotesCard
                 title="Feeding note"
                 value={getPageNote(doc, 'meals')}
-                onChange={(value) => onUpdatePageNote('meals', value)}
+                onChange={(value: Legacy) => onUpdatePageNote('meals', value)}
                 onConvert={() => onConvertPageNote('meals')}
                 placeholder="Capture grocery strategy, allergy notes, kid fallback meals, or timing calls for restaurant stops..."
               />
@@ -3125,15 +3256,15 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
   )
 }
 
-function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }) {
+function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }: LegacyProps) {
   const selectedActivity = useMemo(
-    () => (selection.type === 'activity' ? doc.activities.find((activity) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
+    () => (selection.type === 'activity' ? doc.activities.find((activity: Legacy) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
     [doc.activities, selection],
   )
   const selectedLocation = useMemo(() => getLocationForEntity(doc, selectedActivity), [doc, selectedActivity])
   const linkedEntities = useMemo(() => getLinkedEntities(doc, selectedActivity), [doc, selectedActivity])
   const linkedTimelineItems = useMemo(
-    () => linkedEntities.filter((entity) => entity.type === 'itineraryItem'),
+    () => linkedEntities.filter((entity: Legacy) => entity.type === 'itineraryItem'),
     [linkedEntities],
   )
   const research = selectedActivity ? ACTIVITY_RESEARCH[selectedActivity.id] : null
@@ -3141,12 +3272,12 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
     if (!selectedActivity || selectedActivity.id !== 'thu-transit') return []
 
     return linkedTimelineItems
-      .filter((item) => item.familyIds?.length === 1)
-      .map((item) => {
-        const family = getEntityById(doc, 'family', item.familyIds[0])
+      .filter((item: Legacy) => item.familyIds?.length === 1)
+      .map((item: Legacy) => {
+        const family = getTypedEntityById(doc, 'family', item.familyIds[0])
         const route = getRouteForEntity(doc, item)
         const stops = (route?.stopLocationIds || [])
-          .map((stopId) => getEntityById(doc, 'location', stopId))
+          .map((stopId: Legacy) => getTypedEntityById(doc, 'location', stopId))
           .filter(Boolean)
 
         return family && route
@@ -3160,19 +3291,19 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
       })
       .filter(Boolean)
   }, [doc, linkedTimelineItems, selectedActivity])
-  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState(null)
+  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState<Legacy>(null)
   useEffect(() => {
     if (!transitFamilies.length) {
       setSelectedTransitFamilyId(null)
       return
     }
 
-    if (!transitFamilies.some((entry) => entry.family.id === selectedTransitFamilyId)) {
-      setSelectedTransitFamilyId(transitFamilies[0].family.id)
+    if (!transitFamilies.some((entry: Legacy) => entry.family.id === selectedTransitFamilyId)) {
+      setSelectedTransitFamilyId((transitFamilies[0] as Legacy).family.id)
     }
   }, [selectedTransitFamilyId, transitFamilies])
   const selectedTransitPlan = useMemo(
-    () => transitFamilies.find((entry) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
+    () => transitFamilies.find((entry: Legacy) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
     [selectedTransitFamilyId, transitFamilies],
   )
   const [draftTitle, setDraftTitle] = useState('')
@@ -3185,7 +3316,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Activity Board" title="Day missions" meta={`${doc.activities.length} tracked`} />
         <div className="space-y-4">
-          {doc.activities.map((activity) => (
+          {doc.activities.map((activity: Legacy) => (
             <SelectableCard
               key={activity.id}
               selected={selection.type === 'activity' && selection.id === activity.id}
@@ -3211,17 +3342,17 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
           <div className="space-y-3">
             <input
               value={draftTitle}
-              onChange={(event) => setDraftTitle(event.target.value)}
+              onChange={(event: Legacy) => setDraftTitle(event.target.value)}
               placeholder="Activity title"
               className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
             <div className="grid grid-cols-[110px_1fr] gap-2">
               <select
                 value={draftDayId}
-                onChange={(event) => setDraftDayId(event.target.value)}
+                onChange={(event: Legacy) => setDraftDayId(event.target.value)}
                 className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               >
-                {DAYS.map((day) => (
+                {DAYS.map((day: Legacy) => (
                   <option key={day.id} value={day.id}>
                     {day.shortLabel.toUpperCase()}
                   </option>
@@ -3229,7 +3360,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               </select>
               <input
                 value={draftWindow}
-                onChange={(event) => setDraftWindow(event.target.value)}
+                onChange={(event: Legacy) => setDraftWindow(event.target.value)}
                 placeholder="Window label"
                 className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               />
@@ -3284,7 +3415,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                   <IntelAction
                     icon={MapPin}
                     label="Open location"
-                    onClick={() => window.open(selectedLocation.externalUrl, '_blank', 'noreferrer')}
+                    onClick={() => (window.open as Legacy)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {selectedLocation ? (
@@ -3312,7 +3443,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               <div className="mt-5 border border-[#30363D] bg-[#161b22] p-5">
                 <SectionTitle eyebrow="Transit Planning" title="Family road trips" meta={`${transitFamilies.length} active routes`} />
                 <div className="mb-4 flex flex-wrap gap-2">
-                  {transitFamilies.map((entry) => (
+                  {transitFamilies.map((entry: Legacy) => (
                     <button
                       key={entry.family.id}
                       type="button"
@@ -3357,7 +3488,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                     <SectionTitle eyebrow="Road-trip Stops" title="Good break points" meta={`${selectedTransitPlan.stops.length} planned`} />
                     {selectedTransitPlan.stops.length ? (
                       <div className="grid gap-3 md:grid-cols-2">
-                        {selectedTransitPlan.stops.map((stop) => (
+                        {selectedTransitPlan.stops.map((stop: Legacy) => (
                           <TransitStopCard key={stop.id} stop={stop} onSelectEntity={onSelectEntity} />
                         ))}
                       </div>
@@ -3369,7 +3500,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               </div>
             ) : research?.cards?.length ? (
               <div className="mt-5 grid gap-4 xl:grid-cols-2">
-                {research.cards.map((card) => (
+                {research.cards.map((card: Legacy) => (
                   <ActivityResearchCard
                     key={`${selectedActivity.id}-${card.title}`}
                     eyebrow={card.eyebrow}
@@ -3384,7 +3515,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               <PageNotesCard
                 title="Activities note"
                 value={getPageNote(doc, 'activities')}
-                onChange={(value) => onUpdatePageNote('activities', value)}
+                onChange={(value: Legacy) => onUpdatePageNote('activities', value)}
                 onConvert={() => onConvertPageNote('activities')}
                 placeholder="Capture alternate plans, micro-itineraries, weather triggers, or new activity ideas..."
               />
@@ -3409,18 +3540,18 @@ function ExpensesPage({
   onResetExpenseAllocationsToEqual,
   onUpdatePageNote,
   onConvertPageNote,
-}) {
+}: LegacyProps) {
   const activeExpenseId =
-    selection.type === 'expense' && doc.expenses.some((expense) => expense.id === selection.id)
+    selection.type === 'expense' && doc.expenses.some((expense: Legacy) => expense.id === selection.id)
       ? selection.id
       : doc.expenses[0]?.id
-  const activeExpense = doc.expenses.find((expense) => expense.id === activeExpenseId) || null
+  const activeExpense = doc.expenses.find((expense: Legacy) => expense.id === activeExpenseId) || null
   const [amountDraft, setAmountDraft] = useState('')
-  const [manualAllocationDrafts, setManualAllocationDrafts] = useState({})
+  const [manualAllocationDrafts, setManualAllocationDrafts] = useState<Legacy>({})
   const [customPayerDraft, setCustomPayerDraft] = useState('')
-  const total = useMemo(() => doc.expenses.reduce((sum, expense) => sum + expense.amount, 0), [doc.expenses])
+  const total = useMemo(() => doc.expenses.reduce((sum: Legacy,  expense: Legacy) => sum + expense.amount, 0), [doc.expenses])
   const outstanding = useMemo(
-    () => doc.expenses.filter((expense) => !expense.settled).reduce((sum, expense) => sum + expense.amount, 0),
+    () => doc.expenses.filter((expense: Legacy) => !expense.settled).reduce((sum: Legacy,  expense: Legacy) => sum + expense.amount, 0),
     [doc.expenses],
   )
   const familyBurden = useMemo(() => getFamilyExpenseBurden(doc.expenses, doc.families), [doc.expenses, doc.families])
@@ -3429,7 +3560,7 @@ function ExpensesPage({
     [activeExpense, doc.families],
   )
   const manualAllocatedTotal = useMemo(
-    () => activeAllocations.reduce((sum, allocation) => sum + allocation.amount, 0),
+    () => activeAllocations.reduce((sum: Legacy,  allocation: Legacy) => sum + allocation.amount, 0),
     [activeAllocations],
   )
   const allocationDelta = activeExpense?.allocationMode === 'manual'
@@ -3437,7 +3568,7 @@ function ExpensesPage({
     : 0
   const payerOptions = useMemo(
     () => [
-      ...doc.families.map((family) => family.title),
+      ...doc.families.map((family: Legacy) => family.title),
       'Each family',
       'Unassigned',
     ],
@@ -3460,7 +3591,7 @@ function ExpensesPage({
 
     setManualAllocationDrafts(
       Object.fromEntries(
-        getExpenseAllocations(activeExpense, doc.families).map((allocation) => [
+        getExpenseAllocations(activeExpense, doc.families).map((allocation: Legacy) => [
           allocation.familyId,
           allocation.amount === 0 ? '' : String(allocation.amount),
         ]),
@@ -3475,11 +3606,11 @@ function ExpensesPage({
     setAmountDraft(parsed === 0 ? '' : String(parsed))
   }, [activeExpense, amountDraft, onUpdateExpenseFields])
 
-  const commitManualAllocationDraft = useCallback((familyId) => {
+  const commitManualAllocationDraft = useCallback((familyId: Legacy) => {
     if (!activeExpense) return
     const parsed = parseCurrencyInput(manualAllocationDrafts[familyId] || '')
     onUpdateExpenseAllocation(activeExpense.id, familyId, parsed)
-    setManualAllocationDrafts((current) => ({
+    setManualAllocationDrafts((current: Legacy) => ({
       ...current,
       [familyId]: parsed === 0 ? '' : String(parsed),
     }))
@@ -3515,13 +3646,13 @@ function ExpensesPage({
         </div>
 
         <div className="border border-[#30363D] bg-[#0d1117]">
-          {doc.expenses.map((expense) => (
+          {doc.expenses.map((expense: Legacy) => (
             <div
               key={expense.id}
               role="button"
               tabIndex={0}
               onClick={() => onSelectEntity('expense', expense.id)}
-              onKeyDown={(event) => {
+              onKeyDown={(event: Legacy) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault()
                   onSelectEntity('expense', expense.id)
@@ -3553,7 +3684,7 @@ function ExpensesPage({
               <div className="font-mono text-[12px] text-[#C9D1D9]">{formatCurrency(expense.amount)}</div>
               <button
                 type="button"
-                onClick={(event) => {
+                onClick={(event: Legacy) => {
                   event.stopPropagation()
                   onToggleExpenseSettled(expense.id)
                 }}
@@ -3594,7 +3725,7 @@ function ExpensesPage({
                   <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense title</span>
                   <input
                     value={activeExpense.title || ''}
-                    onChange={(event) => onUpdateExpenseFields(activeExpense.id, { title: event.target.value })}
+                    onChange={(event: Legacy) => onUpdateExpenseFields(activeExpense.id, { title: event.target.value })}
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
                 </label>
@@ -3603,7 +3734,7 @@ function ExpensesPage({
                   <div className="grid gap-2">
                     <select
                       value={payerMode}
-                      onChange={(event) => {
+                      onChange={(event: Legacy) => {
                         const value = event.target.value
                         if (value === '__custom__') {
                           onUpdateExpenseFields(activeExpense.id, { payer: customPayerDraft || activeExpense.payer || '' })
@@ -3613,7 +3744,7 @@ function ExpensesPage({
                       }}
                       className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                     >
-                      {payerOptions.map((option) => (
+                      {payerOptions.map((option: Legacy) => (
                         <option key={option} value={option}>
                           {option}
                         </option>
@@ -3623,7 +3754,7 @@ function ExpensesPage({
                     {payerMode === '__custom__' ? (
                       <input
                         value={customPayerDraft}
-                        onChange={(event) => setCustomPayerDraft(event.target.value)}
+                        onChange={(event: Legacy) => setCustomPayerDraft(event.target.value)}
                         onBlur={() => onUpdateExpenseFields(activeExpense.id, { payer: customPayerDraft.trim() || 'Unassigned' })}
                         placeholder="Custom payer label"
                         className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
@@ -3636,9 +3767,9 @@ function ExpensesPage({
                   <input
                     inputMode="decimal"
                     value={amountDraft}
-                    onChange={(event) => setAmountDraft(event.target.value)}
+                    onChange={(event: Legacy) => setAmountDraft(event.target.value)}
                     onBlur={commitAmountDraft}
-                    onFocus={(event) => event.target.select()}
+                    onFocus={(event: Legacy) => event.target.select()}
                     placeholder="0"
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
@@ -3667,7 +3798,7 @@ function ExpensesPage({
                     { id: 'equal', label: 'Equal split' },
                     { id: 'manual', label: 'Manual allocation' },
                     { id: 'individual', label: 'Individual' },
-                  ].map((mode) => (
+                  ].map((mode: Legacy) => (
                     <button
                       key={mode.id}
                       type="button"
@@ -3690,7 +3821,7 @@ function ExpensesPage({
                   </div>
                 ) : (
                   <div className="grid gap-2">
-                    {activeAllocations.map((allocation) => (
+                    {activeAllocations.map((allocation: Legacy) => (
                       <div
                         key={allocation.familyId}
                         className="grid grid-cols-[minmax(0,1fr)_132px] items-center gap-3 border border-[#30363D]/60 bg-[#0d1117] px-3 py-3"
@@ -3705,14 +3836,14 @@ function ExpensesPage({
                           <input
                             inputMode="decimal"
                             value={manualAllocationDrafts[allocation.familyId] ?? ''}
-                            onChange={(event) =>
-                              setManualAllocationDrafts((current) => ({
+                            onChange={(event: Legacy) =>
+                              setManualAllocationDrafts((current: Legacy) => ({
                                 ...current,
                                 [allocation.familyId]: event.target.value,
                               }))
                             }
                             onBlur={() => commitManualAllocationDraft(allocation.familyId)}
-                            onFocus={(event) => event.target.select()}
+                            onFocus={(event: Legacy) => event.target.select()}
                             placeholder="0"
                             className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                           />
@@ -3760,7 +3891,7 @@ function ExpensesPage({
                 <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense note</span>
                 <textarea
                   value={activeExpense.note || ''}
-                  onChange={(event) => onUpdateExpenseFields(activeExpense.id, { note: event.target.value })}
+                  onChange={(event: Legacy) => onUpdateExpenseFields(activeExpense.id, { note: event.target.value })}
                   rows={4}
                   className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                 />
@@ -3772,7 +3903,7 @@ function ExpensesPage({
         <div className="mb-6 border border-[#30363D] bg-[#161b22] p-4">
           <SectionTitle eyebrow="Shared Burden" title="Per-family exposure" />
           <div className="grid gap-2">
-            {familyBurden.map((entry) => (
+            {familyBurden.map((entry: Legacy) => (
               <div
                 key={entry.familyId}
                 className="flex items-center justify-between border border-[#30363D]/60 bg-[#0d1117] px-3 py-2"
@@ -3787,7 +3918,7 @@ function ExpensesPage({
         <PageNotesCard
           title="Expenses note"
           value={getPageNote(doc, 'expenses')}
-          onChange={(value) => onUpdatePageNote('expenses', value)}
+          onChange={(value: Legacy) => onUpdatePageNote('expenses', value)}
           onConvert={() => onConvertPageNote('expenses')}
           placeholder="Capture split assumptions, cash items, or things to settle after the trip..."
         />
@@ -3796,7 +3927,7 @@ function ExpensesPage({
   )
 }
 
-function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }) {
+function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: LegacyProps) {
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
@@ -3806,7 +3937,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
           <PageNotesCard
             title="Families note"
             value={getPageNote(doc, 'families')}
-            onChange={(value) => onUpdatePageNote('families', value)}
+            onChange={(value: Legacy) => onUpdatePageNote('families', value)}
             onConvert={() => onConvertPageNote('families')}
             placeholder="Capture cross-family coordination details..."
           />
@@ -3816,7 +3947,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
       <div className="overflow-y-auto bg-[#0d1117] p-6">
         <SectionTitle eyebrow="Readiness" title="Family task posture" />
         <div className="grid gap-4">
-          {doc.families.map((family) => {
+          {doc.families.map((family: Legacy) => {
             const tasks = getTasksByFamily(doc, family.id)
             const readiness = getFamilyReadiness(doc, family.id)
             return (
@@ -3840,7 +3971,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
                   />
                 </div>
                 <div className="space-y-2">
-                  {tasks.map((task) => (
+                  {tasks.map((task: Legacy) => (
                     <div key={task.id} className="flex items-center justify-between text-[11px]">
                       <span className="text-[#C9D1D9]">{task.title}</span>
                       <span className={task.status === 'done' ? 'text-[#3FB950]' : 'text-[#D29922]'}>
@@ -3858,10 +3989,10 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
   )
 }
 
-function withRefreshedFamilies(nextDoc) {
+function withRefreshedFamilies(nextDoc: Legacy) {
   return {
     ...nextDoc,
-    families: nextDoc.families.map((family) => ({
+    families: nextDoc.families.map((family: Legacy) => ({
       ...family,
       readiness: getFamilyReadiness(nextDoc, family.id),
     })),
@@ -3876,10 +4007,10 @@ function App() {
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
-  const locationIntelHydrationRef = useRef(new Set())
+  const locationIntelHydrationRef = useRef(new Set<Legacy>())
   const startupTimelineSyncRef = useRef(false)
   const seededPlanRefreshRef = useRef(false)
-  const [weatherState, setWeatherState] = useState({
+  const [weatherState, setWeatherState] = useState<Legacy>({
     status: 'loading',
     targets: {},
     updatedAt: null,
@@ -3887,7 +4018,7 @@ function App() {
   })
 
   const selection = displayDoc.selection
-  const currentFamily = displayDoc.families.find((family) => family.id === viewerProfile?.familyId) || null
+  const currentFamily = displayDoc.families.find((family: Legacy) => family.id === viewerProfile?.familyId) || null
   const currentFamilyId = currentFamily?.id || null
   const selectedEntity = getEntityBySelection(displayDoc, selection)
   const selectedLocation = getLocationForEntity(displayDoc, selectedEntity)
@@ -3897,7 +4028,7 @@ function App() {
     clearLegacyTripStorage()
   }, [])
 
-  const setActiveFamilyProfile = useCallback((familyId) => {
+  const setActiveFamilyProfile = useCallback((familyId: Legacy) => {
     setViewerProfile({ familyId })
   }, [setViewerProfile])
 
@@ -3906,7 +4037,7 @@ function App() {
     startupTimelineSyncRef.current = true
 
     const nowCursor = getCurrentTripCursor()
-    setDoc((current) => ({
+    setDoc((current: Legacy) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -3924,16 +4055,16 @@ function App() {
   }, [setDoc])
 
   useEffect(() => {
-    const jiangRoute = doc.routes.find((route) => route.id === 'route-la-north-star')
-    const jiangFamily = doc.families.find((family) => family.id === 'north-star')
-    const yosemiteLocation = doc.locations.find((location) => location.id === 'yosemite')
+    const jiangRoute = doc.routes.find((route: Legacy) => route.id === 'route-la-north-star')
+    const jiangFamily = doc.families.find((family: Legacy) => family.id === 'north-star')
+    const yosemiteLocation = doc.locations.find((location: Legacy) => location.id === 'yosemite')
     const missingStopLocations = JIANG_ROAD_TRIP_STOP_DEFAULTS.filter(
-      (stop) => !doc.locations.some((location) => location.id === stop.id),
+      (stop: Legacy) => !doc.locations.some((location: Legacy) => location.id === stop.id),
     )
 
     const needsRouteStops = jiangRoute && !jiangRoute.stopLocationIds?.length
     const needsFamilyStops = jiangFamily && !jiangFamily.plannedStopIds?.length
-    const needsVehicleFamilyBackfill = doc.families.some((family) => {
+    const needsVehicleFamilyBackfill = doc.families.some((family: Legacy) => {
       const defaults = FAMILY_VEHICLE_DEFAULTS[family.id]
       if (!defaults) return false
       return (
@@ -3943,7 +4074,7 @@ function App() {
         (defaults.plannedStopIds?.length && !family.plannedStopIds?.length)
       )
     })
-    const needsVehicleRouteBackfill = doc.routes.some((route) => {
+    const needsVehicleRouteBackfill = doc.routes.some((route: Legacy) => {
       const defaults = ROUTE_SIM_DEFAULTS[route.id]
       if (!defaults) return false
       return (
@@ -3975,13 +4106,13 @@ function App() {
       return
     }
 
-    setDoc((current) => {
+    setDoc((current: Legacy) => {
       const nextLocations = [
         ...current.locations,
         ...JIANG_ROAD_TRIP_STOP_DEFAULTS.filter(
-          (stop) => !current.locations.some((location) => location.id === stop.id),
+          (stop: Legacy) => !current.locations.some((location: Legacy) => location.id === stop.id),
         ),
-      ].map((location) =>
+      ].map((location: Legacy) =>
         location.id === 'yosemite'
           ? {
               ...location,
@@ -3989,7 +4120,7 @@ function App() {
             }
           : location,
       )
-      const nextFamilies = current.families.map((family) => {
+      const nextFamilies = current.families.map((family: Legacy) => {
         const defaults = FAMILY_VEHICLE_DEFAULTS[family.id]
         if (!defaults && family.id !== 'north-star') return family
 
@@ -4004,7 +4135,7 @@ function App() {
       })
 
       const nextRoutes = synchronizeRoutePaths(
-        current.routes.map((route) => {
+        current.routes.map((route: Legacy) => {
           const defaults = ROUTE_SIM_DEFAULTS[route.id]
           if (!defaults) return route
 
@@ -4054,22 +4185,22 @@ function App() {
     if (seededPlanRefreshRef.current) return
 
     const initialDoc = getInitialTripDocument()
-    const currentById = (collection) => new Map(collection.map((item) => [item.id, item]))
-    const collectionNeedsRefresh = (currentCollection, initialCollection, refreshIds) => {
+    const currentById = (collection: Legacy) => new Map(collection.map((item: Legacy) => [item.id, item]))
+    const collectionNeedsRefresh = (currentCollection: Legacy,  initialCollection: Legacy,  refreshIds: Legacy) => {
       const currentMap = currentById(currentCollection)
       const initialMap = currentById(initialCollection)
-      return [...refreshIds].some((id) => {
+      return [...refreshIds].some((id: Legacy) => {
         const currentItem = currentMap.get(id)
         const initialItem = initialMap.get(id)
         return !currentItem || !initialItem || JSON.stringify(currentItem) !== JSON.stringify(initialItem)
       })
     }
-    const missingRoutes = initialDoc.routes.filter((route) => !doc.routes.some((currentRoute) => currentRoute.id === route.id))
+    const missingRoutes = initialDoc.routes.filter((route: Legacy) => !doc.routes.some((currentRoute: Legacy) => currentRoute.id === route.id))
     const missingItineraryItems = initialDoc.itineraryItems.filter(
-      (item) => !doc.itineraryItems.some((currentItem) => currentItem.id === item.id),
+      (item: Legacy) => !doc.itineraryItems.some((currentItem: Legacy) => currentItem.id === item.id),
     )
-    const hasObsoleteRoutes = doc.routes.some((route) => OBSOLETE_PLAN_ROUTE_IDS.has(route.id))
-    const hasObsoleteItineraryItems = doc.itineraryItems.some((item) => OBSOLETE_PLAN_ITINERARY_IDS.has(item.id))
+    const hasObsoleteRoutes = doc.routes.some((route: Legacy) => OBSOLETE_PLAN_ROUTE_IDS.has(route.id))
+    const hasObsoleteItineraryItems = doc.itineraryItems.some((item: Legacy) => OBSOLETE_PLAN_ITINERARY_IDS.has(item.id))
     const needsPlanRefresh =
       collectionNeedsRefresh(doc.families, initialDoc.families, SEEDED_PLAN_REFRESH_IDS.families) ||
       collectionNeedsRefresh(doc.locations, initialDoc.locations, SEEDED_PLAN_REFRESH_IDS.locations) ||
@@ -4085,15 +4216,15 @@ function App() {
     }
 
     seededPlanRefreshRef.current = true
-    setDoc((current) => {
-      const syncCollection = (currentCollection, initialCollection, refreshIds, obsoleteIds = new Set()) => {
-        const initialMap = new Map(initialCollection.map((item) => [item.id, item]))
-        const filtered = currentCollection.filter((item) => !obsoleteIds.has(item.id))
-        const existingIds = new Set(filtered.map((item) => item.id))
-        const replaced = filtered.map((item) => (refreshIds.has(item.id) && initialMap.has(item.id) ? initialMap.get(item.id) : item))
+    setDoc((current: Legacy) => {
+  const syncCollection = (currentCollection: Legacy[], initialCollection: Legacy[], refreshIds: Set<Legacy>, obsoleteIds = new Set<Legacy>()) => {
+        const initialMap = new Map(initialCollection.map((item: Legacy) => [item.id, item]))
+        const filtered = currentCollection.filter((item: Legacy) => !obsoleteIds.has(item.id))
+        const existingIds = new Set(filtered.map((item: Legacy) => item.id))
+        const replaced = filtered.map((item: Legacy) => (refreshIds.has(item.id) && initialMap.has(item.id) ? initialMap.get(item.id) : item))
         const additions = [...refreshIds]
-          .filter((id) => !existingIds.has(id) && initialMap.has(id))
-          .map((id) => initialMap.get(id))
+          .filter((id: Legacy) => !existingIds.has(id) && initialMap.has(id))
+          .map((id: Legacy) => initialMap.get(id))
         return [...replaced, ...additions]
       }
 
@@ -4106,7 +4237,7 @@ function App() {
         syncCollection(
           [
             ...current.routes,
-            ...initialDoc.routes.filter((route) => !current.routes.some((currentRoute) => currentRoute.id === route.id)),
+            ...initialDoc.routes.filter((route: Legacy) => !current.routes.some((currentRoute: Legacy) => currentRoute.id === route.id)),
           ],
           initialDoc.routes,
           SEEDED_PLAN_REFRESH_IDS.routes,
@@ -4117,7 +4248,7 @@ function App() {
       const nextItineraryItems = syncCollection(
         [
           ...current.itineraryItems,
-          ...initialDoc.itineraryItems.filter((item) => !current.itineraryItems.some((currentItem) => currentItem.id === item.id)),
+          ...initialDoc.itineraryItems.filter((item: Legacy) => !current.itineraryItems.some((currentItem: Legacy) => currentItem.id === item.id)),
         ],
         initialDoc.itineraryItems,
         SEEDED_PLAN_REFRESH_IDS.itineraryItems,
@@ -4152,7 +4283,7 @@ function App() {
     [displayDoc],
   )
   const timelineWeatherDays = useMemo(
-    () => DAYS.map((day) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
+    () => DAYS.map((day: Legacy) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
     [weatherState.targets],
   )
   const mapWeather = useMemo(
@@ -4164,8 +4295,8 @@ function App() {
     [doc.ui.map.focusDayId, weatherState.targets],
   )
 
-  const setSelectedPage = useCallback((pageId) => {
-    setDoc((current) => ({
+  const setSelectedPage = useCallback((pageId: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
       selectedPage: pageId,
       selection: ensureSelectionForPage(current, pageId),
@@ -4176,8 +4307,8 @@ function App() {
     }))
   }, [setDoc])
 
-  const selectEntity = useCallback((type, id) => {
-    setDoc((current) => {
+  const selectEntity = useCallback((type: Legacy,  id: Legacy) => {
+    setDoc((current: Legacy) => {
       if (current.selection?.type === type && current.selection?.id === id && current.ui.searchQuery === '') {
         return current
       }
@@ -4190,20 +4321,20 @@ function App() {
     })
   }, [setDoc])
 
-  const openEntity = useCallback((type, id) => {
-    setDoc((current) => ({
+  const openEntity = useCallback((type: Legacy,  id: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
       selection: { type, id },
       ui: { ...current.ui, searchQuery: '' },
     }))
   }, [setDoc])
 
-  const hydrateLocationDetails = useCallback((locationId, patch) => {
+  const hydrateLocationDetails = useCallback((locationId: Legacy,  patch: Legacy) => {
     if (!locationId || !patch) return
 
-    setDoc((current) => {
+    setDoc((current: Legacy) => {
       let changed = false
-      const locations = current.locations.map((location) => {
+      const locations = current.locations.map((location: Legacy) => {
         if (location.id !== locationId) return location
 
         const nextLocation = {
@@ -4228,12 +4359,12 @@ function App() {
     })
   }, [setDoc])
 
-  const hydrateRouteDetails = useCallback((routeId, patch) => {
+  const hydrateRouteDetails = useCallback((routeId: Legacy,  patch: Legacy) => {
     if (!routeId || !patch) return
 
-    setDoc((current) => {
+    setDoc((current: Legacy) => {
       let changed = false
-      const routes = current.routes.map((route) => {
+      const routes = current.routes.map((route: Legacy) => {
         if (route.id !== routeId) return route
 
         const nextRoute = {
@@ -4257,9 +4388,9 @@ function App() {
     })
   }, [setDoc])
 
-  const updateLocationFields = useCallback((locationId, patch) => {
-    setDoc((current) => {
-      const locations = current.locations.map((location) =>
+  const updateLocationFields = useCallback((locationId: Legacy,  patch: Legacy) => {
+    setDoc((current: Legacy) => {
+      const locations = current.locations.map((location: Legacy) =>
         location.id === locationId ? stampFamilyMetadata({ ...location, ...patch }, currentFamilyId) : location,
       )
 
@@ -4275,8 +4406,8 @@ function App() {
     if (!liveExternalData) return
     if (!GOOGLE_MAPS_API_KEY) return
 
-    const basecampLocation = doc.locations.find((location) => location.id === 'pine-airbnb')
-    const pendingPlaceLocations = doc.locations.filter((location) => {
+    const basecampLocation = doc.locations.find((location: Legacy) => location.id === 'pine-airbnb')
+    const pendingPlaceLocations = doc.locations.filter((location: Legacy) => {
       if (!location.placesQuery) return false
 
       const needsPlaceMatch = location.placesQuery && !location.placeId
@@ -4297,7 +4428,7 @@ function App() {
     async function hydrateMealIntel() {
       try {
         if (!window.__tripCommandCenterMapsConfigured) {
-          setOptions({
+          (setOptions as Legacy)({
             key: GOOGLE_MAPS_API_KEY,
             version: 'weekly',
             mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
@@ -4318,8 +4449,8 @@ function App() {
           ? null
           : new google.maps.DirectionsService()
 
-        const findPlaceMatch = (location) =>
-          new Promise((resolve, reject) => {
+        const findPlaceMatch = (location: Legacy) =>
+          new Promise<Legacy>((resolve: Legacy,  reject: Legacy) => {
             if (!location.placesQuery || location.placeId) {
               resolve(null)
               return
@@ -4335,7 +4466,7 @@ function App() {
                 query: location.placesQuery,
                 fields: ['name', 'formatted_address', 'geometry', 'place_id'],
               },
-              (results, status) => {
+              (results: Legacy,  status: Legacy) => {
                 if (status !== google.maps.places.PlacesServiceStatus.OK || !results?.length) {
                   reject(new Error(`Place match failed for ${location.id}: ${status}`))
                   return
@@ -4345,8 +4476,8 @@ function App() {
             )
           })
 
-        const fetchPlaceDetails = (placeId) =>
-          new Promise((resolve, reject) => {
+        const fetchPlaceDetails = (placeId: Legacy) =>
+          new Promise<Legacy>((resolve: Legacy,  reject: Legacy) => {
             if (!placeId) {
               resolve(null)
               return
@@ -4362,7 +4493,7 @@ function App() {
                 placeId,
                 fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
               },
-              (result, status) => {
+              (result: Legacy,  status: Legacy) => {
                 if (status !== google.maps.places.PlacesServiceStatus.OK || !result) {
                   reject(new Error(`Place details failed for ${placeId}: ${status}`))
                   return
@@ -4372,8 +4503,8 @@ function App() {
             )
           })
 
-        const fetchDriveProfile = (origin, destination) =>
-          new Promise((resolve, reject) => {
+        const fetchDriveProfile = (origin: Legacy,  destination: Legacy) =>
+          new Promise<Legacy>((resolve: Legacy,  reject: Legacy) => {
             if (!origin || !destination) {
               resolve(null)
               return
@@ -4391,7 +4522,7 @@ function App() {
                 travelMode: google.maps.TravelMode.DRIVING,
                 provideRouteAlternatives: false,
               },
-              (result, status) => {
+              (result: Legacy,  status: Legacy) => {
                 if (status !== 'OK' || !result?.routes?.length) {
                   reject(new Error(`Drive profile failed: ${status}`))
                   return
@@ -4429,7 +4560,7 @@ function App() {
             const placeDetails = placeId ? await fetchPlaceDetails(placeId) : null
             if (cancelled) return
 
-            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo, index) => ({
+            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo: Legacy,  index: Legacy) => ({
               id: `${location.id}-live-photo-${index + 1}`,
               label: index === 0 ? 'Live venue photo' : `Venue photo ${index + 1}`,
               imageUrl: photo.getUrl({ maxWidth: 900 }),
@@ -4488,8 +4619,8 @@ function App() {
       return
     }
 
-    const basecamp = doc.locations.find((location) => location.id === 'pine-airbnb')
-    const yosemite = doc.locations.find((location) => location.id === 'yosemite')
+    const basecamp = doc.locations.find((location: Legacy) => location.id === 'pine-airbnb')
+    const yosemite = doc.locations.find((location: Legacy) => location.id === 'yosemite')
     if (!basecamp?.coordinates || !yosemite?.coordinates) return
 
     let cancelled = false
@@ -4514,10 +4645,10 @@ function App() {
         })
       } catch (error) {
         if (cancelled) return
-        setWeatherState((current) => ({
+        setWeatherState((current: Legacy) => ({
           ...current,
           status: 'error',
-          error: error?.message || 'Weather fetch failed',
+          error: (error as Legacy)?.message || 'Weather fetch failed',
         }))
       }
     }
@@ -4531,8 +4662,8 @@ function App() {
     }
   }, [doc.locations, liveExternalData])
 
-  const updatePageNote = (pageId, value) => {
-    setDoc((current) => ({
+  const updatePageNote = (pageId: Legacy,  value: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
       pageNotes: { ...current.pageNotes, [pageId]: value },
       pageNoteMeta: {
@@ -4547,9 +4678,9 @@ function App() {
     }))
   }
 
-  const updateEntityNote = (type, id, value) => {
-    setDoc((current) => {
-      const collectionName = {
+  const updateEntityNote = (type: Legacy,  id: Legacy,  value: Legacy) => {
+    setDoc((current: Legacy) => {
+      const collectionName = ({
         family: 'families',
         location: 'locations',
         route: 'routes',
@@ -4559,11 +4690,11 @@ function App() {
         stayItem: 'stayItems',
         expense: 'expenses',
         task: 'tasks',
-      }[type]
+      } as Legacy)[type]
       if (!collectionName) return current
       return {
         ...current,
-        [collectionName]: updateEntityInCollection(current[collectionName], id, (item) => ({
+        [collectionName]: updateEntityInCollection(current[collectionName], id, (item: Legacy) => ({
           ...stampFamilyMetadata(item, currentFamilyId),
           note: value,
         })),
@@ -4571,11 +4702,11 @@ function App() {
     })
   }
 
-  const toggleTask = (taskId) => {
-    setDoc((current) => {
+  const toggleTask = (taskId: Legacy) => {
+    setDoc((current: Legacy) => {
       const nextDoc = {
         ...current,
-        tasks: current.tasks.map((task) =>
+        tasks: current.tasks.map((task: Legacy) =>
           task.id === taskId
             ? { ...task, status: task.status === 'done' ? 'open' : 'done' }
             : task,
@@ -4585,8 +4716,8 @@ function App() {
     })
   }
 
-  const addTask = (entityType, entityId, title) => {
-    setDoc((current) => {
+  const addTask = (entityType: Legacy,  entityId: Legacy,  title: Legacy) => {
+    setDoc((current: Legacy) => {
       const entity = getEntityById(current, entityType, entityId)
       if (!entity || !title.trim()) return current
       const newTaskId = `task-user-${Date.now()}`
@@ -4605,9 +4736,9 @@ function App() {
         linkedEntityKeys: [makeEntityKey(entityType, entityId)],
         note: '',
       }
-      const stampedTask = stampFamilyMetadata(newTask, currentFamilyId)
+      const stampedTask = stampFamilyMetadata(newTask as TaskEntity, currentFamilyId)
 
-      const collectionName = {
+      const collectionName = ({
         family: 'families',
         location: 'locations',
         route: 'routes',
@@ -4617,7 +4748,7 @@ function App() {
         stayItem: 'stayItems',
         expense: 'expenses',
         task: 'tasks',
-      }[entityType]
+      } as Legacy)[entityType]
 
       const nextDoc = {
         ...current,
@@ -4625,7 +4756,7 @@ function App() {
         [collectionName]:
           entityType === 'task'
             ? current[collectionName]
-            : updateEntityInCollection(current[collectionName], entityId, (item) => ({
+            : updateEntityInCollection(current[collectionName], entityId, (item: Legacy) => ({
                 ...item,
                 taskIds: [...(item.taskIds || []), newTaskId],
               })),
@@ -4635,7 +4766,7 @@ function App() {
     })
   }
 
-  const addActivity = ({ title, dayId, window, description }) => {
+  const addActivity = ({ title, dayId, window, description }: LegacyProps) => {
     if (!title?.trim()) return
 
     const fallbackWindow = `${getDayMeta(dayId)?.shortLabel?.toUpperCase() || dayId?.toUpperCase() || 'DAY'} / flexible`
@@ -4656,23 +4787,23 @@ function App() {
       note: '',
     }, currentFamilyId)
 
-    setDoc((current) => ({
+    setDoc((current: Legacy) => ({
       ...current,
       activities: [...current.activities, newActivity],
       selection: { type: 'activity', id: newActivity.id },
     }))
   }
 
-  const convertNoteToTask = (entityType, entityId) => {
+  const convertNoteToTask = (entityType: Legacy,  entityId: Legacy) => {
     const entity = getEntityById(doc, entityType, entityId)
     if (!entity?.note?.trim()) return
     addTask(entityType, entityId, entity.note.trim().split('\n')[0].slice(0, 96))
   }
 
-  const convertPageNoteToTask = (pageId) => {
+  const convertPageNoteToTask = (pageId: Legacy) => {
     const note = getPageNote(doc, pageId)
     if (!note.trim()) return
-    const pageToEntityType = {
+      const pageToEntityType = {
       itinerary: 'activity',
       stay: 'stayItem',
       meals: 'meal',
@@ -4680,23 +4811,23 @@ function App() {
       expenses: 'expense',
       families: 'family',
     }
-    const entityType = pageToEntityType[pageId]
-    const collectionName = ENTITY_PAGE[entityType] ? {
+      const entityType = (pageToEntityType as Legacy)[pageId]
+      const collectionName = (ENTITY_PAGE as Legacy)[entityType] ? ({
       activity: 'activities',
       stayItem: 'stayItems',
       meal: 'meals',
       expense: 'expenses',
       family: 'families',
-    }[entityType] : null
-    const target = collectionName ? doc[collectionName]?.[0] : null
+      } as Legacy)[entityType] : null
+      const target = collectionName ? (doc as Legacy)[collectionName]?.[0] : null
     if (!target) return
     addTask(target.type, target.id, note.trim().split('\n')[0].slice(0, 96))
   }
 
-  const toggleMealStatus = (mealId) => {
-    setDoc((current) => ({
+  const toggleMealStatus = (mealId: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
-      meals: current.meals.map((meal) =>
+      meals: current.meals.map((meal: Legacy) =>
         meal.id === mealId
           ? stampFamilyMetadata({ ...meal, status: meal.status === 'Assigned' ? 'Pending' : 'Assigned' }, currentFamilyId)
           : meal,
@@ -4704,10 +4835,10 @@ function App() {
     }))
   }
 
-  const toggleExpenseSettled = (expenseId) => {
-    setDoc((current) => ({
+  const toggleExpenseSettled = (expenseId: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
-      expenses: current.expenses.map((expense) =>
+      expenses: current.expenses.map((expense: Legacy) =>
         expense.id === expenseId
           ? stampFamilyMetadata({ ...expense, settled: !expense.settled }, currentFamilyId)
           : expense,
@@ -4715,10 +4846,10 @@ function App() {
     }))
   }
 
-  const updateExpenseFields = (expenseId, patch) => {
-    setDoc((current) => ({
+  const updateExpenseFields = (expenseId: Legacy,  patch: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
-      expenses: current.expenses.map((expense) => {
+      expenses: current.expenses.map((expense: Legacy) => {
         if (expense.id !== expenseId) return expense
 
         const nextExpense = { ...expense, ...patch }
@@ -4730,10 +4861,10 @@ function App() {
     }))
   }
 
-  const setExpenseAllocationMode = (expenseId, allocationMode) => {
-    setDoc((current) => ({
+  const setExpenseAllocationMode = (expenseId: Legacy,  allocationMode: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
-      expenses: current.expenses.map((expense) => {
+      expenses: current.expenses.map((expense: Legacy) => {
         if (expense.id !== expenseId) return expense
 
         if (allocationMode === 'manual') {
@@ -4758,10 +4889,10 @@ function App() {
     }))
   }
 
-  const updateExpenseAllocation = (expenseId, familyId, amount) => {
-    setDoc((current) => ({
+  const updateExpenseAllocation = (expenseId: Legacy,  familyId: Legacy,  amount: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
-      expenses: current.expenses.map((expense) =>
+      expenses: current.expenses.map((expense: Legacy) =>
         expense.id === expenseId
           ? stampFamilyMetadata({
               ...expense,
@@ -4777,10 +4908,10 @@ function App() {
     }))
   }
 
-  const resetExpenseAllocationsToEqual = (expenseId) => {
-    setDoc((current) => ({
+  const resetExpenseAllocationsToEqual = (expenseId: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
-      expenses: current.expenses.map((expense) =>
+      expenses: current.expenses.map((expense: Legacy) =>
         expense.id === expenseId
           ? stampFamilyMetadata({
               ...expense,
@@ -4794,8 +4925,8 @@ function App() {
   }
 
   const addExpense = () => {
-    setDoc((current) => {
-      const familyLabel = getFamilyLabel(current.families, currentFamilyId)
+    setDoc((current: Legacy) => {
+      const familyLabel = getFamilyLabel(current.families, currentFamilyId || '')
       const newExpense = stampFamilyMetadata({
         id: `expense-user-${Date.now()}`,
         type: 'expense',
@@ -4819,8 +4950,8 @@ function App() {
     })
   }
 
-  const updateMapUi = (patch) => {
-    setDoc((current) => ({
+  const updateMapUi = (patch: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4829,8 +4960,8 @@ function App() {
     }))
   }
 
-  const setTimelineCursor = useCallback((cursorSlot) => {
-    setDoc((current) => ({
+  const setTimelineCursor = useCallback((cursorSlot: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4839,8 +4970,8 @@ function App() {
     }))
   }, [setDoc])
 
-  const updateSearchQuery = (searchQuery) => {
-    setDoc((current) => ({
+  const updateSearchQuery = (searchQuery: Legacy) => {
+    setDoc((current: Legacy) => ({
       ...current,
       ui: { ...current.ui, searchQuery },
     }))

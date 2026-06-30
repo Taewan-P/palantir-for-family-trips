@@ -31,6 +31,37 @@ export type BaseEntity = {
   summary?: string
   linkedEntityKeys?: string[]
   taskIds?: string[]
+  familyIds?: string[]
+  locationId?: string | null
+  routeId?: string
+  stopLocationIds?: string[]
+  externalUrl?: string | null
+  websiteUrl?: string | null
+  phoneNumber?: string | null
+  address?: string
+  checkIn?: string | null
+  checkOut?: string | null
+  reservationNote?: string | null
+  accessNote?: string | null
+  directionsNote?: string | null
+  parkingNote?: string | null
+  lockNote?: string | null
+  wifiNetwork?: string | null
+  wifiPassword?: string | null
+  hostName?: string | null
+  coHostName?: string | null
+  guestSummary?: string | null
+  confirmationCode?: string | null
+  vehicleFee?: string | null
+  manualUrl?: string | null
+  stopType?: string
+  placesQuery?: string
+  rating?: number
+  userRatingsTotal?: number
+  openingHours?: string[]
+  photos?: (string | { id?: string; label?: string; imageUrl?: string; sourceUrl?: string | null })[]
+  livePhotos?: { id?: string; label?: string; imageUrl?: string; sourceUrl?: string | null }[]
+  basecampDrive?: { durationText?: string; distanceText?: string }
   createdByFamilyId?: string | null
   createdAt?: string
   lastEditedByFamilyId?: string | null
@@ -63,15 +94,32 @@ export type LocationEntity = BaseEntity & {
   category: string
   address?: string
   coordinates?: Coordinates
+  checkIn?: string | null
+  checkOut?: string | null
+  reservationNote?: string | null
   accessNote?: string | null
   directionsNote?: string | null
   parkingNote?: string | null
   lockNote?: string | null
   wifiNetwork?: string | null
   wifiPassword?: string | null
+  hostName?: string | null
+  coHostName?: string | null
+  guestSummary?: string | null
+  confirmationCode?: string | null
+  vehicleFee?: string | null
+  manualUrl?: string | null
   externalUrl?: string | null
   websiteUrl?: string | null
   phoneNumber?: string | null
+  stopType?: string
+  placesQuery?: string
+  rating?: number
+  userRatingsTotal?: number
+  openingHours?: string[]
+  photos?: (string | { id?: string; label?: string; imageUrl?: string; sourceUrl?: string | null })[]
+  livePhotos?: { id?: string; label?: string; imageUrl?: string; sourceUrl?: string | null }[]
+  basecampDrive?: { durationText?: string; distanceText?: string }
   [key: string]: JsonValue | undefined
 }
 
