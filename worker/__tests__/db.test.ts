@@ -1,8 +1,47 @@
-import { decodeTripEventRow, encodeTripEventPayload } from '../db'
+import { decodeTripEventRow, encodeTripEventPayload, getTripAccess, loadHydratedTripSnapshot } from '../db'
 import { replayTripEvents } from '../../src/shared/trip-reducer'
 import type { TripDocument } from '../../src/shared/trip-types'
 
 describe('db event codecs', () => {
+  it('distinguishes missing trips from missing roles', async () => {
+    await expect(getTripAccess(dbWithFirst(null), 'missing_trip', 'user_1')).resolves.toEqual({
+      exists: false,
+      role: null,
+    })
+    await expect(getTripAccess(dbWithFirst({ role: null }), 'trip_1', 'user_1')).resolves.toEqual({
+      exists: true,
+      role: null,
+    })
+    await expect(getTripAccess(dbWithFirst({ role: 'owner' }), 'trip_1', 'user_1')).resolves.toEqual({
+      exists: true,
+      role: 'owner',
+    })
+  })
+
+  it('hydrates the latest snapshot with later events', async () => {
+    const calls: unknown[][] = []
+    const db = dbWithResults([
+      { first: { version: 3, document_json: JSON.stringify(baseDoc()) } },
+      {
+        all: [{
+          id: 'event_4',
+          trip_id: 'trip_1',
+          version: 4,
+          previous_version: 3,
+          actor_user_id: null,
+          type: 'entity.update',
+          payload_json: '{"entityType":"task","id":"task_1","patch":{"status":"done"}}',
+          created_at: '2026-07-01T00:00:00.000Z',
+        }],
+      },
+    ], calls)
+
+    await expect(loadHydratedTripSnapshot(db, 'trip_1')).resolves.toMatchObject({
+      tasks: [{ id: 'task_1', status: 'done' }],
+    })
+    expect(calls).toEqual([['trip_1'], ['trip_1', 3]])
+  })
+
   it('encodes and decodes trip event payloads', () => {
     const payload = { entityType: 'task', id: 'task_1' }
     const encoded = encodeTripEventPayload(payload)
@@ -194,4 +233,26 @@ function baseDoc(): TripDocument {
     expenses: [],
     tasks: [{ id: 'task_1', type: 'task', title: 'Pack', status: 'open' }],
   }
+}
+
+function dbWithFirst(row: unknown): D1Database {
+  return dbWithResults([{ first: row }])
+}
+
+function dbWithResults(results: Array<{ first?: unknown; all?: unknown[] }>, calls: unknown[][] = []): D1Database {
+  let index = 0
+  return {
+    prepare() {
+      const result = results[index++]
+      return {
+        bind(...args: unknown[]) {
+          calls.push(args)
+          return {
+            first: async () => result.first,
+            all: async () => ({ results: result.all ?? [] }),
+          }
+        },
+      }
+    },
+  } as unknown as D1Database
 }

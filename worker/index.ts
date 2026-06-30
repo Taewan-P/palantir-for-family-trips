@@ -14,9 +14,10 @@ import {
   findActiveShareLink,
   findMembership,
   findSessionUser,
+  getTripAccess,
   insertSnapshot,
   listVisibleTrips,
-  loadLatestTripSnapshot,
+  loadHydratedTripSnapshot,
   markInviteAccepted,
   upsertGoogleUser,
 } from './db'
@@ -85,11 +86,6 @@ async function requireUser(request: Request, env: Env): Promise<SignedInUser | R
     name: user.name,
     avatarUrl: user.avatar_url,
   }
-}
-
-async function requireRole(env: Env, tripId: string, userId: string): Promise<TripRole | null> {
-  const membership = await findMembership(env.DB, tripId, userId)
-  return membership?.role ?? null
 }
 
 async function readTripTitle(request: Request): Promise<string | null> {
@@ -228,7 +224,9 @@ const worker = {
     if (request.method === 'POST' && inviteTripId) {
       const user = await requireUser(request, env)
       if (user instanceof Response) return user
-      if (!canManageAccess(await requireRole(env, inviteTripId, user.id))) {
+      const access = await getTripAccess(env.DB, inviteTripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) {
         return jsonError(403, 'forbidden', 'Owner access required')
       }
 
@@ -277,7 +275,9 @@ const worker = {
     if (request.method === 'POST' && shareTripId) {
       const user = await requireUser(request, env)
       if (user instanceof Response) return user
-      if (!canManageAccess(await requireRole(env, shareTripId, user.id))) {
+      const access = await getTripAccess(env.DB, shareTripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) {
         return jsonError(403, 'forbidden', 'Owner access required')
       }
 
@@ -298,7 +298,9 @@ const worker = {
     if (request.method === 'DELETE' && shareTripId) {
       const user = await requireUser(request, env)
       if (user instanceof Response) return user
-      if (!canManageAccess(await requireRole(env, shareTripId, user.id))) {
+      const access = await getTripAccess(env.DB, shareTripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) {
         return jsonError(403, 'forbidden', 'Owner access required')
       }
 
@@ -311,7 +313,7 @@ const worker = {
       const share = await findActiveShareLink(env.DB, await hashToken(shareToken, env.SESSION_SECRET))
       if (!share) return jsonError(404, 'not_found', 'Share link not found')
 
-      const document = await loadLatestTripSnapshot(env.DB, share.trip_id)
+      const document = await loadHydratedTripSnapshot(env.DB, share.trip_id)
       if (!document) return jsonError(404, 'not_found', 'Trip snapshot not found')
 
       return jsonOk({ trip: tripJson(sanitizeTripForShare(document)), readOnly: true })

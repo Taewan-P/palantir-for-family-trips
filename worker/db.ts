@@ -1,4 +1,5 @@
 import { isJsonObject, type JsonObject, type JsonValue } from '../src/shared/json'
+import { replayTripEvents } from '../src/shared/trip-reducer'
 import type { TripDocument, TripEntityType, TripEvent, TripUiState } from '../src/shared/trip-types'
 
 export type AppUserRow = {
@@ -16,6 +17,11 @@ export type TripListRow = {
   role: 'owner' | 'editor'
   created_at: string
   updated_at: string
+}
+
+export type TripAccess = {
+  exists: boolean
+  role: 'owner' | 'editor' | null
 }
 
 const TRIP_ENTITY_TYPES = new Set<TripEntityType>([
@@ -93,6 +99,17 @@ export async function findMembership(db: D1Database, tripId: string, userId: str
   return db.prepare(`
     SELECT role FROM memberships WHERE trip_id = ? AND user_id = ?
   `).bind(tripId, userId).first<{ role: 'owner' | 'editor' }>()
+}
+
+export async function getTripAccess(db: D1Database, tripId: string, userId: string): Promise<TripAccess> {
+  const row = await db.prepare(`
+    SELECT memberships.role
+    FROM trips
+    LEFT JOIN memberships ON memberships.trip_id = trips.id AND memberships.user_id = ?
+    WHERE trips.id = ?
+  `).bind(userId, tripId).first<{ role: 'owner' | 'editor' | null }>()
+
+  return row ? { exists: true, role: row.role } : { exists: false, role: null }
 }
 
 export async function upsertGoogleUser(db: D1Database, input: {
@@ -239,6 +256,26 @@ export async function loadLatestTripSnapshot(db: D1Database, tripId: string): Pr
   `).bind(tripId).first<{ document_json: string }>()
   if (!row) return null
   return JSON.parse(row.document_json) as TripDocument
+}
+
+export function hydrateTripSnapshot(document: TripDocument, eventRows: readonly TripEventRow[]): TripDocument {
+  return replayTripEvents(document, eventRows.map(decodeTripEventRow))
+}
+
+export async function loadHydratedTripSnapshot(db: D1Database, tripId: string): Promise<TripDocument | null> {
+  const snapshot = await db.prepare(`
+    SELECT version, document_json FROM trip_snapshots WHERE trip_id = ? ORDER BY version DESC LIMIT 1
+  `).bind(tripId).first<{ version: number; document_json: string }>()
+  if (!snapshot) return null
+
+  const eventRows = await db.prepare(`
+    SELECT id, trip_id, version, previous_version, actor_user_id, type, payload_json, created_at
+    FROM trip_events
+    WHERE trip_id = ? AND version > ?
+    ORDER BY version ASC
+  `).bind(tripId, snapshot.version).all<TripEventRow>()
+
+  return hydrateTripSnapshot(JSON.parse(snapshot.document_json) as TripDocument, eventRows.results)
 }
 
 export async function insertSnapshot(db: D1Database, input: {
