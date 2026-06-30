@@ -2780,12 +2780,12 @@ export function clearLegacyTripStorage() {
   LEGACY_VIEWER_PROFILE_STORAGE_KEYS.forEach((key) => browser.localStorage?.removeItem(key))
 }
 
-export function getLocationForEntity(doc: TripDocument, entity: TripEntity | null | undefined) {
+export function getLocationForEntity(doc: TripDocument, entity: TripEntity | null | undefined): LocationEntity | null {
   if (!entity) return null
   if (entity.type === 'location') return entity
   const locationId = getEntityLocationId(entity)
   if (!locationId) return null
-  return getEntityById(doc, 'location', locationId)
+  return getEntityById(doc, 'location', locationId) as LocationEntity | null
 }
 
 export function getTasksForEntity(doc: TripDocument, entity: TripEntity | null | undefined) {
@@ -2839,7 +2839,7 @@ export function getEntitySummary(entity: TripEntity | null | undefined) {
   return ''
 }
 
-export function getSearchResults(doc: TripDocument, query: string) {
+export function getSearchResults(doc: TripDocument, query: string): (TripEntity & { searchText: string })[] {
   if (!query?.trim()) return []
   const normalized = query.trim().toLowerCase()
   const types: TripEntityType[] = ['family', 'meal', 'activity', 'location', 'stayItem', 'expense', 'itineraryItem', 'task']
@@ -2847,21 +2847,20 @@ export function getSearchResults(doc: TripDocument, query: string) {
     getCollection(doc, type).map((item) => {
       const searchable = item as TripEntity & { address?: string; description?: string; backup?: string }
       return {
-      ...item,
-      type,
-      searchText: [
-        item.title,
-        item.name,
-        item.summary,
-        item.note,
-        searchable.address,
-        searchable.description,
-        searchable.backup,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase(),
-      }
+        ...item,
+        searchText: [
+          item.title,
+          item.name,
+          item.summary,
+          item.note,
+          searchable.address,
+          searchable.description,
+          searchable.backup,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase(),
+      } as TripEntity & { searchText: string }
     }),
   )
 
@@ -2916,10 +2915,10 @@ export function getDependencyPrompts(doc: TripDocument, entity: TripEntity) {
   }))
 }
 
-export function getRouteForEntity(doc: TripDocument, entity: TripEntity | null | undefined) {
+export function getRouteForEntity(doc: TripDocument, entity: TripEntity | null | undefined): RouteEntity | null {
   if (!entity) return null
   const routeId = getEntityRouteId(entity)
-  if (routeId) return getEntityById(doc, 'route', routeId)
+  if (routeId) return getEntityById(doc, 'route', routeId) as RouteEntity | null
   const entityKey = makeEntityKey(entity.type, entity.id)
   const directRoute = doc.routes.find((route) => route.linkedEntityKey === entityKey)
   if (directRoute) return directRoute

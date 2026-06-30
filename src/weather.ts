@@ -17,7 +17,7 @@ type ForecastPeriod = {
   temperatureUnit?: string
 }
 
-type WeatherBundle = {
+export type WeatherBundle = {
   label: string
   coordinates: Coordinates
   placeLabel: string
@@ -32,7 +32,7 @@ type WeatherBundle = {
   }
 }
 
-type WeatherBundleMap = Partial<Record<WeatherTargetKey, WeatherBundle>>
+export type WeatherBundleMap = Partial<Record<WeatherTargetKey, WeatherBundle>>
 
 export type TripDayWeather = (typeof DAYS)[number] & {
   weather: string

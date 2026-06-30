@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
 import {
   ArrowRight,
@@ -69,8 +69,10 @@ import {
   updateEntityInCollection,
 } from './tripModel'
 import * as tripModelModule from './tripModel'
+import { COLLECTION_BY_ENTITY_TYPE } from './shared/trip-types'
 import type {
   ActivityEntity,
+  Coordinates,
   EntitySelection,
   EntityByType,
   ExpenseEntity,
@@ -85,7 +87,7 @@ import type {
   TripEntityType,
 } from './shared/trip-types'
 import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeather } from './weather'
-import type { MapWeather, MapWeatherTarget, TripDayWeather } from './weather'
+import type { MapWeather, MapWeatherTarget, TripDayWeather, WeatherBundleMap } from './weather'
 
 type ClassValue = Parameters<typeof clsx>[number]
 type Day = (typeof DAYS)[number]
@@ -130,8 +132,11 @@ type FeedItem = {
   phase?: string
   entityType?: TripEntityType | null
   entityId?: string | null
+  locationId?: string | null
+  familyId?: string | null
   createdAt?: number
 }
+type FeedItemDraft = Omit<FeedItem, 'createdAt' | 'phase'> & Partial<Pick<FeedItem, 'createdAt' | 'phase'>>
 type ActivityDraft = {
   title: string
   dayId: DayId
@@ -148,17 +153,80 @@ type LocationWithIntel = LocationEntity & {
   openingHours?: string[]
   phoneNumber?: string | null
 }
-type MediaItem = {
-  id?: string
-  label?: string
-  imageUrl?: string
-  sourceUrl?: string | null
-}
+type MediaItem = Exclude<NonNullable<LocationEntity['photos']>[number], string>
 type EntityWithStatus = TripEntity & { status?: string }
 type EntityWithDay = TripEntity & { dayId?: string }
-type JsonReviverValue = Parameters<NonNullable<Parameters<typeof JSON.parse>[1]>>[1]
-type AppGoogleInterop = JsonReviverValue
-type AppPropsInterop = JsonReviverValue
+type IconComponent = ComponentType<{ size?: number; className?: string; strokeWidth?: number }>
+type DayBriefingCopy = Pick<DailyBriefing, 'code' | 'tone' | 'summary' | 'lookouts'>
+type MissionLaunchTheme = {
+  accent: string
+  accentStrong: string
+  accentSoft: string
+  accentGlow: string
+  accentBorder: string
+  accentText: string
+  panelGlow: string
+}
+type ActivityResearch = {
+  headline: string
+  cards: { eyebrow: string; title: string; bullets: string[] }[]
+}
+type FamilyVehicleDefaults = Pick<FamilyEntity, 'originAddress' | 'originCoordinates' | 'vehicleLabel' | 'plannedStopIds' | 'routeSummary'>
+type RouteSimulationDefaults = Pick<
+  RouteEntity,
+  'originCoordinates' | 'stopLocationIds' | 'destinationLocationId' | 'simulationStartSlot' | 'simulationEndSlot' | 'durationSeconds' | 'simulationMilestones'
+>
+type YosemiteRouteDefaults = {
+  title: string
+  placesQuery: string
+  address: string
+  coordinates: Coordinates
+  externalUrl: string
+  summary: string
+}
+type SearchResult = TripEntity & { searchText: string }
+type WeatherState = { status: 'idle' | 'loading' | 'ready' | 'error'; targets: WeatherBundleMap; updatedAt: string | null; error: string | null }
+type GoogleMapsLike = typeof google
+type IntelActionProps = { icon: IconComponent; label: string; onClick: () => void; tone?: string }
+type InfoRowProps = { icon?: IconComponent; label: string; value?: ReactNode; muted?: boolean }
+type ActivityResearchCardProps = { eyebrow: string; title: string; bullets: string[] }
+type TransitStopCardProps = { stop: LocationEntity; onSelectEntity: OpenEntityHandler }
+type TransitFamilyPlan = {
+  family: FamilyEntity
+  route: RouteEntity
+  itineraryItem: ItineraryItemEntity
+  stops: LocationEntity[]
+}
+type CommonPageProps = {
+  doc: TripDocument
+  selection: EntitySelection
+  currentFamily?: FamilyEntity | null
+  currentFamilyId?: string | null
+  onSelectEntity: OpenEntityHandler
+  onOpenEntity: OpenEntityHandler
+  onUpdatePageNote: (pageId: string, value: string) => void
+  onConvertPageNote: (pageId: string) => void
+  onAddActivity: (draft: ActivityDraft) => void
+}
+type ItineraryPageProps = CommonPageProps & {
+  onSetCursor: (cursorSlot: number) => void
+  onUpdateMapUi: (patch: Partial<TripDocument['ui']['map']>) => void
+  onHydrateRouteDetails: (routeId: string, patch: Partial<RouteEntity>) => void
+  weatherDays: TripDayWeather[]
+  mapWeather: MapWeather | null
+  mapWeatherTargets: MapWeatherTarget[]
+}
+type MealsPageProps = CommonPageProps & {
+  onToggleMealStatus: (mealId: string) => void
+}
+type ExpensesPageProps = CommonPageProps & {
+  onAddExpense: () => void
+  onToggleExpenseSettled: (expenseId: string) => void
+  onUpdateExpenseFields: (expenseId: string, patch: Partial<ExpenseEntity>) => void
+  onSetExpenseAllocationMode: (expenseId: string, allocationMode: ExpenseEntity['allocationMode']) => void
+  onUpdateExpenseAllocation: (expenseId: string, familyId: string, amount: number) => void
+  onResetExpenseAllocationsToEqual: (expenseId: string) => void
+}
 const clearOldTripStorage = tripModelModule[
   `clear${'Leg'}${'acyTripStorage'}` as keyof typeof tripModelModule
 ] as () => void
@@ -166,7 +234,7 @@ const clearOldTripStorage = tripModelModule[
 declare global {
   interface Window {
     __tripCommandCenterMapsConfigured?: boolean
-    google?: AppGoogleInterop
+    google?: GoogleMapsLike
   }
 }
 
@@ -183,7 +251,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-const PAGE_ICONS: Record<string, AppGoogleInterop> = {
+const PAGE_ICONS: Record<string, IconComponent> = {
   itinerary: LayoutGrid,
   stay: Home,
   meals: Utensils,
@@ -192,7 +260,7 @@ const PAGE_ICONS: Record<string, AppGoogleInterop> = {
   families: Users,
 }
 
-const WEATHER_ICONS: Record<string, AppGoogleInterop> = {
+const WEATHER_ICONS: Record<string, IconComponent> = {
   sun: Sun,
   partly: Cloud,
   cloud: Cloud,
@@ -319,7 +387,7 @@ const OBSOLETE_PLAN_ITINERARY_IDS = new Set([
   'desert-bloom-mountain-room-return',
 ])
 
-const DAY_BRIEFING_COPY: Record<string, AppGoogleInterop> = {
+const DAY_BRIEFING_COPY: Record<string, DayBriefingCopy> = {
   thu: {
     code: 'Insertion / Consolidation',
     tone: 'Amber',
@@ -373,7 +441,7 @@ const MISSION_OBJECTIVE_COPY: Record<string, string> = {
   sun: 'Run a controlled pack-out and stagger departures without turning checkout into the whole mood.',
 }
 
-const MISSION_LAUNCH_THEME: Record<string, AppGoogleInterop> = {
+const MISSION_LAUNCH_THEME: Record<string, MissionLaunchTheme> = {
   thu: {
     accent: '#F2CC60',
     accentStrong: '#FFD76B',
@@ -465,7 +533,7 @@ function parseCurrencyInput(value: string | number) {
 }
 
 function getFamilyLabel(families: FamilyEntity[], familyId: string) {
-  return families.find((family: AppGoogleInterop) => family.id === familyId)?.title || 'Unknown family'
+  return families.find((family) => family.id === familyId)?.title || 'Unknown family'
 }
 
 function stampFamilyMetadata<T extends TripEntity>(item: T, familyId: string | null): T {
@@ -488,7 +556,7 @@ function buildEqualExpenseAllocations(amount: number, families: FamilyEntity[]):
   const baseCents = Math.floor(totalCents / families.length)
   const remainder = totalCents - baseCents * families.length
 
-  return families.map((family: AppGoogleInterop,  index: AppGoogleInterop) => ({
+  return families.map((family, index) => ({
     familyId: family.id,
     title: family.title,
     amount: (baseCents + (index < remainder ? 1 : 0)) / 100,
@@ -498,14 +566,14 @@ function buildEqualExpenseAllocations(amount: number, families: FamilyEntity[]):
 function getExpenseAllocations(expense: ExpenseEntity | null | undefined, families: FamilyEntity[]): ExpenseAllocation[] {
   if (!expense || !families.length) return []
   if (expense.allocationMode === 'individual') {
-    return families.map((family: AppGoogleInterop) => ({
+    return families.map((family) => ({
       familyId: family.id,
       title: family.title,
       amount: 0,
     }))
   }
   if (expense.allocationMode === 'manual') {
-    return families.map((family: AppGoogleInterop) => ({
+    return families.map((family) => ({
       familyId: family.id,
       title: family.title,
       amount: Number(expense.allocations?.[family.id]) || 0,
@@ -516,21 +584,21 @@ function getExpenseAllocations(expense: ExpenseEntity | null | undefined, famili
 
 function buildManualAllocationSeed(amount: number, families: FamilyEntity[]): Record<string, number> {
   return Object.fromEntries(
-    buildEqualExpenseAllocations(amount, families).map((item: AppGoogleInterop) => [item.familyId, item.amount]),
+    buildEqualExpenseAllocations(amount, families).map((item) => [item.familyId, item.amount]),
   )
 }
 
 function getFamilyExpenseBurden(expenses: ExpenseEntity[], families: FamilyEntity[]): ExpenseAllocation[] {
-  const totals = Object.fromEntries(families.map((family: AppGoogleInterop) => [family.id, 0]))
+  const totals = Object.fromEntries(families.map((family) => [family.id, 0]))
 
-  expenses.forEach((expense: AppGoogleInterop) => {
+  expenses.forEach((expense) => {
     if (expense.allocationMode === 'individual') return
-    getExpenseAllocations(expense, families).forEach((allocation: AppGoogleInterop) => {
+    getExpenseAllocations(expense, families).forEach((allocation) => {
       totals[allocation.familyId] = (totals[allocation.familyId] || 0) + allocation.amount
     })
   })
 
-  return families.map((family: AppGoogleInterop) => ({
+  return families.map((family) => ({
     familyId: family.id,
     title: family.title,
     amount: totals[family.id] || 0,
@@ -581,23 +649,23 @@ function getMissionLaunchCursor(dayIndex: number) {
 
 function getSuggestedPlaybackStartCursor(doc: TripDocument, cursorSlot: number, operationCheckpoints: TimelineGate[] = []) {
   const windows = (doc.routes || [])
-    .map((route: AppGoogleInterop) => getRouteSimulationWindow(doc, route))
-    .filter((window: AppGoogleInterop) => Number.isFinite(window.start) && Number.isFinite(window.end))
-    .sort((left: AppGoogleInterop,  right: AppGoogleInterop) => left.start - right.start)
+    .map((route) => getRouteSimulationWindow(doc, route))
+    .filter((window) => Number.isFinite(window.start) && Number.isFinite(window.end))
+    .sort((left, right) => left.start - right.start)
   const checkpoints = (operationCheckpoints || [])
-    .filter((checkpoint: AppGoogleInterop) => Number.isFinite(checkpoint?.startSlot))
-    .sort((left: AppGoogleInterop,  right: AppGoogleInterop) => left.startSlot - right.startSlot)
+    .filter((checkpoint) => Number.isFinite(checkpoint?.startSlot))
+    .sort((left, right) => left.startSlot - right.startSlot)
   const routeLeadIn = 0.08
   const checkpointLeadIn = 0.03
 
   const normalizedCursor = clampTimelineCursor(cursorSlot)
   if (!windows.length && !checkpoints.length) return normalizedCursor
 
-  const activeWindow = windows.find((window: AppGoogleInterop) => normalizedCursor >= window.start && normalizedCursor <= window.end)
+  const activeWindow = windows.find((window) => normalizedCursor >= window.start && normalizedCursor <= window.end)
   if (activeWindow) return normalizedCursor
 
-  const nextWindow = windows.find((window: AppGoogleInterop) => window.start > normalizedCursor)
-  const nextCheckpoint = checkpoints.find((checkpoint: AppGoogleInterop) => checkpoint.startSlot > normalizedCursor)
+  const nextWindow = windows.find((window) => window.start > normalizedCursor)
+  const nextCheckpoint = checkpoints.find((checkpoint) => checkpoint.startSlot > normalizedCursor)
 
   if (nextCheckpoint && (!nextWindow || nextCheckpoint.startSlot <= nextWindow.start)) {
     return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0))
@@ -661,7 +729,7 @@ function stripDayPrefix(label: string) {
 }
 
 function dedupeById<T extends { id: string }>(items: (T | null | undefined)[]): T[] {
-  const seen = new Set<AppGoogleInterop>()
+  const seen = new Set<string>()
   return items.filter((item): item is T => {
     if (!item?.id) return false
     if (seen.has(item.id)) return false
@@ -670,12 +738,20 @@ function dedupeById<T extends { id: string }>(items: (T | null | undefined)[]): 
   })
 }
 
+function isMediaItem(media: NonNullable<LocationEntity['photos']>[number]): media is MediaItem {
+  return typeof media !== 'string'
+}
+
+function getEntityStatus(entity: TripEntity): string | null {
+  return 'status' in entity && typeof entity.status === 'string' ? entity.status : null
+}
+
 function pickMostFrequentEntity<T extends { id: string }>(items: T[]): T | null {
   const counts = new Map<string, number>()
   let bestItem: T | null = null
   let bestCount = 0
 
-  items.forEach((item: AppGoogleInterop) => {
+  items.forEach((item) => {
     if (!item?.id) return
     const nextCount = (counts.get(item.id) || 0) + 1
     counts.set(item.id, nextCount)
@@ -694,22 +770,22 @@ function getRelatedTravelItemsForGate(doc: TripDocument, gate: TimelineGate): It
   if (!primaryItem) return []
 
   const gateEntityKeys = new Set(
-    gateItems.flatMap((item: AppGoogleInterop) => [makeEntityKey('itineraryItem', item.id), ...(item.linkedEntityKeys || [])]),
+    gateItems.flatMap((item) => [makeEntityKey('itineraryItem', item.id), ...(item.linkedEntityKeys || [])]),
   )
-  const sameDayTravelItems = doc.itineraryItems.filter((item: AppGoogleInterop) => item.rowId === 'travel' && item.dayId === primaryItem.dayId)
-  const directlyLinkedTravelItems = sameDayTravelItems.filter((item: AppGoogleInterop) =>
-    (item.linkedEntityKeys || []).some((key: AppGoogleInterop) => gateEntityKeys.has(key)),
+  const sameDayTravelItems = doc.itineraryItems.filter((item) => item.rowId === 'travel' && item.dayId === primaryItem.dayId)
+  const directlyLinkedTravelItems = sameDayTravelItems.filter((item) =>
+    (item.linkedEntityKeys || []).some((key) => gateEntityKeys.has(key)),
   )
   if (directlyLinkedTravelItems.length) return directlyLinkedTravelItems
 
   const launchWaveEnd = gate.startSlot + 1.2
-  const sameWaveTravelItems = sameDayTravelItems.filter((item: AppGoogleInterop) => {
+  const sameWaveTravelItems = sameDayTravelItems.filter((item) => {
     const itemEnd = item.startSlot + getItineraryItemEffectiveSpan(doc, item)
     return itemEnd >= gate.startSlot - 0.1 && item.startSlot <= launchWaveEnd
   })
   if (sameWaveTravelItems.length) return sameWaveTravelItems
 
-  return sameDayTravelItems.filter((item: AppGoogleInterop) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
+  return sameDayTravelItems.filter((item) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
 }
 
 function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null) {
@@ -720,40 +796,39 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
   const dayMeta = getDayMeta(dayId) || getCursorDay(gate.startSlot)
   const theme = MISSION_LAUNCH_THEME[dayId] || MISSION_LAUNCH_THEME.fri
   const briefing = DAY_BRIEFING_COPY[dayId] || DAY_BRIEFING_COPY.thu
-  const gateItemsWithType = gate.items.map((item: AppGoogleInterop) => ({ ...item, type: 'itineraryItem' }))
   const linkedEntities = dedupeById(
-    gateItemsWithType.flatMap((item: AppGoogleInterop) => getLinkedEntities(doc, item)),
+    gate.items.flatMap((item) => getLinkedEntities(doc, item)),
   )
   const relatedTravelItems = getRelatedTravelItemsForGate(doc, gate)
   const relatedRoutes = dedupeById(
     relatedTravelItems
-      .map((item: AppGoogleInterop) => getRouteForEntity(doc, { ...item, type: 'itineraryItem' }))
+      .map((item) => getRouteForEntity(doc, { ...item, type: 'itineraryItem' }))
       .filter(Boolean),
   )
   const gateLocations = dedupeById(
     [
-      getLocationForEntity(doc, { ...primaryItem, type: 'itineraryItem' }),
-      ...linkedEntities.filter((entity: AppGoogleInterop) => entity.type === 'location'),
+      getLocationForEntity(doc, primaryItem),
+      ...linkedEntities.filter((entity) => entity.type === 'location'),
       ...relatedRoutes
-        .map((route: AppGoogleInterop) => getTypedEntityById(doc, 'location', route.destinationLocationId))
+        .map((route) => (route.destinationLocationId ? getTypedEntityById(doc, 'location', route.destinationLocationId) : null))
         .filter(Boolean),
     ].filter(Boolean),
   )
   const targetLocation = pickMostFrequentEntity(gateLocations)
   const familyIds = [
-    ...gate.items.flatMap((item: AppGoogleInterop) => item.familyIds || []),
-    ...relatedTravelItems.flatMap((item: AppGoogleInterop) => item.familyIds || []),
-    ...relatedRoutes.map((route: AppGoogleInterop) => route.familyId).filter((familyId): familyId is string => Boolean(familyId && familyId !== 'all')),
+    ...gate.items.flatMap((item) => item.familyIds || []),
+    ...relatedTravelItems.flatMap((item) => item.familyIds || []),
+    ...relatedRoutes.map((route) => route.familyId).filter((familyId): familyId is string => Boolean(familyId && familyId !== 'all')),
   ]
   const families = dedupeById(
     familyIds
-      .map((familyId: AppGoogleInterop) => getTypedEntityById(doc, 'family', familyId))
+      .map((familyId) => getTypedEntityById(doc, 'family', familyId))
       .filter(Boolean),
   )
   const unitCount = families.length || Math.max(relatedRoutes.length, 1)
   const launchLabel = stripDayPrefix(getSlotLabel(gate.startSlot))
   const etaSlot = relatedTravelItems.length
-    ? Math.max(...relatedTravelItems.map((item: AppGoogleInterop) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
+    ? Math.max(...relatedTravelItems.map((item) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
     : gate.startSlot + getItineraryItemEffectiveSpan(doc, primaryItem)
   const etaLabel = stripDayPrefix(getSlotLabel(etaSlot))
   const participantLabel =
@@ -761,7 +836,7 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
       ? gate.dayLabel || 'All units'
       : families.length === doc.families.length
         ? 'All families'
-        : formatNameList(families.map((family: AppGoogleInterop) => family.title))
+        : formatNameList(families.map((family) => family.title))
   const targetTitle = targetLocation?.title || gate.title
   const targetMeta = targetLocation ? getEntitySummary(targetLocation) : primaryItem.status || gate.subtitle
   const routeCount = relatedRoutes.length || Math.max(relatedTravelItems.length, 1)
@@ -793,8 +868,8 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
 function buildOperationCheckpoints(doc: TripDocument): TimelineGate[] {
   return DAYS.map((day, dayIndex): TimelineGate | null => {
     const mainOp = doc.itineraryItems
-      .filter((item: AppGoogleInterop) => item.rowId === 'activities' && item.dayId === day.id)
-      .sort((left: AppGoogleInterop,  right: AppGoogleInterop) => left.startSlot - right.startSlot)[0]
+      .filter((item) => item.rowId === 'activities' && item.dayId === day.id)
+      .sort((left, right) => left.startSlot - right.startSlot)[0]
 
     if (!mainOp) return null
 
@@ -813,11 +888,11 @@ function buildOperationCheckpoints(doc: TripDocument): TimelineGate[] {
 }
 
 function findUpcomingOperationCheckpoint(checkpoints: TimelineGate[], cursorSlot: number, threshold = 0.14): TimelineGate | null {
-  return checkpoints.find((item: AppGoogleInterop) => item.startSlot >= cursorSlot && item.startSlot - cursorSlot <= threshold) || null
+  return checkpoints.find((item) => item.startSlot >= cursorSlot && item.startSlot - cursorSlot <= threshold) || null
 }
 
 function findCrossedOperationCheckpoint(checkpoints: TimelineGate[], previousCursor: number, nextCursor: number, triggeredIds: Set<string>): TimelineGate | null {
-  return checkpoints.find((item: AppGoogleInterop) =>
+  return checkpoints.find((item) =>
     !triggeredIds.has(item.id)
     && previousCursor <= item.startSlot
     && nextCursor >= item.startSlot,
@@ -831,12 +906,12 @@ function getPlaybackHighlightLocation(doc: TripDocument, context: TimelineContex
 function buildDailyBriefing(doc: TripDocument, context: TimelineContext): DailyBriefing {
   const day = getCursorDay(context.cursorSlot)
   const base = DAY_BRIEFING_COPY[day.id as DayId] || DAY_BRIEFING_COPY.thu
-  const meals = doc.meals.filter((meal: AppGoogleInterop) => meal.dayId === day.id).slice(0, 3)
-  const activities = doc.activities.filter((activity: AppGoogleInterop) => activity.dayId === day.id).slice(0, 3)
-  const tasks = getTasksForDay(doc, day.id).filter((task: AppGoogleInterop) => task.status !== 'done').slice(0, 4)
-  const liveItems = context.liveEntities.filter((item: AppGoogleInterop) => item.dayId === day.id)
+  const meals = doc.meals.filter((meal) => meal.dayId === day.id).slice(0, 3)
+  const activities = doc.activities.filter((activity) => activity.dayId === day.id).slice(0, 3)
+  const tasks = getTasksForDay(doc, day.id).filter((task) => task.status !== 'done').slice(0, 4)
+  const liveItems = context.liveEntities.filter((item) => item.dayId === day.id)
   const soonItems = [...context.nextEntities, ...context.prepSoon]
-    .filter((item: AppGoogleInterop) => item.dayId === day.id)
+    .filter((item) => item.dayId === day.id)
     .slice(0, 4)
 
   return {
@@ -889,7 +964,7 @@ function NotesBox({ value, onChange, placeholder }: { value: string; onChange: (
   return (
     <textarea
       value={value}
-      onChange={(event: AppGoogleInterop) => onChange(event.target.value)}
+      onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
       className="min-h-24 w-full resize-none border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
     />
@@ -946,7 +1021,7 @@ function AppShell({
   onSetSelectedPage: (pageId: PageId) => void
   onExport: () => void
   onSearchChange: (value: string) => void
-  searchResults: AppGoogleInterop[]
+  searchResults: SearchResult[]
   onOpenEntity: OpenEntityHandler
   families: FamilyEntity[]
   activeFamily: FamilyEntity | null
@@ -964,7 +1039,7 @@ function AppShell({
             style={{ filter: 'invert(1) grayscale(1) brightness(1.15)' }}
           />
         </div>
-        {NAV_ITEMS.map((item: AppGoogleInterop) => {
+        {NAV_ITEMS.map((item) => {
           const Icon = PAGE_ICONS[item.id as keyof typeof PAGE_ICONS]
           const active = doc.selectedPage === item.id
           return (
@@ -1027,7 +1102,7 @@ function AppShell({
                 Working as
               </div>
               <div className="flex items-center gap-1.5">
-                {families.map((family: AppGoogleInterop) => (
+                {families.map((family) => (
                   <button
                     key={family.id}
                     type="button"
@@ -1055,13 +1130,13 @@ function AppShell({
               <input
                 type="text"
                 value={doc.ui.searchQuery}
-                onChange={(event: AppGoogleInterop) => onSearchChange(event.target.value)}
+                onChange={(event) => onSearchChange(event.target.value)}
                 placeholder="Search..."
                 className="w-64 rounded-[2px] border border-[#30363D] bg-[#0d1117] py-1.5 pl-10 pr-4 text-[11px] outline-none focus:border-[#58A6FF]"
               />
               {doc.ui.searchQuery && searchResults.length ? (
                 <div className="absolute right-0 top-10 z-40 w-80 border border-[#30363D] bg-[#161b22] shadow-xl">
-                  {searchResults.map((item: AppGoogleInterop) => (
+                  {searchResults.map((item) => (
                     <button
                       key={`${item.type}:${item.id}`}
                       type="button"
@@ -1100,7 +1175,7 @@ function AppShell({
               This stays local in your browser, personalizes the planner to your family, and attributes edits and new expenses to you.
             </div>
             <div className="mt-5 grid gap-2">
-              {families.map((family: AppGoogleInterop) => (
+              {families.map((family) => (
                 <button
                   key={family.id}
                   type="button"
@@ -1129,7 +1204,7 @@ function AppShell({
 function FamilyList({ doc, selection, onSelectEntity }: { doc: TripDocument; selection: EntitySelection; onSelectEntity: OpenEntityHandler }) {
   return (
     <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-      {doc.families.map((family: AppGoogleInterop) => {
+      {doc.families.map((family) => {
         const selected = selection.type === 'family' && selection.id === family.id
         return (
           <button
@@ -1162,7 +1237,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
   const cursorDayIndex = Math.min(Math.max(Math.floor(clampedCursor / TIME_SLOTS.length), 0), DAYS.length - 1)
   const selectedDay = DAYS[cursorDayIndex]
   const cursorHour = getCursorHourInDay(clampedCursor)
-  const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour: AppGoogleInterop,  hour: AppGoogleInterop) => (
+  const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour, hour) => (
     Math.abs(hour - cursorHour) < Math.abs(bestHour - cursorHour) ? hour : bestHour
   ), MISSION_TIME_PRESETS[0])
   const selectedSlotValue = String(selectedHour).padStart(2, '0')
@@ -1183,7 +1258,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
         </div>
       </div>
       <div className="mb-3 flex flex-wrap gap-2">
-        {DAYS.map((day: AppGoogleInterop,  dayIndex: AppGoogleInterop) => (
+        {DAYS.map((day, dayIndex) => (
           <button
             key={day.id}
             type="button"
@@ -1200,7 +1275,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
         ))}
       </div>
       <div className="flex gap-2">
-        {MISSION_TIME_PRESETS.map((hour: AppGoogleInterop) => {
+        {MISSION_TIME_PRESETS.map((hour) => {
           const slot = String(hour).padStart(2, '0')
           return (
             <button
@@ -1241,20 +1316,23 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
       <div className="p-4">
         {items.length ? (
           <div className="space-y-2">
-            {items.map((item: AppGoogleInterop) => (
-              <button
-                key={`${item.type}:${item.id}`}
-                type="button"
-                onClick={() => onOpenEntity(item.type, item.id)}
-                className="flex w-full items-start justify-between gap-3 border border-[#30363D] bg-[#161b22] px-3 py-3 text-left transition-colors hover:border-[#58A6FF]/40"
-              >
-                <div className="min-w-0">
-                  <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
-                  <div className="mt-1 text-[10px] leading-relaxed text-[#8B949E]">{getEntitySummary(item)}</div>
-                </div>
-                {'status' in item && item.status ? <StatusPill tone={item.status}>{item.status}</StatusPill> : null}
-              </button>
-            ))}
+            {items.map((item) => {
+              const status = getEntityStatus(item)
+              return (
+                <button
+                  key={`${item.type}:${item.id}`}
+                  type="button"
+                  onClick={() => onOpenEntity(item.type, item.id)}
+                  className="flex w-full items-start justify-between gap-3 border border-[#30363D] bg-[#161b22] px-3 py-3 text-left transition-colors hover:border-[#58A6FF]/40"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
+                    <div className="mt-1 text-[10px] leading-relaxed text-[#8B949E]">{getEntitySummary(item)}</div>
+                  </div>
+                  {status ? <StatusPill tone={status}>{status}</StatusPill> : null}
+                </button>
+              )
+            })}
           </div>
         ) : (
           <div className="text-[11px] text-[#8B949E]">{emptyLabel}</div>
@@ -1278,7 +1356,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
       />
       <div
         className="relative max-h-full w-full max-w-5xl overflow-hidden border border-[#30363D] bg-[#10161e] shadow-[0_30px_80px_rgba(0,0,0,0.55)]"
-        onClick={(event: AppGoogleInterop) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="border-b border-[#30363D] bg-[linear-gradient(135deg,rgba(88,166,255,0.08),rgba(13,17,23,0.95)_58%)] px-6 py-5">
           <div className="mb-4 flex items-start justify-between gap-4">
@@ -1332,7 +1410,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Watch For" title="What matters today" />
               <div className="space-y-3">
-                {briefing.lookouts.map((item: AppGoogleInterop) => (
+                {briefing.lookouts.map((item) => (
                   <div key={item} className="border border-[#30363D] bg-[#0d1117] px-3 py-3 text-[11px] leading-relaxed text-[#C9D1D9]">
                     {item}
                   </div>
@@ -1348,7 +1426,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Planned beats" title="Activities + meals" />
               <div className="space-y-3">
-                {briefing.activities.map((activity: AppGoogleInterop) => (
+                {briefing.activities.map((activity) => (
                   <button
                     key={activity.id}
                     type="button"
@@ -1362,7 +1440,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
                     <StatusPill tone={activity.status}>{activity.status}</StatusPill>
                   </button>
                 ))}
-                {briefing.meals.map((meal: AppGoogleInterop) => (
+                {briefing.meals.map((meal) => (
                   <button
                     key={meal.id}
                     type="button"
@@ -1385,7 +1463,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Open loops" title="Tasks to keep in mind" />
               <div className="space-y-2">
-                {briefing.tasks.length ? briefing.tasks.map((task: AppGoogleInterop) => (
+                {briefing.tasks.length ? briefing.tasks.map((task) => (
                   <button
                     key={task.id}
                     type="button"
@@ -1471,7 +1549,7 @@ function MissionLaunchModal({ doc, gate, remainingMs, onProceed, onAbort }: { do
               {context.deploymentLabel}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              {statusCards.map((card: AppGoogleInterop) => {
+              {statusCards.map((card) => {
                 const Icon = card.icon
                 return (
                   <div
@@ -1583,7 +1661,7 @@ function MissionFeedTray({ items, onActivateItem }: { items: FeedItem[]; onActiv
   return (
     <div className="pointer-events-none absolute bottom-4 right-4 z-40 w-[320px]" aria-live="polite" aria-atomic="false">
       <div className="pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col-reverse gap-2 overflow-y-auto pr-1">
-        {items.map((item: AppGoogleInterop) => {
+        {items.map((item) => {
           const FeedIcon =
             item.kind === 'departure'
               ? CarFront
@@ -1678,13 +1756,13 @@ function SituationBoard({ context, onOpenEntity, onOpenBriefing }: { context: Ti
       </div>
 
       <div className="space-y-4 p-4">
-        {sections.map((section: AppGoogleInterop) => (
+        {sections.map((section) => (
           <div key={section.title}>
             <div className="mb-2 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
               {section.title}
             </div>
             <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-              {section.items.length ? section.items.map((item: AppGoogleInterop) => (
+              {section.items.length ? section.items.map((item) => (
                 <button
                   key={`${item.type}:${item.id}`}
                   type="button"
@@ -1737,7 +1815,7 @@ function TimelineBoard({
 }) {
   const days: TripDayWeather[] = weatherDays?.length
     ? weatherDays
-    : DAYS.map((day: AppGoogleInterop) => ({
+    : DAYS.map((day) => ({
       ...day,
       weatherIconKey: 'cloud',
       weatherLocation: day.title,
@@ -1758,13 +1836,13 @@ function TimelineBoard({
     { id: 'activities', label: 'Main Ops' },
     { id: 'support', label: 'Support' },
   ]
-  const rowLayouts = rows.map((row: AppGoogleInterop,  index: AppGoogleInterop) => ({
+  const rowLayouts = rows.map((row, index) => ({
     ...row,
     height: rowHeights[row.id] || 40,
-    top: rows.slice(0, index).reduce((sum: AppGoogleInterop,  item: AppGoogleInterop) => sum + (rowHeights[item.id] || 40), 0),
+    top: rows.slice(0, index).reduce((sum, item) => sum + (rowHeights[item.id] || 40), 0),
   }))
-  const timelineHeight = rowLayouts.reduce((sum: AppGoogleInterop,  row: AppGoogleInterop) => sum + row.height, 0)
-  const familyLaneMap = new Map(doc.families.map((family: AppGoogleInterop,  index: AppGoogleInterop) => [family.id, index]))
+  const timelineHeight = rowLayouts.reduce((sum, row) => sum + row.height, 0)
+  const familyLaneMap = new Map(doc.families.map((family, index) => [family.id, index]))
   const actualTimelineRatio = projectCursorToVisibleTimelineRatio(getCurrentTripCursor(liveNow), days.length)
   const actualNowLabel = `${liveNow.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })} ${liveNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
   const hoverCursorLabel = hoverCursorSlot == null ? null : getSlotLabel(hoverCursorSlot)
@@ -1829,7 +1907,7 @@ function TimelineBoard({
           </div>
         </div>
         <div className="flex flex-1 divide-x divide-[#30363D]/30">
-          {days.map((day: AppGoogleInterop) => {
+          {days.map((day) => {
             const WeatherIcon = WEATHER_ICONS[day.weatherIconKey as keyof typeof WEATHER_ICONS] || Cloud
             return (
               <div key={day.id} className="flex flex-1 items-center gap-3 px-4">
@@ -1851,7 +1929,7 @@ function TimelineBoard({
 
       <div className="flex" style={{ height: `${timelineHeight}px` }}>
         <div className="flex w-28 flex-col border-r border-[#30363D] bg-[#0d1117]/50">
-          {rowLayouts.map((row: AppGoogleInterop) => (
+          {rowLayouts.map((row) => (
             <div
               key={row.id}
               className="flex items-center justify-center border-b border-[#30363D]/30 px-2 text-center text-[9px] font-black uppercase tracking-widest text-[#8B949E] last:border-b-0"
@@ -1869,7 +1947,7 @@ function TimelineBoard({
           onMouseLeave={() => {
             if (!draggingRef.current) setHoverCursorSlot(null)
           }}
-          onMouseDown={(event: AppGoogleInterop) => {
+          onMouseDown={(event) => {
             draggingRef.current = true
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot != null) {
@@ -1877,7 +1955,7 @@ function TimelineBoard({
               onSetCursor?.(nextCursorSlot)
             }
           }}
-          onMouseMove={(event: AppGoogleInterop) => {
+          onMouseMove={(event) => {
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot == null) return
             setHoverCursorSlot(nextCursorSlot)
@@ -1885,7 +1963,7 @@ function TimelineBoard({
               onSetCursor?.(nextCursorSlot)
             }
           }}
-          onClick={(event: AppGoogleInterop) => {
+          onClick={(event) => {
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot != null) {
               onSetCursor?.(nextCursorSlot)
@@ -1893,7 +1971,7 @@ function TimelineBoard({
           }}
         >
           <div className="absolute inset-0">
-            {Array.from({ length: days.length * visibleHoursPerDay + 1 }).map((_: AppGoogleInterop,  index: AppGoogleInterop) => {
+            {Array.from({ length: days.length * visibleHoursPerDay + 1 }).map((_, index) => {
               const hour = index % visibleHoursPerDay
               const actualHour = VISIBLE_TIMELINE_START_HOUR + hour
               const isMajor = hour % TIMELINE_HOURS_PER_SLOT === 0
@@ -1912,8 +1990,8 @@ function TimelineBoard({
           </div>
 
           <div className="absolute inset-0">
-            {rowLayouts.map((row: AppGoogleInterop) => {
-              const rowItems = doc.itineraryItems.filter((item: AppGoogleInterop) => item.rowId === row.id)
+            {rowLayouts.map((row) => {
+              const rowItems = doc.itineraryItems.filter((item) => item.rowId === row.id)
               const laneCount = row.id === 'travel' ? Math.max(doc.families.length, 1) : 1
               const laneHeight = row.height / laneCount
 
@@ -1924,7 +2002,7 @@ function TimelineBoard({
                   style={{ top: `${row.top}px`, height: `${row.height}px` }}
                 >
                   {row.id === 'travel'
-                    ? doc.families.slice(1).map((_: AppGoogleInterop,  index: AppGoogleInterop) => (
+                    ? doc.families.slice(1).map((_, index) => (
                         <div
                           key={`travel-divider-${index}`}
                           className="absolute left-0 right-0 border-t border-[#30363D]/20"
@@ -1933,7 +2011,7 @@ function TimelineBoard({
                       ))
                     : null}
 
-                  {rowItems.map((item: AppGoogleInterop) => {
+                  {rowItems.map((item) => {
                     const itemSpan = getItineraryItemEffectiveSpan(doc, item)
                     const itemEnd = item.startSlot + itemSpan
                     const itemDayIndex = Math.min(Math.max(Math.floor(item.startSlot / TIME_SLOTS.length), 0), days.length - 1)
@@ -1942,7 +2020,7 @@ function TimelineBoard({
                     const clippedEnd = Math.min(itemEnd, visibleRange.end)
                     if (clippedEnd <= clippedStart) return null
                     const laneIndex =
-                      row.id === 'travel' ? familyLaneMap.get(item.familyIds?.[0]) ?? 0 : 0
+                      row.id === 'travel' && item.familyIds?.[0] ? familyLaneMap.get(item.familyIds[0]) ?? 0 : 0
                     const itemTop = row.id === 'travel' ? laneIndex * laneHeight + 2 : 6
                     const itemHeight = row.id === 'travel' ? laneHeight - 4 : row.height - 12
                     const selected = selection.type === item.type && selection.id === item.id
@@ -1967,7 +2045,7 @@ function TimelineBoard({
                       <button
                         key={item.id}
                         type="button"
-                        onClick={(event: AppGoogleInterop) => {
+                        onClick={(event) => {
                           event.stopPropagation()
                           onSetCursor?.(item.startSlot)
                           onSelectEntity(item.type, item.id)
@@ -2055,13 +2133,13 @@ function TimelineBoard({
           </div>
         </div>
         <div className="flex flex-1 divide-x divide-[#30363D]/50">
-          {days.map((day: AppGoogleInterop,  dayIndex: AppGoogleInterop) => (
+          {days.map((day, dayIndex) => (
             <div key={day.id} className="relative flex flex-1 flex-col">
               <div className="absolute -top-2 left-2 bg-[#0d1117] px-1.5 text-[8px] font-black uppercase tracking-widest text-[#58A6FF]">
                 {day.shortLabel}
               </div>
               <div className="flex h-full">
-                {Array.from({ length: visibleHoursPerDay }).map((_: AppGoogleInterop,  hourOffset: AppGoogleInterop) => {
+                {Array.from({ length: visibleHoursPerDay }).map((_, hourOffset) => {
                   const hour = VISIBLE_TIMELINE_START_HOUR + hourOffset
                   const hourCursor = clampTimelineCursor(dayIndex * TIME_SLOTS.length + hour / TIMELINE_HOURS_PER_SLOT)
                   const showLabel = (hour - VISIBLE_TIMELINE_START_HOUR) % 3 === 0
@@ -2096,7 +2174,7 @@ function TimelineBoard({
   )
 }
 
-function IntelAction({ icon: Icon, label, onClick, tone = 'default' }: AppPropsInterop) {
+function IntelAction({ icon: Icon, label, onClick, tone = 'default' }: IntelActionProps) {
   const tones: Record<string, string> = {
     default: 'border-[#30363D] bg-[#0d1117] text-[#C9D1D9] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]',
     amber: 'border-[#D29922]/30 bg-[#D29922]/10 text-[#D29922] hover:border-[#D29922]',
@@ -2117,7 +2195,7 @@ function IntelAction({ icon: Icon, label, onClick, tone = 'default' }: AppPropsI
   )
 }
 
-function InfoRow({ icon: Icon, label, value, muted = false }: AppPropsInterop) {
+function InfoRow({ icon: Icon, label, value, muted = false }: InfoRowProps) {
   if (!value) return null
 
   return (
@@ -2131,7 +2209,7 @@ function InfoRow({ icon: Icon, label, value, muted = false }: AppPropsInterop) {
   )
 }
 
-function formatMealTravelSignal(meal: AppGoogleInterop,  location: AppGoogleInterop) {
+function formatMealTravelSignal(meal: MealEntity, location: LocationWithIntel | null) {
   if (!location) return 'Venue pending'
   if (location.id === 'pine-airbnb') return 'Basecamp meal'
   if (location.basecampDrive?.durationText) {
@@ -2141,7 +2219,7 @@ function formatMealTravelSignal(meal: AppGoogleInterop,  location: AppGoogleInte
   return 'Venue intel loading'
 }
 
-function getMealContextNarrative(meal: AppGoogleInterop,  location: AppGoogleInterop,  linkedMission: AppGoogleInterop) {
+function getMealContextNarrative(meal: MealEntity, location: LocationEntity | null, linkedMission: TripEntity | null) {
   if (location?.id === 'pine-airbnb') {
     return 'Cook-in coverage keeps the day flexible and reduces logistics overhead for families with kids.'
   }
@@ -2157,9 +2235,9 @@ function getMealContextNarrative(meal: AppGoogleInterop,  location: AppGoogleInt
   return linkedMission?.summary || location?.summary || meal.note
 }
 
-function getMealMedia(location: AppGoogleInterop) {
-  const seen = new Set<AppGoogleInterop>()
-  return [...(location?.livePhotos || []), ...(location?.photos || [])].filter((media: AppGoogleInterop) => {
+function getMealMedia(location: LocationEntity | null) {
+  const seen = new Set<string>()
+  return [...(location?.livePhotos || []), ...(location?.photos || [])].filter(isMediaItem).filter((media) => {
     const key = media.imageUrl || media.id
     if (!key || seen.has(key)) return false
     seen.add(key)
@@ -2167,7 +2245,7 @@ function getMealMedia(location: AppGoogleInterop) {
   })
 }
 
-const ACTIVITY_RESEARCH: Record<string, AppGoogleInterop> = {
+const ACTIVITY_RESEARCH: Record<string, ActivityResearch> = {
   'thu-transit': {
     headline: 'Arrival day should optimize for smooth landfall, not ambition.',
     cards: [
@@ -2262,7 +2340,7 @@ const ACTIVITY_RESEARCH: Record<string, AppGoogleInterop> = {
   },
 }
 
-const JIANG_ROAD_TRIP_STOP_DEFAULTS = [
+const JIANG_ROAD_TRIP_STOP_DEFAULTS: LocationEntity[] = [
   {
     id: 'north-star-kettleman-lunch',
     type: 'location',
@@ -2297,7 +2375,7 @@ const JIANG_ROAD_TRIP_STOP_DEFAULTS = [
   },
 ]
 
-const FAMILY_VEHICLE_DEFAULTS: Record<string, AppGoogleInterop> = {
+const FAMILY_VEHICLE_DEFAULTS: Record<string, FamilyVehicleDefaults> = {
   'north-star': {
     originAddress: '2800 E Observatory Rd, Los Angeles, CA 90027',
     originCoordinates: { lat: 34.1184, lng: -118.3004 },
@@ -2321,7 +2399,7 @@ const FAMILY_VEHICLE_DEFAULTS: Record<string, AppGoogleInterop> = {
   },
 }
 
-const YOSEMITE_ROUTE_DEFAULTS = {
+const YOSEMITE_ROUTE_DEFAULTS: YosemiteRouteDefaults = {
   title: 'Big Oak Flat Entrance',
   placesQuery: 'Big Oak Flat Entrance Yosemite National Park CA',
   address: 'Big Oak Flat Rd, Yosemite National Park, CA 95321',
@@ -2331,7 +2409,7 @@ const YOSEMITE_ROUTE_DEFAULTS = {
     'Primary Saturday route anchor. Using the west entrance keeps park access, traffic watch, and drive planning grounded in a real checkpoint.',
 }
 
-const ROUTE_SIM_DEFAULTS: Record<string, AppGoogleInterop> = {
+const ROUTE_SIM_DEFAULTS: Record<string, RouteSimulationDefaults> = {
   'route-la-north-star': {
     originCoordinates: { lat: 34.1184, lng: -118.3004 },
     stopLocationIds: ['north-star-kettleman-lunch', 'north-star-oakdale-break'],
@@ -2377,12 +2455,12 @@ const ROUTE_SIM_DEFAULTS: Record<string, AppGoogleInterop> = {
   },
 }
 
-function ActivityResearchCard({ eyebrow, title, bullets }: AppPropsInterop) {
+function ActivityResearchCard({ eyebrow, title, bullets }: ActivityResearchCardProps) {
   return (
     <div className="border border-[#30363D] bg-[#0d1117] p-4">
       <SectionTitle eyebrow={eyebrow} title={title} />
       <div className="space-y-2">
-        {bullets.map((bullet: AppGoogleInterop) => (
+        {bullets.map((bullet) => (
           <div key={bullet} className="text-[11px] leading-relaxed text-[#C9D1D9]">
             {bullet}
           </div>
@@ -2392,7 +2470,7 @@ function ActivityResearchCard({ eyebrow, title, bullets }: AppPropsInterop) {
   )
 }
 
-function TransitStopCard({ stop, onSelectEntity }: AppPropsInterop) {
+function TransitStopCard({ stop, onSelectEntity }: TransitStopCardProps) {
   return (
     <button
       type="button"
@@ -2422,19 +2500,22 @@ function ItineraryPage({
   weatherDays,
   mapWeather,
   mapWeatherTargets,
-}: AppPropsInterop) {
+}: ItineraryPageProps) {
   const [briefingOpen, setBriefingOpen] = useState(false)
-  const [playbackCursorSlot, setPlaybackCursorSlot] = useState<AppGoogleInterop>(null)
+  const [playbackCursorSlot, setPlaybackCursorSlot] = useState<number | null>(null)
   const [isPlaybackPlaying, setIsPlaybackPlaying] = useState(false)
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
-  const [missionFeedItems, setMissionFeedItems] = useState<AppGoogleInterop[]>([])
+  const [missionFeedItems, setMissionFeedItems] = useState<FeedItem[]>([])
   const [missionFeedNow, setMissionFeedNow] = useState(() => Date.now())
-  const [operationGate, setOperationGate] = useState<AppGoogleInterop>(null)
+  const [operationGate, setOperationGate] = useState<TimelineGate | null>(null)
   const [operationGateRemainingMs, setOperationGateRemainingMs] = useState(0)
   const playbackCursorRef = useRef(doc.ui.timeline.cursorSlot)
-  const playbackRunRef = useRef({ anchorCursor: doc.ui.timeline.cursorSlot, anchorTimestamp: null })
-  const operationGateRef = useRef<AppGoogleInterop>(null)
-  const triggeredOperationCheckpointIdsRef = useRef(new Set<AppGoogleInterop>())
+  const playbackRunRef = useRef<{ anchorCursor: number; anchorTimestamp: number | null }>({
+    anchorCursor: doc.ui.timeline.cursorSlot,
+    anchorTimestamp: null,
+  })
+  const operationGateRef = useRef<TimelineGate | null>(null)
+  const triggeredOperationCheckpointIdsRef = useRef(new Set<string>())
   const effectiveCursorSlot = playbackCursorSlot ?? doc.ui.timeline.cursorSlot
   const context = useMemo(() => getTimelineContext(doc, effectiveCursorSlot), [doc, effectiveCursorSlot])
   const dailyBriefing = useMemo(() => buildDailyBriefing(doc, context), [doc, context])
@@ -2446,7 +2527,7 @@ function ItineraryPage({
   const renderedMissionFeedItems = useMemo(() => {
     const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
     return missionFeedItems
-      .map((item: AppGoogleInterop) => {
+      .map((item) => {
         const ageMs = Math.max(missionFeedNow - (item.createdAt || 0), 0)
         if (ageMs >= expirationMs) return null
         return {
@@ -2454,7 +2535,7 @@ function ItineraryPage({
           phase: ageMs >= MISSION_FEED_LIFETIME_MS ? 'fading' : 'visible',
         }
       })
-      .filter(Boolean)
+      .filter((item): item is FeedItem & { phase: string } => Boolean(item))
   }, [missionFeedItems, missionFeedNow])
 
   useEffect(() => {
@@ -2465,8 +2546,8 @@ function ItineraryPage({
     operationGateRef.current = operationGate
   }, [operationGate])
 
-  const updateMissionFeedItems = useCallback((updater: AppGoogleInterop) => {
-    setMissionFeedItems((current: AppGoogleInterop) => (typeof updater === 'function' ? updater(current) : updater))
+  const updateMissionFeedItems = useCallback((updater: FeedItem[] | ((current: FeedItem[]) => FeedItem[])) => {
+    setMissionFeedItems((current) => (typeof updater === 'function' ? updater(current) : updater))
   }, [])
 
   const clearMissionFeed = useCallback(() => {
@@ -2481,8 +2562,8 @@ function ItineraryPage({
       const now = Date.now()
       const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
       setMissionFeedNow(now)
-      updateMissionFeedItems((current: AppGoogleInterop) => {
-        const next = current.filter((item: AppGoogleInterop) => now - (item.createdAt || 0) < expirationMs)
+      updateMissionFeedItems((current) => {
+        const next = current.filter((item) => now - (item.createdAt || 0) < expirationMs)
         return next.length === current.length ? current : next
       })
     }
@@ -2492,19 +2573,19 @@ function ItineraryPage({
     return () => window.clearInterval(intervalId)
   }, [missionFeedItems.length, updateMissionFeedItems])
 
-  const handlePlaybackFeedItems = useCallback((items: AppGoogleInterop) => {
+  const handlePlaybackFeedItems = useCallback((items: FeedItemDraft | FeedItemDraft[]) => {
     const nextItems = (Array.isArray(items) ? items : [items]).filter(Boolean)
     if (!nextItems.length) return
 
     const createdAt = Date.now()
-    updateMissionFeedItems((current: AppGoogleInterop) => {
+    updateMissionFeedItems((current) => {
       const next = [...current]
-      nextItems.forEach((item: AppGoogleInterop) => {
+      nextItems.forEach((item) => {
         const nextItem = {
           ...item,
           createdAt,
         }
-        const existingIndex = next.findIndex((existing: AppGoogleInterop) => existing.key === item.key)
+        const existingIndex = next.findIndex((existing) => existing.key === item.key)
         if (existingIndex >= 0) {
           next.splice(existingIndex, 1)
         }
@@ -2515,7 +2596,7 @@ function ItineraryPage({
     setMissionFeedNow(createdAt)
   }, [updateMissionFeedItems])
 
-  const handleMissionFeedActivate = useCallback((item: AppGoogleInterop) => {
+  const handleMissionFeedActivate = useCallback((item: FeedItem) => {
     if (item.entityType && item.entityId) {
       onOpenEntity(item.entityType, item.entityId)
       return
@@ -2537,16 +2618,16 @@ function ItineraryPage({
     setOperationGateRemainingMs(0)
   }, [])
 
-  const armOperationCheckpointsFromCursor = useCallback((cursorSlot: AppGoogleInterop) => {
+  const armOperationCheckpointsFromCursor = useCallback((cursorSlot: number) => {
     const normalizedCursor = clampTimelineCursor(cursorSlot)
     triggeredOperationCheckpointIdsRef.current = new Set(
       operationCheckpoints
-        .filter((checkpoint: AppGoogleInterop) => checkpoint.startSlot <= normalizedCursor + 0.001)
-        .map((checkpoint: AppGoogleInterop) => checkpoint.id),
+        .filter((checkpoint) => checkpoint.startSlot <= normalizedCursor + 0.001)
+        .map((checkpoint) => checkpoint.id),
     )
   }, [operationCheckpoints])
 
-  const triggerOperationGate = useCallback((checkpoint: AppGoogleInterop) => {
+  const triggerOperationGate = useCallback((checkpoint: TimelineGate) => {
     const holdCursor = clampTimelineCursor(checkpoint.startSlot)
     playbackCursorRef.current = holdCursor
     setPlaybackCursorSlot(holdCursor)
@@ -2593,7 +2674,7 @@ function ItineraryPage({
       day: dailyBriefing?.day?.id,
     })
 
-    const handleKeyDown = (event: AppGoogleInterop) => {
+    const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         console.info('[TripCommand] Daily briefing closed via Escape')
         setBriefingOpen(false)
@@ -2607,14 +2688,14 @@ function ItineraryPage({
   useEffect(() => {
     if (!isPlaybackPlaying) return undefined
 
-    let frameId: AppGoogleInterop = null
+    let frameId: number | null = null
     const maxCursor = clampTimelineCursor(DAYS.length * TIME_SLOTS.length)
     playbackRunRef.current = {
       anchorCursor: playbackCursorRef.current,
       anchorTimestamp: null,
     }
 
-    const animate = (timestamp: AppGoogleInterop) => {
+    const animate = (timestamp: number) => {
       if (operationGateRef.current) {
         playbackRunRef.current.anchorTimestamp = timestamp
         frameId = window.requestAnimationFrame(animate)
@@ -2673,7 +2754,7 @@ function ItineraryPage({
   }, [isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed, triggerOperationGate])
 
   const handleTimelineCursorChange = useCallback(
-    (slot: AppGoogleInterop) => {
+    (slot: number) => {
       const nextCursor = clampTimelineCursor(slot)
       setOperationGate(null)
       setOperationGateRemainingMs(0)
@@ -2772,7 +2853,7 @@ function ItineraryPage({
               <PageNotesCard
                 title="Planner note"
                 value={getPageNote(doc, 'itinerary')}
-                onChange={(value: AppGoogleInterop) => onUpdatePageNote('itinerary', value)}
+                onChange={(value) => onUpdatePageNote('itinerary', value)}
                 onConvert={() => onConvertPageNote('itinerary')}
                 placeholder="Add a planning note..."
               />
@@ -2828,7 +2909,7 @@ function ItineraryPage({
         <DailyBriefingModal
           briefing={dailyBriefing}
           onClose={() => setBriefingOpen(false)}
-          onOpenEntity={(type: AppGoogleInterop,  id: AppGoogleInterop) => {
+          onOpenEntity={(type, id) => {
             onOpenEntity(type, id)
             setBriefingOpen(false)
           }}
@@ -2847,7 +2928,7 @@ function ItineraryPage({
   )
 }
 
-function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: AppPropsInterop) {
+function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: CommonPageProps) {
   const airbnb = getTypedEntityById(doc, 'location', 'pine-airbnb')
   if (!airbnb) return null
 
@@ -2873,7 +2954,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
           ) : null}
         </SelectableCard>
         <div className="space-y-4">
-          {doc.stayItems.map((item: AppGoogleInterop) => (
+          {doc.stayItems.map((item) => (
             <SelectableCard
               key={item.id}
               selected={selection.type === item.type && selection.id === item.id}
@@ -2969,7 +3050,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               {showExternalListing ? (
                 <button
                   type="button"
-                  onClick={() => (window.open as AppGoogleInterop)(airbnb.externalUrl, '_blank', 'noreferrer')}
+                  onClick={() => window.open(airbnb.externalUrl || undefined, '_blank', 'noreferrer')}
                   className="inline-flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]"
                 >
                   Open listing <ExternalLink size={12} />
@@ -2977,7 +3058,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               ) : null}
             </div>
             <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              {(airbnb.photos || []).slice(0, 2).map((media: AppGoogleInterop) => (
+              {(airbnb.photos || []).filter(isMediaItem).slice(0, 2).map((media) => (
                 <a
                   key={media.id}
                   href={media.sourceUrl || media.imageUrl}
@@ -3000,7 +3081,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               {showManual ? (
                 <button
                   type="button"
-                  onClick={() => (window.open as AppGoogleInterop)(airbnb.manualUrl, '_blank', 'noreferrer')}
+                  onClick={() => window.open(airbnb.manualUrl || undefined, '_blank', 'noreferrer')}
                   className="flex w-full items-center justify-between border border-[#30363D] bg-[#0d1117] px-3 py-3 text-left hover:border-[#58A6FF]/40"
                 >
                   <div>
@@ -3020,7 +3101,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
 
         <SectionTitle eyebrow="House Ops" title="Basecamp assignments" meta="Sleep + arrival + reset" />
         <div className="mb-6 grid gap-4 md:grid-cols-2">
-          {doc.families.map((family: AppGoogleInterop,  index: AppGoogleInterop) => (
+          {doc.families.map((family, index) => (
             <SelectableCard
               key={family.id}
               selected={selection.type === 'family' && selection.id === family.id}
@@ -3038,7 +3119,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
         <PageNotesCard
           title="Stay note"
           value={getPageNote(doc, 'stay')}
-          onChange={(value: AppGoogleInterop) => onUpdatePageNote('stay', value)}
+          onChange={(value) => onUpdatePageNote('stay', value)}
           onConvert={() => onConvertPageNote('stay')}
           placeholder="Record gate instructions, sleeping concerns, quiet hours, or house logistics..."
         />
@@ -3047,14 +3128,14 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
   )
 }
 
-function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }: AppPropsInterop) {
+function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }: MealsPageProps) {
   const selectedMeal = selection.type === 'meal'
     ? getTypedEntityById(doc, 'meal', selection.id) || doc.meals[0]
     : doc.meals[0]
   const selectedLocation = getLocationForEntity(doc, selectedMeal)
-  const selectedTasks = getTasksForEntity(doc, selectedMeal).filter((task: AppGoogleInterop) => task.status !== 'done').slice(0, 2)
+  const selectedTasks = getTasksForEntity(doc, selectedMeal).filter((task) => task.status !== 'done').slice(0, 2)
   const linkedMission = getLinkedEntities(doc, selectedMeal).find(
-    (entity: AppGoogleInterop) => entity.type === 'activity' || entity.type === 'itineraryItem',
+    (entity) => entity.type === 'activity' || entity.type === 'itineraryItem',
   )
   const media = getMealMedia(selectedLocation).slice(0, 3)
   const travelSummary = selectedLocation?.basecampDrive
@@ -3072,7 +3153,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Meal Logistics" title="Shared feeding plan" meta="Ownership + prep + kid friendliness" />
         <div className="space-y-3">
-          {doc.meals.map((meal: AppGoogleInterop) => (
+          {doc.meals.map((meal) => (
             <div
               key={meal.id}
               className={cn(
@@ -3146,14 +3227,14 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                   <IntelAction
                     icon={MapPin}
                     label="Open in Google Maps"
-                    onClick={() => (window.open as AppGoogleInterop)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
+                    onClick={() => window.open(selectedLocation.externalUrl || undefined, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {selectedLocation?.websiteUrl ? (
                   <IntelAction
                     icon={Globe}
                     label="Venue website"
-                    onClick={() => (window.open as AppGoogleInterop)(selectedLocation.websiteUrl, '_blank', 'noreferrer')}
+                    onClick={() => window.open(selectedLocation.websiteUrl || undefined, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {linkedMission ? (
@@ -3194,7 +3275,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                     <InfoRow
                       icon={ArrowRight}
                       label="Why this matters"
-                      value={getMealContextNarrative(selectedMeal, selectedLocation, linkedMission)}
+	                      value={getMealContextNarrative(selectedMeal, selectedLocation, linkedMission || null)}
                       muted
                     />
                     {selectedTasks.length ? (
@@ -3203,7 +3284,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                           Critical calls
                         </div>
                         <div className="space-y-2">
-                          {selectedTasks.map((task: AppGoogleInterop) => (
+                          {selectedTasks.map((task) => (
                             <div key={task.id} className="text-[11px] text-[#C9D1D9]">
                               {task.title}
                             </div>
@@ -3220,7 +3301,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
               <div className="mt-5 border border-[#30363D] bg-[#161b22] p-5">
                 <SectionTitle eyebrow="Visual Intel" title="Venue references" meta={`${media.length} asset${media.length > 1 ? 's' : ''}`} />
                 <div className="grid gap-4 md:grid-cols-3">
-                  {media.map((item: AppGoogleInterop) => (
+                  {media.map((item) => (
                     <a
                       key={item.id}
                       href={item.sourceUrl || selectedLocation?.externalUrl || '#'}
@@ -3248,7 +3329,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
               <PageNotesCard
                 title="Feeding note"
                 value={getPageNote(doc, 'meals')}
-                onChange={(value: AppGoogleInterop) => onUpdatePageNote('meals', value)}
+                onChange={(value) => onUpdatePageNote('meals', value)}
                 onConvert={() => onConvertPageNote('meals')}
                 placeholder="Capture grocery strategy, allergy notes, kid fallback meals, or timing calls for restaurant stops..."
               />
@@ -3260,15 +3341,15 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
   )
 }
 
-function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }: AppPropsInterop) {
+function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }: CommonPageProps) {
   const selectedActivity = useMemo(
-    () => (selection.type === 'activity' ? doc.activities.find((activity: AppGoogleInterop) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
+    () => (selection.type === 'activity' ? doc.activities.find((activity) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
     [doc.activities, selection],
   )
   const selectedLocation = useMemo(() => getLocationForEntity(doc, selectedActivity), [doc, selectedActivity])
   const linkedEntities = useMemo(() => getLinkedEntities(doc, selectedActivity), [doc, selectedActivity])
   const linkedTimelineItems = useMemo(
-    () => linkedEntities.filter((entity: AppGoogleInterop) => entity.type === 'itineraryItem'),
+    () => linkedEntities.filter((entity) => entity.type === 'itineraryItem'),
     [linkedEntities],
   )
   const research = selectedActivity ? ACTIVITY_RESEARCH[selectedActivity.id] : null
@@ -3276,13 +3357,16 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
     if (!selectedActivity || selectedActivity.id !== 'thu-transit') return []
 
     return linkedTimelineItems
-      .filter((item: AppGoogleInterop) => item.familyIds?.length === 1)
-      .map((item: AppGoogleInterop) => {
-        const family = getTypedEntityById(doc, 'family', item.familyIds[0])
+      .filter((item) => item.familyIds?.length === 1)
+      .map((item) => {
+        const familyId = item.familyIds?.[0]
+        if (!familyId) return null
+
+        const family = getTypedEntityById(doc, 'family', familyId)
         const route = getRouteForEntity(doc, item)
         const stops = (route?.stopLocationIds || [])
-          .map((stopId: AppGoogleInterop) => getTypedEntityById(doc, 'location', stopId))
-          .filter(Boolean)
+          .map((stopId) => getTypedEntityById(doc, 'location', stopId))
+          .filter((stop): stop is LocationEntity => Boolean(stop))
 
         return family && route
           ? {
@@ -3293,25 +3377,25 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
             }
           : null
       })
-      .filter(Boolean)
+      .filter((entry): entry is TransitFamilyPlan => Boolean(entry))
   }, [doc, linkedTimelineItems, selectedActivity])
-  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState<AppGoogleInterop>(null)
+  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState<string | null>(null)
   useEffect(() => {
     if (!transitFamilies.length) {
       setSelectedTransitFamilyId(null)
       return
     }
 
-    if (!transitFamilies.some((entry: AppGoogleInterop) => entry.family.id === selectedTransitFamilyId)) {
-      setSelectedTransitFamilyId((transitFamilies[0] as AppGoogleInterop).family.id)
+    if (!transitFamilies.some((entry) => entry.family.id === selectedTransitFamilyId)) {
+      setSelectedTransitFamilyId(transitFamilies[0].family.id)
     }
   }, [selectedTransitFamilyId, transitFamilies])
   const selectedTransitPlan = useMemo(
-    () => transitFamilies.find((entry: AppGoogleInterop) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
+    () => transitFamilies.find((entry) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
     [selectedTransitFamilyId, transitFamilies],
   )
   const [draftTitle, setDraftTitle] = useState('')
-  const [draftDayId, setDraftDayId] = useState('fri')
+  const [draftDayId, setDraftDayId] = useState<DayId>('fri')
   const [draftWindow, setDraftWindow] = useState('Fri / flexible')
   const [draftDescription, setDraftDescription] = useState('')
 
@@ -3320,7 +3404,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Activity Board" title="Day missions" meta={`${doc.activities.length} tracked`} />
         <div className="space-y-4">
-          {doc.activities.map((activity: AppGoogleInterop) => (
+          {doc.activities.map((activity) => (
             <SelectableCard
               key={activity.id}
               selected={selection.type === 'activity' && selection.id === activity.id}
@@ -3346,17 +3430,17 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
           <div className="space-y-3">
             <input
               value={draftTitle}
-              onChange={(event: AppGoogleInterop) => setDraftTitle(event.target.value)}
+              onChange={(event) => setDraftTitle(event.target.value)}
               placeholder="Activity title"
               className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
             <div className="grid grid-cols-[110px_1fr] gap-2">
               <select
                 value={draftDayId}
-                onChange={(event: AppGoogleInterop) => setDraftDayId(event.target.value)}
+                onChange={(event) => setDraftDayId(event.target.value as DayId)}
                 className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               >
-                {DAYS.map((day: AppGoogleInterop) => (
+                {DAYS.map((day) => (
                   <option key={day.id} value={day.id}>
                     {day.shortLabel.toUpperCase()}
                   </option>
@@ -3364,7 +3448,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               </select>
               <input
                 value={draftWindow}
-                onChange={(event: AppGoogleInterop) => setDraftWindow(event.target.value)}
+                onChange={(event) => setDraftWindow(event.target.value)}
                 placeholder="Window label"
                 className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               />
@@ -3419,7 +3503,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                   <IntelAction
                     icon={MapPin}
                     label="Open location"
-                    onClick={() => (window.open as AppGoogleInterop)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
+                    onClick={() => window.open(selectedLocation.externalUrl || undefined, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {selectedLocation ? (
@@ -3447,7 +3531,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               <div className="mt-5 border border-[#30363D] bg-[#161b22] p-5">
                 <SectionTitle eyebrow="Transit Planning" title="Family road trips" meta={`${transitFamilies.length} active routes`} />
                 <div className="mb-4 flex flex-wrap gap-2">
-                  {transitFamilies.map((entry: AppGoogleInterop) => (
+                  {transitFamilies.map((entry) => (
                     <button
                       key={entry.family.id}
                       type="button"
@@ -3492,7 +3576,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                     <SectionTitle eyebrow="Road-trip Stops" title="Good break points" meta={`${selectedTransitPlan.stops.length} planned`} />
                     {selectedTransitPlan.stops.length ? (
                       <div className="grid gap-3 md:grid-cols-2">
-                        {selectedTransitPlan.stops.map((stop: AppGoogleInterop) => (
+                        {selectedTransitPlan.stops.map((stop) => (
                           <TransitStopCard key={stop.id} stop={stop} onSelectEntity={onSelectEntity} />
                         ))}
                       </div>
@@ -3504,7 +3588,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               </div>
             ) : research?.cards?.length ? (
               <div className="mt-5 grid gap-4 xl:grid-cols-2">
-                {research.cards.map((card: AppGoogleInterop) => (
+                {research.cards.map((card) => (
                   <ActivityResearchCard
                     key={`${selectedActivity.id}-${card.title}`}
                     eyebrow={card.eyebrow}
@@ -3519,7 +3603,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               <PageNotesCard
                 title="Activities note"
                 value={getPageNote(doc, 'activities')}
-                onChange={(value: AppGoogleInterop) => onUpdatePageNote('activities', value)}
+                onChange={(value) => onUpdatePageNote('activities', value)}
                 onConvert={() => onConvertPageNote('activities')}
                 placeholder="Capture alternate plans, micro-itineraries, weather triggers, or new activity ideas..."
               />
@@ -3544,18 +3628,18 @@ function ExpensesPage({
   onResetExpenseAllocationsToEqual,
   onUpdatePageNote,
   onConvertPageNote,
-}: AppPropsInterop) {
+}: ExpensesPageProps) {
   const activeExpenseId =
-    selection.type === 'expense' && doc.expenses.some((expense: AppGoogleInterop) => expense.id === selection.id)
+    selection.type === 'expense' && doc.expenses.some((expense) => expense.id === selection.id)
       ? selection.id
       : doc.expenses[0]?.id
-  const activeExpense = doc.expenses.find((expense: AppGoogleInterop) => expense.id === activeExpenseId) || null
+  const activeExpense = doc.expenses.find((expense) => expense.id === activeExpenseId) || null
   const [amountDraft, setAmountDraft] = useState('')
-  const [manualAllocationDrafts, setManualAllocationDrafts] = useState<AppGoogleInterop>({})
+  const [manualAllocationDrafts, setManualAllocationDrafts] = useState<Record<string, string>>({})
   const [customPayerDraft, setCustomPayerDraft] = useState('')
-  const total = useMemo(() => doc.expenses.reduce((sum: AppGoogleInterop,  expense: AppGoogleInterop) => sum + expense.amount, 0), [doc.expenses])
+  const total = useMemo(() => doc.expenses.reduce((sum, expense) => sum + expense.amount, 0), [doc.expenses])
   const outstanding = useMemo(
-    () => doc.expenses.filter((expense: AppGoogleInterop) => !expense.settled).reduce((sum: AppGoogleInterop,  expense: AppGoogleInterop) => sum + expense.amount, 0),
+    () => doc.expenses.filter((expense) => !expense.settled).reduce((sum, expense) => sum + expense.amount, 0),
     [doc.expenses],
   )
   const familyBurden = useMemo(() => getFamilyExpenseBurden(doc.expenses, doc.families), [doc.expenses, doc.families])
@@ -3564,7 +3648,7 @@ function ExpensesPage({
     [activeExpense, doc.families],
   )
   const manualAllocatedTotal = useMemo(
-    () => activeAllocations.reduce((sum: AppGoogleInterop,  allocation: AppGoogleInterop) => sum + allocation.amount, 0),
+    () => activeAllocations.reduce((sum, allocation) => sum + allocation.amount, 0),
     [activeAllocations],
   )
   const allocationDelta = activeExpense?.allocationMode === 'manual'
@@ -3572,7 +3656,7 @@ function ExpensesPage({
     : 0
   const payerOptions = useMemo(
     () => [
-      ...doc.families.map((family: AppGoogleInterop) => family.title),
+      ...doc.families.map((family) => family.title),
       'Each family',
       'Unassigned',
     ],
@@ -3595,7 +3679,7 @@ function ExpensesPage({
 
     setManualAllocationDrafts(
       Object.fromEntries(
-        getExpenseAllocations(activeExpense, doc.families).map((allocation: AppGoogleInterop) => [
+        getExpenseAllocations(activeExpense, doc.families).map((allocation) => [
           allocation.familyId,
           allocation.amount === 0 ? '' : String(allocation.amount),
         ]),
@@ -3610,11 +3694,11 @@ function ExpensesPage({
     setAmountDraft(parsed === 0 ? '' : String(parsed))
   }, [activeExpense, amountDraft, onUpdateExpenseFields])
 
-  const commitManualAllocationDraft = useCallback((familyId: AppGoogleInterop) => {
+  const commitManualAllocationDraft = useCallback((familyId: string) => {
     if (!activeExpense) return
     const parsed = parseCurrencyInput(manualAllocationDrafts[familyId] || '')
     onUpdateExpenseAllocation(activeExpense.id, familyId, parsed)
-    setManualAllocationDrafts((current: AppGoogleInterop) => ({
+    setManualAllocationDrafts((current) => ({
       ...current,
       [familyId]: parsed === 0 ? '' : String(parsed),
     }))
@@ -3650,13 +3734,13 @@ function ExpensesPage({
         </div>
 
         <div className="border border-[#30363D] bg-[#0d1117]">
-          {doc.expenses.map((expense: AppGoogleInterop) => (
+          {doc.expenses.map((expense) => (
             <div
               key={expense.id}
               role="button"
               tabIndex={0}
               onClick={() => onSelectEntity('expense', expense.id)}
-              onKeyDown={(event: AppGoogleInterop) => {
+              onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault()
                   onSelectEntity('expense', expense.id)
@@ -3688,7 +3772,7 @@ function ExpensesPage({
               <div className="font-mono text-[12px] text-[#C9D1D9]">{formatCurrency(expense.amount)}</div>
               <button
                 type="button"
-                onClick={(event: AppGoogleInterop) => {
+                onClick={(event) => {
                   event.stopPropagation()
                   onToggleExpenseSettled(expense.id)
                 }}
@@ -3729,7 +3813,7 @@ function ExpensesPage({
                   <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense title</span>
                   <input
                     value={activeExpense.title || ''}
-                    onChange={(event: AppGoogleInterop) => onUpdateExpenseFields(activeExpense.id, { title: event.target.value })}
+                    onChange={(event) => onUpdateExpenseFields(activeExpense.id, { title: event.target.value })}
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
                 </label>
@@ -3738,7 +3822,7 @@ function ExpensesPage({
                   <div className="grid gap-2">
                     <select
                       value={payerMode}
-                      onChange={(event: AppGoogleInterop) => {
+                      onChange={(event) => {
                         const value = event.target.value
                         if (value === '__custom__') {
                           onUpdateExpenseFields(activeExpense.id, { payer: customPayerDraft || activeExpense.payer || '' })
@@ -3748,7 +3832,7 @@ function ExpensesPage({
                       }}
                       className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                     >
-                      {payerOptions.map((option: AppGoogleInterop) => (
+                      {payerOptions.map((option) => (
                         <option key={option} value={option}>
                           {option}
                         </option>
@@ -3758,7 +3842,7 @@ function ExpensesPage({
                     {payerMode === '__custom__' ? (
                       <input
                         value={customPayerDraft}
-                        onChange={(event: AppGoogleInterop) => setCustomPayerDraft(event.target.value)}
+                        onChange={(event) => setCustomPayerDraft(event.target.value)}
                         onBlur={() => onUpdateExpenseFields(activeExpense.id, { payer: customPayerDraft.trim() || 'Unassigned' })}
                         placeholder="Custom payer label"
                         className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
@@ -3771,9 +3855,9 @@ function ExpensesPage({
                   <input
                     inputMode="decimal"
                     value={amountDraft}
-                    onChange={(event: AppGoogleInterop) => setAmountDraft(event.target.value)}
+                    onChange={(event) => setAmountDraft(event.target.value)}
                     onBlur={commitAmountDraft}
-                    onFocus={(event: AppGoogleInterop) => event.target.select()}
+                    onFocus={(event) => event.target.select()}
                     placeholder="0"
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
@@ -3798,11 +3882,11 @@ function ExpensesPage({
               <div className="border border-[#30363D] bg-[#161b22] p-4">
                 <SectionTitle eyebrow="Split Mode" title="Family allocation" meta={EXPENSE_SPLIT_LABELS[activeExpense.allocationMode] || activeExpense.split} />
                 <div className="mb-4 flex flex-wrap gap-2">
-                  {[
+                  {([
                     { id: 'equal', label: 'Equal split' },
                     { id: 'manual', label: 'Manual allocation' },
                     { id: 'individual', label: 'Individual' },
-                  ].map((mode: AppGoogleInterop) => (
+                  ] satisfies { id: ExpenseEntity['allocationMode']; label: string }[]).map((mode) => (
                     <button
                       key={mode.id}
                       type="button"
@@ -3825,7 +3909,7 @@ function ExpensesPage({
                   </div>
                 ) : (
                   <div className="grid gap-2">
-                    {activeAllocations.map((allocation: AppGoogleInterop) => (
+                    {activeAllocations.map((allocation) => (
                       <div
                         key={allocation.familyId}
                         className="grid grid-cols-[minmax(0,1fr)_132px] items-center gap-3 border border-[#30363D]/60 bg-[#0d1117] px-3 py-3"
@@ -3840,14 +3924,14 @@ function ExpensesPage({
                           <input
                             inputMode="decimal"
                             value={manualAllocationDrafts[allocation.familyId] ?? ''}
-                            onChange={(event: AppGoogleInterop) =>
-                              setManualAllocationDrafts((current: AppGoogleInterop) => ({
+                            onChange={(event) =>
+                              setManualAllocationDrafts((current) => ({
                                 ...current,
                                 [allocation.familyId]: event.target.value,
                               }))
                             }
                             onBlur={() => commitManualAllocationDraft(allocation.familyId)}
-                            onFocus={(event: AppGoogleInterop) => event.target.select()}
+                            onFocus={(event) => event.target.select()}
                             placeholder="0"
                             className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                           />
@@ -3895,7 +3979,7 @@ function ExpensesPage({
                 <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense note</span>
                 <textarea
                   value={activeExpense.note || ''}
-                  onChange={(event: AppGoogleInterop) => onUpdateExpenseFields(activeExpense.id, { note: event.target.value })}
+                  onChange={(event) => onUpdateExpenseFields(activeExpense.id, { note: event.target.value })}
                   rows={4}
                   className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                 />
@@ -3907,7 +3991,7 @@ function ExpensesPage({
         <div className="mb-6 border border-[#30363D] bg-[#161b22] p-4">
           <SectionTitle eyebrow="Shared Burden" title="Per-family exposure" />
           <div className="grid gap-2">
-            {familyBurden.map((entry: AppGoogleInterop) => (
+            {familyBurden.map((entry) => (
               <div
                 key={entry.familyId}
                 className="flex items-center justify-between border border-[#30363D]/60 bg-[#0d1117] px-3 py-2"
@@ -3922,7 +4006,7 @@ function ExpensesPage({
         <PageNotesCard
           title="Expenses note"
           value={getPageNote(doc, 'expenses')}
-          onChange={(value: AppGoogleInterop) => onUpdatePageNote('expenses', value)}
+          onChange={(value) => onUpdatePageNote('expenses', value)}
           onConvert={() => onConvertPageNote('expenses')}
           placeholder="Capture split assumptions, cash items, or things to settle after the trip..."
         />
@@ -3931,7 +4015,7 @@ function ExpensesPage({
   )
 }
 
-function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: AppPropsInterop) {
+function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: CommonPageProps) {
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
@@ -3941,7 +4025,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
           <PageNotesCard
             title="Families note"
             value={getPageNote(doc, 'families')}
-            onChange={(value: AppGoogleInterop) => onUpdatePageNote('families', value)}
+            onChange={(value) => onUpdatePageNote('families', value)}
             onConvert={() => onConvertPageNote('families')}
             placeholder="Capture cross-family coordination details..."
           />
@@ -3951,7 +4035,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
       <div className="overflow-y-auto bg-[#0d1117] p-6">
         <SectionTitle eyebrow="Readiness" title="Family task posture" />
         <div className="grid gap-4">
-          {doc.families.map((family: AppGoogleInterop) => {
+          {doc.families.map((family) => {
             const tasks = getTasksByFamily(doc, family.id)
             const readiness = getFamilyReadiness(doc, family.id)
             return (
@@ -3975,7 +4059,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
                   />
                 </div>
                 <div className="space-y-2">
-                  {tasks.map((task: AppGoogleInterop) => (
+                  {tasks.map((task) => (
                     <div key={task.id} className="flex items-center justify-between text-[11px]">
                       <span className="text-[#C9D1D9]">{task.title}</span>
                       <span className={task.status === 'done' ? 'text-[#3FB950]' : 'text-[#D29922]'}>
@@ -3993,10 +4077,10 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
   )
 }
 
-function withRefreshedFamilies(nextDoc: AppGoogleInterop) {
+function withRefreshedFamilies(nextDoc: TripDocument): TripDocument {
   return {
     ...nextDoc,
-    families: nextDoc.families.map((family: AppGoogleInterop) => ({
+    families: nextDoc.families.map((family) => ({
       ...family,
       readiness: getFamilyReadiness(nextDoc, family.id),
     })),
@@ -4007,14 +4091,14 @@ function App() {
   const [doc, setDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument(), {
     deserialize: parsePersistedTripDocument,
   })
-  const [viewerProfile, setViewerProfile] = usePersistedTripState(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
+  const [viewerProfile, setViewerProfile] = usePersistedTripState<ViewerProfile>(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
-  const locationIntelHydrationRef = useRef(new Set<AppGoogleInterop>())
+  const locationIntelHydrationRef = useRef(new Set<string>())
   const startupTimelineSyncRef = useRef(false)
   const seededPlanRefreshRef = useRef(false)
-  const [weatherState, setWeatherState] = useState<AppGoogleInterop>({
+  const [weatherState, setWeatherState] = useState<WeatherState>({
     status: 'loading',
     targets: {},
     updatedAt: null,
@@ -4022,7 +4106,7 @@ function App() {
   })
 
   const selection = displayDoc.selection
-  const currentFamily = displayDoc.families.find((family: AppGoogleInterop) => family.id === viewerProfile?.familyId) || null
+  const currentFamily = displayDoc.families.find((family) => family.id === viewerProfile?.familyId) || null
   const currentFamilyId = currentFamily?.id || null
   const selectedEntity = getEntityBySelection(displayDoc, selection)
   const selectedLocation = getLocationForEntity(displayDoc, selectedEntity)
@@ -4032,7 +4116,7 @@ function App() {
     clearOldTripStorage()
   }, [])
 
-  const setActiveFamilyProfile = useCallback((familyId: AppGoogleInterop) => {
+  const setActiveFamilyProfile = useCallback((familyId: string) => {
     setViewerProfile({ familyId })
   }, [setViewerProfile])
 
@@ -4041,7 +4125,7 @@ function App() {
     startupTimelineSyncRef.current = true
 
     const nowCursor = getCurrentTripCursor()
-    setDoc((current: AppGoogleInterop) => ({
+    setDoc((current) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4059,16 +4143,16 @@ function App() {
   }, [setDoc])
 
   useEffect(() => {
-    const jiangRoute = doc.routes.find((route: AppGoogleInterop) => route.id === 'route-la-north-star')
-    const jiangFamily = doc.families.find((family: AppGoogleInterop) => family.id === 'north-star')
-    const yosemiteLocation = doc.locations.find((location: AppGoogleInterop) => location.id === 'yosemite')
+    const jiangRoute = doc.routes.find((route) => route.id === 'route-la-north-star')
+    const jiangFamily = doc.families.find((family) => family.id === 'north-star')
+    const yosemiteLocation = doc.locations.find((location) => location.id === 'yosemite')
     const missingStopLocations = JIANG_ROAD_TRIP_STOP_DEFAULTS.filter(
-      (stop: AppGoogleInterop) => !doc.locations.some((location: AppGoogleInterop) => location.id === stop.id),
+      (stop) => !doc.locations.some((location) => location.id === stop.id),
     )
 
     const needsRouteStops = jiangRoute && !jiangRoute.stopLocationIds?.length
     const needsFamilyStops = jiangFamily && !jiangFamily.plannedStopIds?.length
-    const needsVehicleFamilyBackfill = doc.families.some((family: AppGoogleInterop) => {
+    const needsVehicleFamilyBackfill = doc.families.some((family) => {
       const defaults = FAMILY_VEHICLE_DEFAULTS[family.id]
       if (!defaults) return false
       return (
@@ -4078,7 +4162,7 @@ function App() {
         (defaults.plannedStopIds?.length && !family.plannedStopIds?.length)
       )
     })
-    const needsVehicleRouteBackfill = doc.routes.some((route: AppGoogleInterop) => {
+    const needsVehicleRouteBackfill = doc.routes.some((route) => {
       const defaults = ROUTE_SIM_DEFAULTS[route.id]
       if (!defaults) return false
       return (
@@ -4110,13 +4194,13 @@ function App() {
       return
     }
 
-    setDoc((current: AppGoogleInterop) => {
+    setDoc((current) => {
       const nextLocations = [
         ...current.locations,
         ...JIANG_ROAD_TRIP_STOP_DEFAULTS.filter(
-          (stop: AppGoogleInterop) => !current.locations.some((location: AppGoogleInterop) => location.id === stop.id),
+          (stop) => !current.locations.some((location) => location.id === stop.id),
         ),
-      ].map((location: AppGoogleInterop) =>
+      ].map((location) =>
         location.id === 'yosemite'
           ? {
               ...location,
@@ -4124,7 +4208,7 @@ function App() {
             }
           : location,
       )
-      const nextFamilies = current.families.map((family: AppGoogleInterop) => {
+      const nextFamilies = current.families.map((family) => {
         const defaults = FAMILY_VEHICLE_DEFAULTS[family.id]
         if (!defaults && family.id !== 'north-star') return family
 
@@ -4139,17 +4223,17 @@ function App() {
       })
 
       const nextRoutes = synchronizeRoutePaths(
-        current.routes.map((route: AppGoogleInterop) => {
+        current.routes.map((route) => {
           const defaults = ROUTE_SIM_DEFAULTS[route.id]
           if (!defaults) return route
 
           return {
             ...route,
             originCoordinates: route.originCoordinates || defaults.originCoordinates || route.path?.[0],
-            path:
-              route.path?.length > 1 && defaults.originCoordinates
-                ? [route.originCoordinates || defaults.originCoordinates, ...route.path.slice(1)]
-                : route.path,
+	            path:
+	              route.path && route.path.length > 1 && defaults.originCoordinates
+	                ? [route.originCoordinates || defaults.originCoordinates, ...route.path.slice(1)]
+	                : route.path,
             stopLocationIds:
               Array.isArray(route.stopLocationIds)
                 ? route.stopLocationIds
@@ -4189,22 +4273,22 @@ function App() {
     if (seededPlanRefreshRef.current) return
 
     const initialDoc = getInitialTripDocument()
-    const currentById = (collection: AppGoogleInterop) => new Map(collection.map((item: AppGoogleInterop) => [item.id, item]))
-    const collectionNeedsRefresh = (currentCollection: AppGoogleInterop,  initialCollection: AppGoogleInterop,  refreshIds: AppGoogleInterop) => {
+	    const currentById = <T extends { id: string }>(collection: T[]) => new Map(collection.map((item) => [item.id, item]))
+	    const collectionNeedsRefresh = <T extends { id: string }>(currentCollection: T[], initialCollection: T[], refreshIds: Set<string>) => {
       const currentMap = currentById(currentCollection)
       const initialMap = currentById(initialCollection)
-      return [...refreshIds].some((id: AppGoogleInterop) => {
+      return [...refreshIds].some((id) => {
         const currentItem = currentMap.get(id)
         const initialItem = initialMap.get(id)
         return !currentItem || !initialItem || JSON.stringify(currentItem) !== JSON.stringify(initialItem)
       })
     }
-    const missingRoutes = initialDoc.routes.filter((route: AppGoogleInterop) => !doc.routes.some((currentRoute: AppGoogleInterop) => currentRoute.id === route.id))
+    const missingRoutes = initialDoc.routes.filter((route) => !doc.routes.some((currentRoute) => currentRoute.id === route.id))
     const missingItineraryItems = initialDoc.itineraryItems.filter(
-      (item: AppGoogleInterop) => !doc.itineraryItems.some((currentItem: AppGoogleInterop) => currentItem.id === item.id),
+      (item) => !doc.itineraryItems.some((currentItem) => currentItem.id === item.id),
     )
-    const hasObsoleteRoutes = doc.routes.some((route: AppGoogleInterop) => OBSOLETE_PLAN_ROUTE_IDS.has(route.id))
-    const hasObsoleteItineraryItems = doc.itineraryItems.some((item: AppGoogleInterop) => OBSOLETE_PLAN_ITINERARY_IDS.has(item.id))
+    const hasObsoleteRoutes = doc.routes.some((route) => OBSOLETE_PLAN_ROUTE_IDS.has(route.id))
+    const hasObsoleteItineraryItems = doc.itineraryItems.some((item) => OBSOLETE_PLAN_ITINERARY_IDS.has(item.id))
     const needsPlanRefresh =
       collectionNeedsRefresh(doc.families, initialDoc.families, SEEDED_PLAN_REFRESH_IDS.families) ||
       collectionNeedsRefresh(doc.locations, initialDoc.locations, SEEDED_PLAN_REFRESH_IDS.locations) ||
@@ -4220,17 +4304,18 @@ function App() {
     }
 
     seededPlanRefreshRef.current = true
-    setDoc((current: AppGoogleInterop) => {
-  const syncCollection = (currentCollection: AppGoogleInterop[], initialCollection: AppGoogleInterop[], refreshIds: Set<AppGoogleInterop>, obsoleteIds = new Set<AppGoogleInterop>()) => {
-        const initialMap = new Map(initialCollection.map((item: AppGoogleInterop) => [item.id, item]))
-        const filtered = currentCollection.filter((item: AppGoogleInterop) => !obsoleteIds.has(item.id))
-        const existingIds = new Set(filtered.map((item: AppGoogleInterop) => item.id))
-        const replaced = filtered.map((item: AppGoogleInterop) => (refreshIds.has(item.id) && initialMap.has(item.id) ? initialMap.get(item.id) : item))
-        const additions = [...refreshIds]
-          .filter((id: AppGoogleInterop) => !existingIds.has(id) && initialMap.has(id))
-          .map((id: AppGoogleInterop) => initialMap.get(id))
-        return [...replaced, ...additions]
-      }
+    setDoc((current) => {
+	      const syncCollection = <T extends { id: string }>(currentCollection: T[], initialCollection: T[], refreshIds: Set<string>, obsoleteIds = new Set<string>()) => {
+	        const initialMap = new Map(initialCollection.map((item) => [item.id, item]))
+	        const filtered = currentCollection.filter((item) => !obsoleteIds.has(item.id))
+	        const existingIds = new Set(filtered.map((item) => item.id))
+	        const replaced = filtered.map((item) => (refreshIds.has(item.id) ? initialMap.get(item.id) ?? item : item))
+	        const additions = [...refreshIds]
+	          .filter((id) => !existingIds.has(id) && initialMap.has(id))
+	          .map((id) => initialMap.get(id))
+	          .filter((item): item is T => Boolean(item))
+	        return [...replaced, ...additions]
+	      }
 
       const nextLocations = syncCollection(
         current.locations,
@@ -4241,7 +4326,7 @@ function App() {
         syncCollection(
           [
             ...current.routes,
-            ...initialDoc.routes.filter((route: AppGoogleInterop) => !current.routes.some((currentRoute: AppGoogleInterop) => currentRoute.id === route.id)),
+            ...initialDoc.routes.filter((route) => !current.routes.some((currentRoute) => currentRoute.id === route.id)),
           ],
           initialDoc.routes,
           SEEDED_PLAN_REFRESH_IDS.routes,
@@ -4252,7 +4337,7 @@ function App() {
       const nextItineraryItems = syncCollection(
         [
           ...current.itineraryItems,
-          ...initialDoc.itineraryItems.filter((item: AppGoogleInterop) => !current.itineraryItems.some((currentItem: AppGoogleInterop) => currentItem.id === item.id)),
+          ...initialDoc.itineraryItems.filter((item) => !current.itineraryItems.some((currentItem) => currentItem.id === item.id)),
         ],
         initialDoc.itineraryItems,
         SEEDED_PLAN_REFRESH_IDS.itineraryItems,
@@ -4287,7 +4372,7 @@ function App() {
     [displayDoc],
   )
   const timelineWeatherDays = useMemo(
-    () => DAYS.map((day: AppGoogleInterop) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
+    () => DAYS.map((day) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
     [weatherState.targets],
   )
   const mapWeather = useMemo(
@@ -4299,8 +4384,8 @@ function App() {
     [doc.ui.map.focusDayId, weatherState.targets],
   )
 
-  const setSelectedPage = useCallback((pageId: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const setSelectedPage = useCallback((pageId: PageId) => {
+    setDoc((current) => ({
       ...current,
       selectedPage: pageId,
       selection: ensureSelectionForPage(current, pageId),
@@ -4311,8 +4396,8 @@ function App() {
     }))
   }, [setDoc])
 
-  const selectEntity = useCallback((type: AppGoogleInterop,  id: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => {
+  const selectEntity = useCallback((type: TripEntityType, id: string) => {
+    setDoc((current) => {
       if (current.selection?.type === type && current.selection?.id === id && current.ui.searchQuery === '') {
         return current
       }
@@ -4325,20 +4410,20 @@ function App() {
     })
   }, [setDoc])
 
-  const openEntity = useCallback((type: AppGoogleInterop,  id: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const openEntity = useCallback((type: TripEntityType, id: string) => {
+    setDoc((current) => ({
       ...current,
       selection: { type, id },
       ui: { ...current.ui, searchQuery: '' },
     }))
   }, [setDoc])
 
-  const hydrateLocationDetails = useCallback((locationId: AppGoogleInterop,  patch: AppGoogleInterop) => {
+  const hydrateLocationDetails = useCallback((locationId: string, patch: Partial<LocationEntity>) => {
     if (!locationId || !patch) return
 
-    setDoc((current: AppGoogleInterop) => {
+    setDoc((current) => {
       let changed = false
-      const locations = current.locations.map((location: AppGoogleInterop) => {
+      const locations = current.locations.map((location) => {
         if (location.id !== locationId) return location
 
         const nextLocation = {
@@ -4363,12 +4448,12 @@ function App() {
     })
   }, [setDoc])
 
-  const hydrateRouteDetails = useCallback((routeId: AppGoogleInterop,  patch: AppGoogleInterop) => {
+  const hydrateRouteDetails = useCallback((routeId: string, patch: Partial<RouteEntity>) => {
     if (!routeId || !patch) return
 
-    setDoc((current: AppGoogleInterop) => {
+    setDoc((current) => {
       let changed = false
-      const routes = current.routes.map((route: AppGoogleInterop) => {
+      const routes = current.routes.map((route) => {
         if (route.id !== routeId) return route
 
         const nextRoute = {
@@ -4392,9 +4477,9 @@ function App() {
     })
   }, [setDoc])
 
-  const updateLocationFields = useCallback((locationId: AppGoogleInterop,  patch: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => {
-      const locations = current.locations.map((location: AppGoogleInterop) =>
+  const updateLocationFields = useCallback((locationId: string, patch: Partial<LocationEntity>) => {
+    setDoc((current) => {
+      const locations = current.locations.map((location) =>
         location.id === locationId ? stampFamilyMetadata({ ...location, ...patch }, currentFamilyId) : location,
       )
 
@@ -4410,8 +4495,8 @@ function App() {
     if (!liveExternalData) return
     if (!GOOGLE_MAPS_API_KEY) return
 
-    const basecampLocation = doc.locations.find((location: AppGoogleInterop) => location.id === 'pine-airbnb')
-    const pendingPlaceLocations = doc.locations.filter((location: AppGoogleInterop) => {
+    const basecampLocation = doc.locations.find((location) => location.id === 'pine-airbnb')
+    const pendingPlaceLocations = doc.locations.filter((location) => {
       if (!location.placesQuery) return false
 
       const needsPlaceMatch = location.placesQuery && !location.placeId
@@ -4432,9 +4517,9 @@ function App() {
     async function hydrateMealIntel() {
       try {
         if (!window.__tripCommandCenterMapsConfigured) {
-          (setOptions as AppGoogleInterop)({
+          setOptions({
             key: GOOGLE_MAPS_API_KEY,
-            version: 'weekly',
+            v: 'weekly',
             mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
           })
           window.__tripCommandCenterMapsConfigured = true
@@ -4453,14 +4538,14 @@ function App() {
           ? null
           : new google.maps.DirectionsService()
 
-        const findPlaceMatch = (location: AppGoogleInterop) =>
-          new Promise<AppGoogleInterop>((resolve: AppGoogleInterop,  reject: AppGoogleInterop) => {
+        const findPlaceMatch = (location: LocationEntity) =>
+          new Promise<google.maps.places.PlaceResult | null>((resolve, reject) => {
             if (!location.placesQuery || location.placeId) {
               resolve(null)
               return
             }
 
-            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) {
+            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV || !placesService) {
               resolve(null)
               return
             }
@@ -4470,7 +4555,7 @@ function App() {
                 query: location.placesQuery,
                 fields: ['name', 'formatted_address', 'geometry', 'place_id'],
               },
-              (results: AppGoogleInterop,  status: AppGoogleInterop) => {
+              (results, status) => {
                 if (status !== google.maps.places.PlacesServiceStatus.OK || !results?.length) {
                   reject(new Error(`Place match failed for ${location.id}: ${status}`))
                   return
@@ -4480,14 +4565,14 @@ function App() {
             )
           })
 
-        const fetchPlaceDetails = (placeId: AppGoogleInterop) =>
-          new Promise<AppGoogleInterop>((resolve: AppGoogleInterop,  reject: AppGoogleInterop) => {
+        const fetchPlaceDetails = (placeId: string) =>
+          new Promise<google.maps.places.PlaceResult | null>((resolve, reject) => {
             if (!placeId) {
               resolve(null)
               return
             }
 
-            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) {
+            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV || !placesService) {
               resolve(null)
               return
             }
@@ -4497,7 +4582,7 @@ function App() {
                 placeId,
                 fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
               },
-              (result: AppGoogleInterop,  status: AppGoogleInterop) => {
+              (result, status) => {
                 if (status !== google.maps.places.PlacesServiceStatus.OK || !result) {
                   reject(new Error(`Place details failed for ${placeId}: ${status}`))
                   return
@@ -4507,14 +4592,14 @@ function App() {
             )
           })
 
-        const fetchDriveProfile = (origin: AppGoogleInterop,  destination: AppGoogleInterop) =>
-          new Promise<AppGoogleInterop>((resolve: AppGoogleInterop,  reject: AppGoogleInterop) => {
+        const fetchDriveProfile = (origin: Coordinates, destination: Coordinates) =>
+          new Promise<LocationEntity['basecampDrive'] | null>((resolve, reject) => {
             if (!origin || !destination) {
               resolve(null)
               return
             }
 
-            if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) {
+            if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV || !directionsService) {
               resolve(null)
               return
             }
@@ -4526,23 +4611,21 @@ function App() {
                 travelMode: google.maps.TravelMode.DRIVING,
                 provideRouteAlternatives: false,
               },
-              (result: AppGoogleInterop,  status: AppGoogleInterop) => {
+              (result, status) => {
                 if (status !== 'OK' || !result?.routes?.length) {
                   reject(new Error(`Drive profile failed: ${status}`))
                   return
                 }
 
                 const leg = result.routes[0]?.legs?.[0]
-                resolve(
-                  leg
-                    ? {
-                        distanceText: leg.distance?.text || '',
-                        distanceMeters: leg.distance?.value || 0,
-                        durationText: leg.duration?.text || '',
-                        durationSeconds: leg.duration?.value || 0,
-                      }
-                    : null,
-                )
+	                resolve(
+	                  leg
+	                    ? {
+	                        distanceText: leg.distance?.text || '',
+	                        durationText: leg.duration?.text || '',
+	                      }
+	                    : null,
+	                )
               },
             )
           })
@@ -4554,17 +4637,17 @@ function App() {
             const matchedPlace = await findPlaceMatch(location)
             if (cancelled) return
 
-            const coordinates = matchedPlace?.geometry?.location
-              ? {
-                  lat: matchedPlace.geometry.location.lat(),
-                  lng: matchedPlace.geometry.location.lng(),
-                }
-              : location.coordinates
-            const placeId = matchedPlace?.place_id || location.placeId
-            const placeDetails = placeId ? await fetchPlaceDetails(placeId) : null
+	            const coordinates = matchedPlace?.geometry?.location
+	              ? {
+	                  lat: matchedPlace.geometry.location.lat(),
+	                  lng: matchedPlace.geometry.location.lng(),
+	                }
+	              : location.coordinates
+	            const placeId = matchedPlace?.place_id || (typeof location.placeId === 'string' ? location.placeId : null)
+	            const placeDetails = placeId ? await fetchPlaceDetails(placeId) : null
             if (cancelled) return
 
-            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo: AppGoogleInterop,  index: AppGoogleInterop) => ({
+            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo, index) => ({
               id: `${location.id}-live-photo-${index + 1}`,
               label: index === 0 ? 'Live venue photo' : `Venue photo ${index + 1}`,
               imageUrl: photo.getUrl({ maxWidth: 900 }),
@@ -4572,12 +4655,12 @@ function App() {
             }))
 
             let basecampDrive = location.basecampDrive
-            if (location.category === 'meal' && basecampLocation?.coordinates && !basecampDrive) {
-              try {
-                basecampDrive = await fetchDriveProfile(basecampLocation.coordinates, coordinates)
-              } catch {
-                basecampDrive = location.basecampDrive
-              }
+	            if (location.category === 'meal' && basecampLocation?.coordinates && coordinates && !basecampDrive) {
+	              try {
+	                basecampDrive = await fetchDriveProfile(basecampLocation.coordinates, coordinates) || location.basecampDrive
+	              } catch {
+	                basecampDrive = location.basecampDrive
+	              }
             }
 
             hydrateLocationDetails(location.id, {
@@ -4623,8 +4706,8 @@ function App() {
       return
     }
 
-    const basecamp = doc.locations.find((location: AppGoogleInterop) => location.id === 'pine-airbnb')
-    const yosemite = doc.locations.find((location: AppGoogleInterop) => location.id === 'yosemite')
+    const basecamp = doc.locations.find((location) => location.id === 'pine-airbnb')
+    const yosemite = doc.locations.find((location) => location.id === 'yosemite')
     if (!basecamp?.coordinates || !yosemite?.coordinates) return
 
     let cancelled = false
@@ -4636,23 +4719,24 @@ function App() {
           fetchWeatherBundle({ label: 'Yosemite West Entrance', coordinates: yosemite.coordinates }),
         ])
 
-        if (cancelled) return
+	        if (cancelled) return
 
-        setWeatherState({
-          status: 'ready',
-          targets: {
-            basecamp: basecampBundle,
-            yosemite: yosemiteBundle,
-          },
-          updatedAt: new Date().toISOString(),
-          error: null,
-        })
+	        const targets: WeatherBundleMap = {}
+	        if (basecampBundle) targets.basecamp = basecampBundle
+	        if (yosemiteBundle) targets.yosemite = yosemiteBundle
+
+	        setWeatherState({
+	          status: 'ready',
+	          targets,
+	          updatedAt: new Date().toISOString(),
+	          error: null,
+	        })
       } catch (error) {
         if (cancelled) return
-        setWeatherState((current: AppGoogleInterop) => ({
+        setWeatherState((current) => ({
           ...current,
           status: 'error',
-          error: (error as AppGoogleInterop)?.message || 'Weather fetch failed',
+          error: error instanceof Error ? error.message : 'Weather fetch failed',
         }))
       }
     }
@@ -4666,8 +4750,8 @@ function App() {
     }
   }, [doc.locations, liveExternalData])
 
-  const updatePageNote = (pageId: AppGoogleInterop,  value: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const updatePageNote = (pageId: string, value: string) => {
+    setDoc((current) => ({
       ...current,
       pageNotes: { ...current.pageNotes, [pageId]: value },
       pageNoteMeta: {
@@ -4682,35 +4766,43 @@ function App() {
     }))
   }
 
-  const updateEntityNote = (type: AppGoogleInterop,  id: AppGoogleInterop,  value: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => {
-      const collectionName = ({
-        family: 'families',
-        location: 'locations',
-        route: 'routes',
-        itineraryItem: 'itineraryItems',
-        meal: 'meals',
-        activity: 'activities',
-        stayItem: 'stayItems',
-        expense: 'expenses',
-        task: 'tasks',
-      } as AppGoogleInterop)[type]
-      if (!collectionName) return current
-      return {
-        ...current,
-        [collectionName]: updateEntityInCollection(current[collectionName], id, (item: AppGoogleInterop) => ({
-          ...stampFamilyMetadata(item, currentFamilyId),
-          note: value,
-        })),
+  const updateEntityNote = (type: TripEntityType, id: string, value: string) => {
+    setDoc((current) => {
+      const withNote = <T extends TripEntity>(item: T): T => ({
+        ...stampFamilyMetadata(item, currentFamilyId),
+        note: value,
+      })
+
+      switch (type) {
+        case 'family':
+          return { ...current, families: updateEntityInCollection(current.families, id, withNote) }
+        case 'location':
+          return { ...current, locations: updateEntityInCollection(current.locations, id, withNote) }
+        case 'route':
+          return { ...current, routes: updateEntityInCollection(current.routes, id, withNote) }
+        case 'itineraryItem':
+          return { ...current, itineraryItems: updateEntityInCollection(current.itineraryItems, id, withNote) }
+        case 'meal':
+          return { ...current, meals: updateEntityInCollection(current.meals, id, withNote) }
+        case 'activity':
+          return { ...current, activities: updateEntityInCollection(current.activities, id, withNote) }
+        case 'stayItem':
+          return { ...current, stayItems: updateEntityInCollection(current.stayItems, id, withNote) }
+        case 'expense':
+          return { ...current, expenses: updateEntityInCollection(current.expenses, id, withNote) }
+        case 'task':
+          return { ...current, tasks: updateEntityInCollection(current.tasks, id, withNote) }
+        default:
+          return current
       }
     })
   }
 
-  const toggleTask = (taskId: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => {
+  const toggleTask = (taskId: string) => {
+    setDoc((current) => {
       const nextDoc = {
         ...current,
-        tasks: current.tasks.map((task: AppGoogleInterop) =>
+        tasks: current.tasks.map((task) =>
           task.id === taskId
             ? { ...task, status: task.status === 'done' ? 'open' : 'done' }
             : task,
@@ -4720,12 +4812,12 @@ function App() {
     })
   }
 
-  const addTask = (entityType: AppGoogleInterop,  entityId: AppGoogleInterop,  title: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => {
+  const addTask = (entityType: TripEntityType, entityId: string, title: string) => {
+    setDoc((current) => {
       const entity = getEntityById(current, entityType, entityId)
       if (!entity || !title.trim()) return current
       const newTaskId = `task-user-${Date.now()}`
-      const newTask = {
+      const newTask: TaskEntity = {
         id: newTaskId,
         type: 'task',
         title,
@@ -4740,41 +4832,48 @@ function App() {
         linkedEntityKeys: [makeEntityKey(entityType, entityId)],
         note: '',
       }
-      const stampedTask = stampFamilyMetadata(newTask as TaskEntity, currentFamilyId)
+      const stampedTask = stampFamilyMetadata(newTask, currentFamilyId)
 
-      const collectionName = ({
-        family: 'families',
-        location: 'locations',
-        route: 'routes',
-        itineraryItem: 'itineraryItems',
-        meal: 'meals',
-        activity: 'activities',
-        stayItem: 'stayItems',
-        expense: 'expenses',
-        task: 'tasks',
-      } as AppGoogleInterop)[entityType]
+      const appendTaskId = <T extends TripEntity>(item: T): T => ({
+        ...item,
+        taskIds: [...(item.taskIds || []), newTaskId],
+      })
 
       const nextDoc = {
         ...current,
         tasks: [...current.tasks, stampedTask],
-        [collectionName]:
-          entityType === 'task'
-            ? current[collectionName]
-            : updateEntityInCollection(current[collectionName], entityId, (item: AppGoogleInterop) => ({
-                ...item,
-                taskIds: [...(item.taskIds || []), newTaskId],
-              })),
       }
 
-      return withRefreshedFamilies(nextDoc)
+      switch (entityType) {
+        case 'family':
+          return withRefreshedFamilies({ ...nextDoc, families: updateEntityInCollection(current.families, entityId, appendTaskId) })
+        case 'location':
+          return withRefreshedFamilies({ ...nextDoc, locations: updateEntityInCollection(current.locations, entityId, appendTaskId) })
+        case 'route':
+          return withRefreshedFamilies({ ...nextDoc, routes: updateEntityInCollection(current.routes, entityId, appendTaskId) })
+        case 'itineraryItem':
+          return withRefreshedFamilies({ ...nextDoc, itineraryItems: updateEntityInCollection(current.itineraryItems, entityId, appendTaskId) })
+        case 'meal':
+          return withRefreshedFamilies({ ...nextDoc, meals: updateEntityInCollection(current.meals, entityId, appendTaskId) })
+        case 'activity':
+          return withRefreshedFamilies({ ...nextDoc, activities: updateEntityInCollection(current.activities, entityId, appendTaskId) })
+        case 'stayItem':
+          return withRefreshedFamilies({ ...nextDoc, stayItems: updateEntityInCollection(current.stayItems, entityId, appendTaskId) })
+        case 'expense':
+          return withRefreshedFamilies({ ...nextDoc, expenses: updateEntityInCollection(current.expenses, entityId, appendTaskId) })
+        case 'task':
+          return withRefreshedFamilies(nextDoc)
+        default:
+          return current
+      }
     })
   }
 
-  const addActivity = ({ title, dayId, window, description }: AppPropsInterop) => {
+  const addActivity = ({ title, dayId, window, description }: ActivityDraft) => {
     if (!title?.trim()) return
 
     const fallbackWindow = `${getDayMeta(dayId)?.shortLabel?.toUpperCase() || dayId?.toUpperCase() || 'DAY'} / flexible`
-    const newActivity = stampFamilyMetadata({
+    const newActivity = stampFamilyMetadata<ActivityEntity>({
       id: `activity-user-${Date.now()}`,
       type: 'activity',
       title: title.trim(),
@@ -4791,47 +4890,41 @@ function App() {
       note: '',
     }, currentFamilyId)
 
-    setDoc((current: AppGoogleInterop) => ({
+    setDoc((current) => ({
       ...current,
       activities: [...current.activities, newActivity],
       selection: { type: 'activity', id: newActivity.id },
     }))
   }
 
-  const convertNoteToTask = (entityType: AppGoogleInterop,  entityId: AppGoogleInterop) => {
+  const convertNoteToTask = (entityType: TripEntityType, entityId: string) => {
     const entity = getEntityById(doc, entityType, entityId)
     if (!entity?.note?.trim()) return
     addTask(entityType, entityId, entity.note.trim().split('\n')[0].slice(0, 96))
   }
 
-  const convertPageNoteToTask = (pageId: AppGoogleInterop) => {
+  const convertPageNoteToTask = (pageId: string) => {
     const note = getPageNote(doc, pageId)
     if (!note.trim()) return
-      const pageToEntityType = {
+    const pageToEntityType = {
       itinerary: 'activity',
       stay: 'stayItem',
       meals: 'meal',
       activities: 'activity',
       expenses: 'expense',
       families: 'family',
-    }
-      const entityType = (pageToEntityType as AppGoogleInterop)[pageId]
-      const collectionName = (ENTITY_PAGE as AppGoogleInterop)[entityType] ? ({
-      activity: 'activities',
-      stayItem: 'stayItems',
-      meal: 'meals',
-      expense: 'expenses',
-      family: 'families',
-      } as AppGoogleInterop)[entityType] : null
-      const target = collectionName ? (doc as AppGoogleInterop)[collectionName]?.[0] : null
+    } satisfies Partial<Record<PageId, TripEntityType>>
+    const entityType = pageToEntityType[pageId as keyof typeof pageToEntityType]
+    const collectionName = entityType ? COLLECTION_BY_ENTITY_TYPE[entityType] : null
+    const target = collectionName ? doc[collectionName]?.[0] : null
     if (!target) return
     addTask(target.type, target.id, note.trim().split('\n')[0].slice(0, 96))
   }
 
-  const toggleMealStatus = (mealId: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const toggleMealStatus = (mealId: string) => {
+    setDoc((current) => ({
       ...current,
-      meals: current.meals.map((meal: AppGoogleInterop) =>
+      meals: current.meals.map((meal) =>
         meal.id === mealId
           ? stampFamilyMetadata({ ...meal, status: meal.status === 'Assigned' ? 'Pending' : 'Assigned' }, currentFamilyId)
           : meal,
@@ -4839,10 +4932,10 @@ function App() {
     }))
   }
 
-  const toggleExpenseSettled = (expenseId: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const toggleExpenseSettled = (expenseId: string) => {
+    setDoc((current) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleInterop) =>
+      expenses: current.expenses.map((expense) =>
         expense.id === expenseId
           ? stampFamilyMetadata({ ...expense, settled: !expense.settled }, currentFamilyId)
           : expense,
@@ -4850,10 +4943,10 @@ function App() {
     }))
   }
 
-  const updateExpenseFields = (expenseId: AppGoogleInterop,  patch: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const updateExpenseFields = (expenseId: string, patch: Partial<ExpenseEntity>) => {
+    setDoc((current) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleInterop) => {
+      expenses: current.expenses.map((expense) => {
         if (expense.id !== expenseId) return expense
 
         const nextExpense = { ...expense, ...patch }
@@ -4865,10 +4958,10 @@ function App() {
     }))
   }
 
-  const setExpenseAllocationMode = (expenseId: AppGoogleInterop,  allocationMode: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const setExpenseAllocationMode = (expenseId: string, allocationMode: ExpenseEntity['allocationMode']) => {
+    setDoc((current) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleInterop) => {
+      expenses: current.expenses.map((expense) => {
         if (expense.id !== expenseId) return expense
 
         if (allocationMode === 'manual') {
@@ -4893,10 +4986,10 @@ function App() {
     }))
   }
 
-  const updateExpenseAllocation = (expenseId: AppGoogleInterop,  familyId: AppGoogleInterop,  amount: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const updateExpenseAllocation = (expenseId: string, familyId: string, amount: number) => {
+    setDoc((current) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleInterop) =>
+      expenses: current.expenses.map((expense) =>
         expense.id === expenseId
           ? stampFamilyMetadata({
               ...expense,
@@ -4912,10 +5005,10 @@ function App() {
     }))
   }
 
-  const resetExpenseAllocationsToEqual = (expenseId: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const resetExpenseAllocationsToEqual = (expenseId: string) => {
+    setDoc((current) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleInterop) =>
+      expenses: current.expenses.map((expense) =>
         expense.id === expenseId
           ? stampFamilyMetadata({
               ...expense,
@@ -4929,9 +5022,9 @@ function App() {
   }
 
   const addExpense = () => {
-    setDoc((current: AppGoogleInterop) => {
+    setDoc((current) => {
       const familyLabel = getFamilyLabel(current.families, currentFamilyId || '')
-      const newExpense = stampFamilyMetadata({
+      const newExpense = stampFamilyMetadata<ExpenseEntity>({
         id: `expense-user-${Date.now()}`,
         type: 'expense',
         title: 'New shared expense',
@@ -4954,8 +5047,8 @@ function App() {
     })
   }
 
-  const updateMapUi = (patch: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const updateMapUi = (patch: Partial<TripDocument['ui']['map']>) => {
+    setDoc((current) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4964,8 +5057,8 @@ function App() {
     }))
   }
 
-  const setTimelineCursor = useCallback((cursorSlot: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const setTimelineCursor = useCallback((cursorSlot: number) => {
+    setDoc((current) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4974,8 +5067,8 @@ function App() {
     }))
   }, [setDoc])
 
-  const updateSearchQuery = (searchQuery: AppGoogleInterop) => {
-    setDoc((current: AppGoogleInterop) => ({
+  const updateSearchQuery = (searchQuery: string) => {
+    setDoc((current) => ({
       ...current,
       ui: { ...current.ui, searchQuery },
     }))
@@ -4991,7 +5084,7 @@ function App() {
     window.URL.revokeObjectURL(url)
   }
 
-  const pageProps = {
+  const pageProps: CommonPageProps = {
     doc: displayDoc,
     selection,
     currentFamily,
@@ -5003,7 +5096,7 @@ function App() {
     onAddActivity: addActivity,
   }
 
-  let content = null
+  let content: ReactNode = null
   if (displayDoc.selectedPage === 'itinerary') {
     content = (
       <ItineraryPage
