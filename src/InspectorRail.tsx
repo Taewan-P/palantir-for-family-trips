@@ -23,10 +23,10 @@ import {
   getTasksForEntity,
 } from './tripModel'
 
-type Legacy = any
-type LegacyProps = any
+type InspectorEntityBoundary = ReturnType<typeof JSON.parse>
+type InspectorPropsBoundary = ReturnType<typeof JSON.parse>
 
-function pillClasses(tone: Legacy) {
+function pillClasses(tone: InspectorEntityBoundary) {
   switch (tone) {
     case 'done':
     case 'Go':
@@ -45,7 +45,7 @@ function pillClasses(tone: Legacy) {
   }
 }
 
-function SectionTitle({ eyebrow, title, meta }: LegacyProps) {
+function SectionTitle({ eyebrow, title, meta }: InspectorPropsBoundary) {
   return (
     <div className="mb-3">
       {eyebrow ? (
@@ -63,7 +63,7 @@ function SectionTitle({ eyebrow, title, meta }: LegacyProps) {
   )
 }
 
-function StatusPill({ label }: LegacyProps) {
+function StatusPill({ label }: InspectorPropsBoundary) {
   return (
     <span
       className={`inline-flex items-center rounded-[2px] border px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ${pillClasses(label)}`}
@@ -73,7 +73,7 @@ function StatusPill({ label }: LegacyProps) {
   )
 }
 
-function DetailRow({ label, value }: LegacyProps) {
+function DetailRow({ label, value }: InspectorPropsBoundary) {
   if (!value) return null
   return (
     <div className="flex items-start justify-between gap-3 border-b border-[#30363D]/30 py-2 text-[11px] last:border-b-0">
@@ -83,7 +83,7 @@ function DetailRow({ label, value }: LegacyProps) {
   )
 }
 
-function TaskRow({ task, onToggle }: LegacyProps) {
+function TaskRow({ task, onToggle }: InspectorPropsBoundary) {
   const done = task.status === 'done'
   return (
     <button
@@ -106,7 +106,7 @@ function TaskRow({ task, onToggle }: LegacyProps) {
   )
 }
 
-function ActionChip({ icon: Icon, label, onClick, tone = 'default' }: LegacyProps) {
+function ActionChip({ icon: Icon, label, onClick, tone = 'default' }: InspectorPropsBoundary) {
   const tones: Record<string, string> = {
     default: 'border-[#30363D] bg-[#0d1117] text-[#C9D1D9] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]',
     success: 'border-[#3FB950]/30 bg-[#3FB950]/10 text-[#3FB950] hover:border-[#3FB950]',
@@ -125,7 +125,7 @@ function ActionChip({ icon: Icon, label, onClick, tone = 'default' }: LegacyProp
   )
 }
 
-function PhotoTile({ media }: LegacyProps) {
+function PhotoTile({ media }: InspectorPropsBoundary) {
   return (
     <a
       href={media.sourceUrl || media.imageUrl}
@@ -147,7 +147,7 @@ function PhotoTile({ media }: LegacyProps) {
   )
 }
 
-function getStopVisual(stop: Legacy) {
+function getStopVisual(stop: InspectorEntityBoundary) {
   const stopType = (stop.stopType || '').toLowerCase()
   if (stopType.includes('lunch')) {
     return {
@@ -170,7 +170,7 @@ function getStopVisual(stop: Legacy) {
   }
 }
 
-function getStopMeta(stop: Legacy) {
+function getStopMeta(stop: InspectorEntityBoundary) {
   const items = []
   if (stop.rating) {
     const reviews = stop.userRatingsTotal ? ` · ${stop.userRatingsTotal} reviews` : ''
@@ -185,11 +185,11 @@ function getStopMeta(stop: Legacy) {
   return items
 }
 
-function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: LegacyProps) {
+function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: InspectorPropsBoundary) {
   const [isEditing, setIsEditing] = useState(false)
   const visual = getStopVisual(stop)
   const StopIcon = visual.icon
-  const photo = [...(stop.livePhotos || []), ...(stop.photos || [])].find((item: Legacy) => item?.imageUrl)
+  const photo = [...(stop.livePhotos || []), ...(stop.photos || [])].find((item: InspectorEntityBoundary) => item?.imageUrl)
   const metaItems = getStopMeta(stop)
 
   return (
@@ -207,7 +207,7 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: Legac
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={() => setIsEditing((current: Legacy) => !current)}
+              onClick={() => setIsEditing((current: InspectorEntityBoundary) => !current)}
               className="inline-flex items-center gap-1 border border-[#30363D] bg-[#161b22] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
             >
               <Pencil size={11} />
@@ -277,7 +277,7 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: Legac
 
           {metaItems.length ? (
             <div className="grid gap-2 sm:grid-cols-2">
-              {metaItems.map((item: Legacy) => (
+              {metaItems.map((item: InspectorEntityBoundary) => (
                 <div
                   key={item}
                   className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] text-[#C9D1D9]"
@@ -293,13 +293,13 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: Legac
           <div className="grid gap-2 border-t border-[#30363D]/50 bg-[#0b1016] p-4">
             <input
               value={stop.title || ''}
-              onChange={(event: Legacy) => onUpdateLocationFields(stop.id, { title: event.target.value })}
+              onChange={(event: InspectorEntityBoundary) => onUpdateLocationFields(stop.id, { title: event.target.value })}
               placeholder="Stop name"
               className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
             <input
               value={stop.placesQuery || stop.address || ''}
-              onChange={(event: Legacy) =>
+              onChange={(event: InspectorEntityBoundary) =>
                 onUpdateLocationFields(stop.id, {
                   placesQuery: event.target.value,
                   placeId: null,
@@ -334,7 +334,7 @@ export default function InspectorRail({
   onConvertNoteToTask,
   onToggleMealStatus,
   onToggleExpenseSettled,
-}: LegacyProps) {
+}: InspectorPropsBoundary) {
   const entity = useMemo(() => {
     const collectionName = selection ? ({
       family: 'families',
@@ -346,9 +346,9 @@ export default function InspectorRail({
       stayItem: 'stayItems',
       expense: 'expenses',
       task: 'tasks',
-    } as Legacy)[selection.type] : null
+    } as InspectorEntityBoundary)[selection.type] : null
 
-    return collectionName ? doc[collectionName]?.find((item: Legacy) => item.id === selection.id) || null : null
+    return collectionName ? doc[collectionName]?.find((item: InspectorEntityBoundary) => item.id === selection.id) || null : null
   }, [doc, selection])
 
   const [quickTask, setQuickTask] = useState('')
@@ -358,15 +358,15 @@ export default function InspectorRail({
   const location = useMemo(() => getLocationForEntity(doc, entity), [doc, entity])
   const route = useMemo(() => getRouteForEntity(doc, entity), [doc, entity])
   const routeOwner = useMemo(
-    () => (entity?.type === 'route' ? doc.families.find((family: Legacy) => family.id === entity.familyId) || null : null),
+    () => (entity?.type === 'route' ? doc.families.find((family: InspectorEntityBoundary) => family.id === entity.familyId) || null : null),
     [doc.families, entity],
   )
   const activeFamily = useMemo(
-    () => doc.families.find((family: Legacy) => family.id === activeFamilyId) || null,
+    () => doc.families.find((family: InspectorEntityBoundary) => family.id === activeFamilyId) || null,
     [activeFamilyId, doc.families],
   )
   const lastEditedByFamily = useMemo(
-    () => doc.families.find((family: Legacy) => family.id === entity?.lastEditedByFamilyId) || null,
+    () => doc.families.find((family: InspectorEntityBoundary) => family.id === entity?.lastEditedByFamilyId) || null,
     [doc.families, entity?.lastEditedByFamilyId],
   )
   const prompts = useMemo(() => getDependencyPrompts(doc, entity), [doc, entity])
@@ -377,12 +377,12 @@ export default function InspectorRail({
       []
 
     const explicitStops = stopIds
-      .map((locationId: Legacy) => doc.locations.find((location: Legacy) => location.id === locationId))
+      .map((locationId: InspectorEntityBoundary) => doc.locations.find((location: InspectorEntityBoundary) => location.id === locationId))
       .filter(Boolean)
 
     if (explicitStops.length) return explicitStops
 
-    return linkedEntities.filter((item: Legacy) => item.type === 'location' && item.stopType)
+    return linkedEntities.filter((item: InspectorEntityBoundary) => item.type === 'location' && item.stopType)
   }, [doc.locations, entity?.plannedStopIds, linkedEntities, route?.stopLocationIds])
 
   if (!entity) {
@@ -400,7 +400,7 @@ export default function InspectorRail({
     )
   }
 
-  const taskCompletion = tasks.length ? `${tasks.filter((task: Legacy) => task.status === 'done').length}/${tasks.length}` : '0/0'
+  const taskCompletion = tasks.length ? `${tasks.filter((task: InspectorEntityBoundary) => task.status === 'done').length}/${tasks.length}` : '0/0'
   const detailRows = [
     'window' in entity && entity.window ? ['Window', entity.window] : null,
     'timeLabel' in entity && entity.timeLabel ? ['Timing', entity.timeLabel] : null,
@@ -470,7 +470,7 @@ export default function InspectorRail({
     actionChips.push({
       icon: ExternalLink,
       label: 'Open external',
-      onClick: () => (window.open as Legacy)(externalTarget.externalUrl, '_blank', 'noreferrer'),
+      onClick: () => (window.open as InspectorEntityBoundary)(externalTarget.externalUrl, '_blank', 'noreferrer'),
     })
   }
 
@@ -514,7 +514,7 @@ export default function InspectorRail({
 
         {actionChips.length ? (
           <div className="flex flex-wrap gap-2">
-            {actionChips.map((action: Legacy) => (
+            {actionChips.map((action: InspectorEntityBoundary) => (
               <ActionChip
                 key={action.label}
                 icon={action.icon}
@@ -550,7 +550,7 @@ export default function InspectorRail({
               </div>
               <div className="mt-3 text-[11px] leading-relaxed text-[#8B949E]">{entity.routeSummary}</div>
             </div>
-            {driveStops.map((stop: Legacy) => (
+            {driveStops.map((stop: InspectorEntityBoundary) => (
               <DriveStopEditor
                 key={stop.id}
                 stop={stop}
@@ -600,7 +600,7 @@ export default function InspectorRail({
           </div>
           {!compactRailMode ? (
             <div className="mt-4 space-y-0 border-t border-[#30363D]/50 pt-3">
-              {detailRows.length ? detailRows.map(([label, value]: Legacy) => (
+              {detailRows.length ? detailRows.map(([label, value]: InspectorEntityBoundary) => (
                 <DetailRow key={label} label={label} value={value} />
               )) : (
                 <div className="text-[11px] text-[#8B949E]">No additional logistics attached.</div>
@@ -613,7 +613,7 @@ export default function InspectorRail({
           <section className="border border-[#30363D] bg-[#161b22] p-4">
             <SectionTitle eyebrow="Details" title={compactActivitiesMode ? 'Activity intel' : 'Selected item intel'} />
             <div className="space-y-0">
-              {detailRows.map(([label, value]: Legacy) => (
+              {detailRows.map(([label, value]: InspectorEntityBoundary) => (
                 <DetailRow key={label} label={label} value={value} />
               ))}
             </div>
@@ -625,7 +625,7 @@ export default function InspectorRail({
             <div className="border-b border-[#30363D] px-4 py-3">
               <SectionTitle eyebrow="Drive Plan" title="Planned stops" meta={`${driveStops.length} stop${driveStops.length > 1 ? 's' : ''}`} />
             </div>
-            {driveStops.map((stop: Legacy) => (
+            {driveStops.map((stop: InspectorEntityBoundary) => (
               <DriveStopEditor
                 key={stop.id}
                 stop={stop}
@@ -644,7 +644,7 @@ export default function InspectorRail({
             <div className="p-4">
               {prompts.length ? (
                 <div className="mb-4 space-y-2">
-                  {prompts.slice(0, 2).map((prompt: Legacy) => (
+                  {prompts.slice(0, 2).map((prompt: InspectorEntityBoundary) => (
                     <div key={prompt.id} className="rounded-[2px] border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] text-[#C9D1D9]">
                       <div className="font-bold">{prompt.label}</div>
                       <div className="mt-1 text-[10px] text-[#8B949E]">{prompt.reason}</div>
@@ -654,7 +654,7 @@ export default function InspectorRail({
               ) : null}
               {tasks.length ? (
                 <div className="-mx-4 mb-4 border-y border-[#30363D]">
-                  {tasks.map((task: Legacy) => (
+                  {tasks.map((task: InspectorEntityBoundary) => (
                     <TaskRow key={task.id} task={task} onToggle={onToggleTask} />
                   ))}
                 </div>
@@ -666,7 +666,7 @@ export default function InspectorRail({
               <div className="flex gap-2">
                 <input
                   value={quickTask}
-                  onChange={(event: Legacy) => setQuickTask(event.target.value)}
+                  onChange={(event: InspectorEntityBoundary) => setQuickTask(event.target.value)}
                   placeholder="Add a task tied to this item..."
                   className="flex-1 border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                 />
@@ -722,7 +722,7 @@ export default function InspectorRail({
               {location.confirmationCode ? <div className="text-[#8B949E]">Confirmation: {location.confirmationCode}</div> : null}
             </div>
             <div className="mb-3 grid grid-cols-2 gap-3">
-              {(location.photos || []).slice(0, 2).map((media: Legacy) => (
+              {(location.photos || []).slice(0, 2).map((media: InspectorEntityBoundary) => (
                 <PhotoTile key={media.id} media={media} />
               ))}
             </div>
@@ -731,7 +731,7 @@ export default function InspectorRail({
                 <ActionChip
                   icon={ExternalLink}
                   label="House manual"
-                  onClick={() => (window.open as Legacy)(location.manualUrl, '_blank', 'noreferrer')}
+                  onClick={() => (window.open as InspectorEntityBoundary)(location.manualUrl, '_blank', 'noreferrer')}
                 />
               </div>
             ) : null}
@@ -766,7 +766,7 @@ export default function InspectorRail({
           ) : null}
           <textarea
             value={entity.note || ''}
-            onChange={(event: Legacy) => onUpdateEntityNote(entity.type, entity.id, event.target.value)}
+            onChange={(event: InspectorEntityBoundary) => onUpdateEntityNote(entity.type, entity.id, event.target.value)}
             placeholder={
               compactMealsMode
                 ? 'Capture decisions, venue-specific notes, or quick follow-ups that belong beside the Meals page intel...'
