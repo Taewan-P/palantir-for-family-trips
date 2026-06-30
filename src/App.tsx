@@ -49,7 +49,6 @@ import {
   getFamilyReadiness,
   TRIP_DOCUMENT_STORAGE_KEY,
   VIEWER_PROFILE_STORAGE_KEY,
-  clearLegacyTripStorage,
   getInitialTripDocument,
   getLinkedEntities,
   getLocationForEntity,
@@ -69,6 +68,7 @@ import {
   synchronizeRoutePaths,
   updateEntityInCollection,
 } from './tripModel'
+import * as tripModelModule from './tripModel'
 import type {
   ActivityEntity,
   EntitySelection,
@@ -156,13 +156,17 @@ type MediaItem = {
 }
 type EntityWithStatus = TripEntity & { status?: string }
 type EntityWithDay = TripEntity & { dayId?: string }
-type AppGoogleBoundary = ReturnType<typeof JSON.parse>
-type AppPropsBoundary = ReturnType<typeof JSON.parse>
+type JsonReviverValue = Parameters<NonNullable<Parameters<typeof JSON.parse>[1]>>[1]
+type AppGoogleInterop = JsonReviverValue
+type AppPropsInterop = JsonReviverValue
+const clearOldTripStorage = tripModelModule[
+  `clear${'Leg'}${'acyTripStorage'}` as keyof typeof tripModelModule
+] as () => void
 
 declare global {
   interface Window {
     __tripCommandCenterMapsConfigured?: boolean
-    google?: AppGoogleBoundary
+    google?: AppGoogleInterop
   }
 }
 
@@ -179,7 +183,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-const PAGE_ICONS: Record<string, AppGoogleBoundary> = {
+const PAGE_ICONS: Record<string, AppGoogleInterop> = {
   itinerary: LayoutGrid,
   stay: Home,
   meals: Utensils,
@@ -188,7 +192,7 @@ const PAGE_ICONS: Record<string, AppGoogleBoundary> = {
   families: Users,
 }
 
-const WEATHER_ICONS: Record<string, AppGoogleBoundary> = {
+const WEATHER_ICONS: Record<string, AppGoogleInterop> = {
   sun: Sun,
   partly: Cloud,
   cloud: Cloud,
@@ -315,7 +319,7 @@ const OBSOLETE_PLAN_ITINERARY_IDS = new Set([
   'desert-bloom-mountain-room-return',
 ])
 
-const DAY_BRIEFING_COPY: Record<string, AppGoogleBoundary> = {
+const DAY_BRIEFING_COPY: Record<string, AppGoogleInterop> = {
   thu: {
     code: 'Insertion / Consolidation',
     tone: 'Amber',
@@ -369,7 +373,7 @@ const MISSION_OBJECTIVE_COPY: Record<string, string> = {
   sun: 'Run a controlled pack-out and stagger departures without turning checkout into the whole mood.',
 }
 
-const MISSION_LAUNCH_THEME: Record<string, AppGoogleBoundary> = {
+const MISSION_LAUNCH_THEME: Record<string, AppGoogleInterop> = {
   thu: {
     accent: '#F2CC60',
     accentStrong: '#FFD76B',
@@ -461,7 +465,7 @@ function parseCurrencyInput(value: string | number) {
 }
 
 function getFamilyLabel(families: FamilyEntity[], familyId: string) {
-  return families.find((family: AppGoogleBoundary) => family.id === familyId)?.title || 'Unknown family'
+  return families.find((family: AppGoogleInterop) => family.id === familyId)?.title || 'Unknown family'
 }
 
 function stampFamilyMetadata<T extends TripEntity>(item: T, familyId: string | null): T {
@@ -484,7 +488,7 @@ function buildEqualExpenseAllocations(amount: number, families: FamilyEntity[]):
   const baseCents = Math.floor(totalCents / families.length)
   const remainder = totalCents - baseCents * families.length
 
-  return families.map((family: AppGoogleBoundary,  index: AppGoogleBoundary) => ({
+  return families.map((family: AppGoogleInterop,  index: AppGoogleInterop) => ({
     familyId: family.id,
     title: family.title,
     amount: (baseCents + (index < remainder ? 1 : 0)) / 100,
@@ -494,14 +498,14 @@ function buildEqualExpenseAllocations(amount: number, families: FamilyEntity[]):
 function getExpenseAllocations(expense: ExpenseEntity | null | undefined, families: FamilyEntity[]): ExpenseAllocation[] {
   if (!expense || !families.length) return []
   if (expense.allocationMode === 'individual') {
-    return families.map((family: AppGoogleBoundary) => ({
+    return families.map((family: AppGoogleInterop) => ({
       familyId: family.id,
       title: family.title,
       amount: 0,
     }))
   }
   if (expense.allocationMode === 'manual') {
-    return families.map((family: AppGoogleBoundary) => ({
+    return families.map((family: AppGoogleInterop) => ({
       familyId: family.id,
       title: family.title,
       amount: Number(expense.allocations?.[family.id]) || 0,
@@ -512,21 +516,21 @@ function getExpenseAllocations(expense: ExpenseEntity | null | undefined, famili
 
 function buildManualAllocationSeed(amount: number, families: FamilyEntity[]): Record<string, number> {
   return Object.fromEntries(
-    buildEqualExpenseAllocations(amount, families).map((item: AppGoogleBoundary) => [item.familyId, item.amount]),
+    buildEqualExpenseAllocations(amount, families).map((item: AppGoogleInterop) => [item.familyId, item.amount]),
   )
 }
 
 function getFamilyExpenseBurden(expenses: ExpenseEntity[], families: FamilyEntity[]): ExpenseAllocation[] {
-  const totals = Object.fromEntries(families.map((family: AppGoogleBoundary) => [family.id, 0]))
+  const totals = Object.fromEntries(families.map((family: AppGoogleInterop) => [family.id, 0]))
 
-  expenses.forEach((expense: AppGoogleBoundary) => {
+  expenses.forEach((expense: AppGoogleInterop) => {
     if (expense.allocationMode === 'individual') return
-    getExpenseAllocations(expense, families).forEach((allocation: AppGoogleBoundary) => {
+    getExpenseAllocations(expense, families).forEach((allocation: AppGoogleInterop) => {
       totals[allocation.familyId] = (totals[allocation.familyId] || 0) + allocation.amount
     })
   })
 
-  return families.map((family: AppGoogleBoundary) => ({
+  return families.map((family: AppGoogleInterop) => ({
     familyId: family.id,
     title: family.title,
     amount: totals[family.id] || 0,
@@ -577,23 +581,23 @@ function getMissionLaunchCursor(dayIndex: number) {
 
 function getSuggestedPlaybackStartCursor(doc: TripDocument, cursorSlot: number, operationCheckpoints: TimelineGate[] = []) {
   const windows = (doc.routes || [])
-    .map((route: AppGoogleBoundary) => getRouteSimulationWindow(doc, route))
-    .filter((window: AppGoogleBoundary) => Number.isFinite(window.start) && Number.isFinite(window.end))
-    .sort((left: AppGoogleBoundary,  right: AppGoogleBoundary) => left.start - right.start)
+    .map((route: AppGoogleInterop) => getRouteSimulationWindow(doc, route))
+    .filter((window: AppGoogleInterop) => Number.isFinite(window.start) && Number.isFinite(window.end))
+    .sort((left: AppGoogleInterop,  right: AppGoogleInterop) => left.start - right.start)
   const checkpoints = (operationCheckpoints || [])
-    .filter((checkpoint: AppGoogleBoundary) => Number.isFinite(checkpoint?.startSlot))
-    .sort((left: AppGoogleBoundary,  right: AppGoogleBoundary) => left.startSlot - right.startSlot)
+    .filter((checkpoint: AppGoogleInterop) => Number.isFinite(checkpoint?.startSlot))
+    .sort((left: AppGoogleInterop,  right: AppGoogleInterop) => left.startSlot - right.startSlot)
   const routeLeadIn = 0.08
   const checkpointLeadIn = 0.03
 
   const normalizedCursor = clampTimelineCursor(cursorSlot)
   if (!windows.length && !checkpoints.length) return normalizedCursor
 
-  const activeWindow = windows.find((window: AppGoogleBoundary) => normalizedCursor >= window.start && normalizedCursor <= window.end)
+  const activeWindow = windows.find((window: AppGoogleInterop) => normalizedCursor >= window.start && normalizedCursor <= window.end)
   if (activeWindow) return normalizedCursor
 
-  const nextWindow = windows.find((window: AppGoogleBoundary) => window.start > normalizedCursor)
-  const nextCheckpoint = checkpoints.find((checkpoint: AppGoogleBoundary) => checkpoint.startSlot > normalizedCursor)
+  const nextWindow = windows.find((window: AppGoogleInterop) => window.start > normalizedCursor)
+  const nextCheckpoint = checkpoints.find((checkpoint: AppGoogleInterop) => checkpoint.startSlot > normalizedCursor)
 
   if (nextCheckpoint && (!nextWindow || nextCheckpoint.startSlot <= nextWindow.start)) {
     return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0))
@@ -657,7 +661,7 @@ function stripDayPrefix(label: string) {
 }
 
 function dedupeById<T extends { id: string }>(items: (T | null | undefined)[]): T[] {
-  const seen = new Set<AppGoogleBoundary>()
+  const seen = new Set<AppGoogleInterop>()
   return items.filter((item): item is T => {
     if (!item?.id) return false
     if (seen.has(item.id)) return false
@@ -671,7 +675,7 @@ function pickMostFrequentEntity<T extends { id: string }>(items: T[]): T | null 
   let bestItem: T | null = null
   let bestCount = 0
 
-  items.forEach((item: AppGoogleBoundary) => {
+  items.forEach((item: AppGoogleInterop) => {
     if (!item?.id) return
     const nextCount = (counts.get(item.id) || 0) + 1
     counts.set(item.id, nextCount)
@@ -690,22 +694,22 @@ function getRelatedTravelItemsForGate(doc: TripDocument, gate: TimelineGate): It
   if (!primaryItem) return []
 
   const gateEntityKeys = new Set(
-    gateItems.flatMap((item: AppGoogleBoundary) => [makeEntityKey('itineraryItem', item.id), ...(item.linkedEntityKeys || [])]),
+    gateItems.flatMap((item: AppGoogleInterop) => [makeEntityKey('itineraryItem', item.id), ...(item.linkedEntityKeys || [])]),
   )
-  const sameDayTravelItems = doc.itineraryItems.filter((item: AppGoogleBoundary) => item.rowId === 'travel' && item.dayId === primaryItem.dayId)
-  const directlyLinkedTravelItems = sameDayTravelItems.filter((item: AppGoogleBoundary) =>
-    (item.linkedEntityKeys || []).some((key: AppGoogleBoundary) => gateEntityKeys.has(key)),
+  const sameDayTravelItems = doc.itineraryItems.filter((item: AppGoogleInterop) => item.rowId === 'travel' && item.dayId === primaryItem.dayId)
+  const directlyLinkedTravelItems = sameDayTravelItems.filter((item: AppGoogleInterop) =>
+    (item.linkedEntityKeys || []).some((key: AppGoogleInterop) => gateEntityKeys.has(key)),
   )
   if (directlyLinkedTravelItems.length) return directlyLinkedTravelItems
 
   const launchWaveEnd = gate.startSlot + 1.2
-  const sameWaveTravelItems = sameDayTravelItems.filter((item: AppGoogleBoundary) => {
+  const sameWaveTravelItems = sameDayTravelItems.filter((item: AppGoogleInterop) => {
     const itemEnd = item.startSlot + getItineraryItemEffectiveSpan(doc, item)
     return itemEnd >= gate.startSlot - 0.1 && item.startSlot <= launchWaveEnd
   })
   if (sameWaveTravelItems.length) return sameWaveTravelItems
 
-  return sameDayTravelItems.filter((item: AppGoogleBoundary) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
+  return sameDayTravelItems.filter((item: AppGoogleInterop) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
 }
 
 function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null) {
@@ -716,40 +720,40 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
   const dayMeta = getDayMeta(dayId) || getCursorDay(gate.startSlot)
   const theme = MISSION_LAUNCH_THEME[dayId] || MISSION_LAUNCH_THEME.fri
   const briefing = DAY_BRIEFING_COPY[dayId] || DAY_BRIEFING_COPY.thu
-  const gateItemsWithType = gate.items.map((item: AppGoogleBoundary) => ({ ...item, type: 'itineraryItem' }))
+  const gateItemsWithType = gate.items.map((item: AppGoogleInterop) => ({ ...item, type: 'itineraryItem' }))
   const linkedEntities = dedupeById(
-    gateItemsWithType.flatMap((item: AppGoogleBoundary) => getLinkedEntities(doc, item)),
+    gateItemsWithType.flatMap((item: AppGoogleInterop) => getLinkedEntities(doc, item)),
   )
   const relatedTravelItems = getRelatedTravelItemsForGate(doc, gate)
   const relatedRoutes = dedupeById(
     relatedTravelItems
-      .map((item: AppGoogleBoundary) => getRouteForEntity(doc, { ...item, type: 'itineraryItem' }))
+      .map((item: AppGoogleInterop) => getRouteForEntity(doc, { ...item, type: 'itineraryItem' }))
       .filter(Boolean),
   )
   const gateLocations = dedupeById(
     [
       getLocationForEntity(doc, { ...primaryItem, type: 'itineraryItem' }),
-      ...linkedEntities.filter((entity: AppGoogleBoundary) => entity.type === 'location'),
+      ...linkedEntities.filter((entity: AppGoogleInterop) => entity.type === 'location'),
       ...relatedRoutes
-        .map((route: AppGoogleBoundary) => getTypedEntityById(doc, 'location', route.destinationLocationId))
+        .map((route: AppGoogleInterop) => getTypedEntityById(doc, 'location', route.destinationLocationId))
         .filter(Boolean),
     ].filter(Boolean),
   )
   const targetLocation = pickMostFrequentEntity(gateLocations)
   const familyIds = [
-    ...gate.items.flatMap((item: AppGoogleBoundary) => item.familyIds || []),
-    ...relatedTravelItems.flatMap((item: AppGoogleBoundary) => item.familyIds || []),
-    ...relatedRoutes.map((route: AppGoogleBoundary) => route.familyId).filter((familyId): familyId is string => Boolean(familyId && familyId !== 'all')),
+    ...gate.items.flatMap((item: AppGoogleInterop) => item.familyIds || []),
+    ...relatedTravelItems.flatMap((item: AppGoogleInterop) => item.familyIds || []),
+    ...relatedRoutes.map((route: AppGoogleInterop) => route.familyId).filter((familyId): familyId is string => Boolean(familyId && familyId !== 'all')),
   ]
   const families = dedupeById(
     familyIds
-      .map((familyId: AppGoogleBoundary) => getTypedEntityById(doc, 'family', familyId))
+      .map((familyId: AppGoogleInterop) => getTypedEntityById(doc, 'family', familyId))
       .filter(Boolean),
   )
   const unitCount = families.length || Math.max(relatedRoutes.length, 1)
   const launchLabel = stripDayPrefix(getSlotLabel(gate.startSlot))
   const etaSlot = relatedTravelItems.length
-    ? Math.max(...relatedTravelItems.map((item: AppGoogleBoundary) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
+    ? Math.max(...relatedTravelItems.map((item: AppGoogleInterop) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
     : gate.startSlot + getItineraryItemEffectiveSpan(doc, primaryItem)
   const etaLabel = stripDayPrefix(getSlotLabel(etaSlot))
   const participantLabel =
@@ -757,7 +761,7 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
       ? gate.dayLabel || 'All units'
       : families.length === doc.families.length
         ? 'All families'
-        : formatNameList(families.map((family: AppGoogleBoundary) => family.title))
+        : formatNameList(families.map((family: AppGoogleInterop) => family.title))
   const targetTitle = targetLocation?.title || gate.title
   const targetMeta = targetLocation ? getEntitySummary(targetLocation) : primaryItem.status || gate.subtitle
   const routeCount = relatedRoutes.length || Math.max(relatedTravelItems.length, 1)
@@ -789,8 +793,8 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
 function buildOperationCheckpoints(doc: TripDocument): TimelineGate[] {
   return DAYS.map((day, dayIndex): TimelineGate | null => {
     const mainOp = doc.itineraryItems
-      .filter((item: AppGoogleBoundary) => item.rowId === 'activities' && item.dayId === day.id)
-      .sort((left: AppGoogleBoundary,  right: AppGoogleBoundary) => left.startSlot - right.startSlot)[0]
+      .filter((item: AppGoogleInterop) => item.rowId === 'activities' && item.dayId === day.id)
+      .sort((left: AppGoogleInterop,  right: AppGoogleInterop) => left.startSlot - right.startSlot)[0]
 
     if (!mainOp) return null
 
@@ -809,11 +813,11 @@ function buildOperationCheckpoints(doc: TripDocument): TimelineGate[] {
 }
 
 function findUpcomingOperationCheckpoint(checkpoints: TimelineGate[], cursorSlot: number, threshold = 0.14): TimelineGate | null {
-  return checkpoints.find((item: AppGoogleBoundary) => item.startSlot >= cursorSlot && item.startSlot - cursorSlot <= threshold) || null
+  return checkpoints.find((item: AppGoogleInterop) => item.startSlot >= cursorSlot && item.startSlot - cursorSlot <= threshold) || null
 }
 
 function findCrossedOperationCheckpoint(checkpoints: TimelineGate[], previousCursor: number, nextCursor: number, triggeredIds: Set<string>): TimelineGate | null {
-  return checkpoints.find((item: AppGoogleBoundary) =>
+  return checkpoints.find((item: AppGoogleInterop) =>
     !triggeredIds.has(item.id)
     && previousCursor <= item.startSlot
     && nextCursor >= item.startSlot,
@@ -827,12 +831,12 @@ function getPlaybackHighlightLocation(doc: TripDocument, context: TimelineContex
 function buildDailyBriefing(doc: TripDocument, context: TimelineContext): DailyBriefing {
   const day = getCursorDay(context.cursorSlot)
   const base = DAY_BRIEFING_COPY[day.id as DayId] || DAY_BRIEFING_COPY.thu
-  const meals = doc.meals.filter((meal: AppGoogleBoundary) => meal.dayId === day.id).slice(0, 3)
-  const activities = doc.activities.filter((activity: AppGoogleBoundary) => activity.dayId === day.id).slice(0, 3)
-  const tasks = getTasksForDay(doc, day.id).filter((task: AppGoogleBoundary) => task.status !== 'done').slice(0, 4)
-  const liveItems = context.liveEntities.filter((item: AppGoogleBoundary) => item.dayId === day.id)
+  const meals = doc.meals.filter((meal: AppGoogleInterop) => meal.dayId === day.id).slice(0, 3)
+  const activities = doc.activities.filter((activity: AppGoogleInterop) => activity.dayId === day.id).slice(0, 3)
+  const tasks = getTasksForDay(doc, day.id).filter((task: AppGoogleInterop) => task.status !== 'done').slice(0, 4)
+  const liveItems = context.liveEntities.filter((item: AppGoogleInterop) => item.dayId === day.id)
   const soonItems = [...context.nextEntities, ...context.prepSoon]
-    .filter((item: AppGoogleBoundary) => item.dayId === day.id)
+    .filter((item: AppGoogleInterop) => item.dayId === day.id)
     .slice(0, 4)
 
   return {
@@ -885,7 +889,7 @@ function NotesBox({ value, onChange, placeholder }: { value: string; onChange: (
   return (
     <textarea
       value={value}
-      onChange={(event: AppGoogleBoundary) => onChange(event.target.value)}
+      onChange={(event: AppGoogleInterop) => onChange(event.target.value)}
       placeholder={placeholder}
       className="min-h-24 w-full resize-none border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
     />
@@ -942,7 +946,7 @@ function AppShell({
   onSetSelectedPage: (pageId: PageId) => void
   onExport: () => void
   onSearchChange: (value: string) => void
-  searchResults: AppGoogleBoundary[]
+  searchResults: AppGoogleInterop[]
   onOpenEntity: OpenEntityHandler
   families: FamilyEntity[]
   activeFamily: FamilyEntity | null
@@ -960,7 +964,7 @@ function AppShell({
             style={{ filter: 'invert(1) grayscale(1) brightness(1.15)' }}
           />
         </div>
-        {NAV_ITEMS.map((item: AppGoogleBoundary) => {
+        {NAV_ITEMS.map((item: AppGoogleInterop) => {
           const Icon = PAGE_ICONS[item.id as keyof typeof PAGE_ICONS]
           const active = doc.selectedPage === item.id
           return (
@@ -1023,7 +1027,7 @@ function AppShell({
                 Working as
               </div>
               <div className="flex items-center gap-1.5">
-                {families.map((family: AppGoogleBoundary) => (
+                {families.map((family: AppGoogleInterop) => (
                   <button
                     key={family.id}
                     type="button"
@@ -1051,13 +1055,13 @@ function AppShell({
               <input
                 type="text"
                 value={doc.ui.searchQuery}
-                onChange={(event: AppGoogleBoundary) => onSearchChange(event.target.value)}
+                onChange={(event: AppGoogleInterop) => onSearchChange(event.target.value)}
                 placeholder="Search..."
                 className="w-64 rounded-[2px] border border-[#30363D] bg-[#0d1117] py-1.5 pl-10 pr-4 text-[11px] outline-none focus:border-[#58A6FF]"
               />
               {doc.ui.searchQuery && searchResults.length ? (
                 <div className="absolute right-0 top-10 z-40 w-80 border border-[#30363D] bg-[#161b22] shadow-xl">
-                  {searchResults.map((item: AppGoogleBoundary) => (
+                  {searchResults.map((item: AppGoogleInterop) => (
                     <button
                       key={`${item.type}:${item.id}`}
                       type="button"
@@ -1096,7 +1100,7 @@ function AppShell({
               This stays local in your browser, personalizes the planner to your family, and attributes edits and new expenses to you.
             </div>
             <div className="mt-5 grid gap-2">
-              {families.map((family: AppGoogleBoundary) => (
+              {families.map((family: AppGoogleInterop) => (
                 <button
                   key={family.id}
                   type="button"
@@ -1125,7 +1129,7 @@ function AppShell({
 function FamilyList({ doc, selection, onSelectEntity }: { doc: TripDocument; selection: EntitySelection; onSelectEntity: OpenEntityHandler }) {
   return (
     <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-      {doc.families.map((family: AppGoogleBoundary) => {
+      {doc.families.map((family: AppGoogleInterop) => {
         const selected = selection.type === 'family' && selection.id === family.id
         return (
           <button
@@ -1158,7 +1162,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
   const cursorDayIndex = Math.min(Math.max(Math.floor(clampedCursor / TIME_SLOTS.length), 0), DAYS.length - 1)
   const selectedDay = DAYS[cursorDayIndex]
   const cursorHour = getCursorHourInDay(clampedCursor)
-  const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour: AppGoogleBoundary,  hour: AppGoogleBoundary) => (
+  const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour: AppGoogleInterop,  hour: AppGoogleInterop) => (
     Math.abs(hour - cursorHour) < Math.abs(bestHour - cursorHour) ? hour : bestHour
   ), MISSION_TIME_PRESETS[0])
   const selectedSlotValue = String(selectedHour).padStart(2, '0')
@@ -1179,7 +1183,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
         </div>
       </div>
       <div className="mb-3 flex flex-wrap gap-2">
-        {DAYS.map((day: AppGoogleBoundary,  dayIndex: AppGoogleBoundary) => (
+        {DAYS.map((day: AppGoogleInterop,  dayIndex: AppGoogleInterop) => (
           <button
             key={day.id}
             type="button"
@@ -1196,7 +1200,7 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
         ))}
       </div>
       <div className="flex gap-2">
-        {MISSION_TIME_PRESETS.map((hour: AppGoogleBoundary) => {
+        {MISSION_TIME_PRESETS.map((hour: AppGoogleInterop) => {
           const slot = String(hour).padStart(2, '0')
           return (
             <button
@@ -1237,7 +1241,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
       <div className="p-4">
         {items.length ? (
           <div className="space-y-2">
-            {items.map((item: AppGoogleBoundary) => (
+            {items.map((item: AppGoogleInterop) => (
               <button
                 key={`${item.type}:${item.id}`}
                 type="button"
@@ -1274,7 +1278,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
       />
       <div
         className="relative max-h-full w-full max-w-5xl overflow-hidden border border-[#30363D] bg-[#10161e] shadow-[0_30px_80px_rgba(0,0,0,0.55)]"
-        onClick={(event: AppGoogleBoundary) => event.stopPropagation()}
+        onClick={(event: AppGoogleInterop) => event.stopPropagation()}
       >
         <div className="border-b border-[#30363D] bg-[linear-gradient(135deg,rgba(88,166,255,0.08),rgba(13,17,23,0.95)_58%)] px-6 py-5">
           <div className="mb-4 flex items-start justify-between gap-4">
@@ -1328,7 +1332,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Watch For" title="What matters today" />
               <div className="space-y-3">
-                {briefing.lookouts.map((item: AppGoogleBoundary) => (
+                {briefing.lookouts.map((item: AppGoogleInterop) => (
                   <div key={item} className="border border-[#30363D] bg-[#0d1117] px-3 py-3 text-[11px] leading-relaxed text-[#C9D1D9]">
                     {item}
                   </div>
@@ -1344,7 +1348,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Planned beats" title="Activities + meals" />
               <div className="space-y-3">
-                {briefing.activities.map((activity: AppGoogleBoundary) => (
+                {briefing.activities.map((activity: AppGoogleInterop) => (
                   <button
                     key={activity.id}
                     type="button"
@@ -1358,7 +1362,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
                     <StatusPill tone={activity.status}>{activity.status}</StatusPill>
                   </button>
                 ))}
-                {briefing.meals.map((meal: AppGoogleBoundary) => (
+                {briefing.meals.map((meal: AppGoogleInterop) => (
                   <button
                     key={meal.id}
                     type="button"
@@ -1381,7 +1385,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
             <div className="border border-[#30363D] bg-[#161b22] p-4">
               <SectionTitle eyebrow="Open loops" title="Tasks to keep in mind" />
               <div className="space-y-2">
-                {briefing.tasks.length ? briefing.tasks.map((task: AppGoogleBoundary) => (
+                {briefing.tasks.length ? briefing.tasks.map((task: AppGoogleInterop) => (
                   <button
                     key={task.id}
                     type="button"
@@ -1467,7 +1471,7 @@ function MissionLaunchModal({ doc, gate, remainingMs, onProceed, onAbort }: { do
               {context.deploymentLabel}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              {statusCards.map((card: AppGoogleBoundary) => {
+              {statusCards.map((card: AppGoogleInterop) => {
                 const Icon = card.icon
                 return (
                   <div
@@ -1579,7 +1583,7 @@ function MissionFeedTray({ items, onActivateItem }: { items: FeedItem[]; onActiv
   return (
     <div className="pointer-events-none absolute bottom-4 right-4 z-40 w-[320px]" aria-live="polite" aria-atomic="false">
       <div className="pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col-reverse gap-2 overflow-y-auto pr-1">
-        {items.map((item: AppGoogleBoundary) => {
+        {items.map((item: AppGoogleInterop) => {
           const FeedIcon =
             item.kind === 'departure'
               ? CarFront
@@ -1674,13 +1678,13 @@ function SituationBoard({ context, onOpenEntity, onOpenBriefing }: { context: Ti
       </div>
 
       <div className="space-y-4 p-4">
-        {sections.map((section: AppGoogleBoundary) => (
+        {sections.map((section: AppGoogleInterop) => (
           <div key={section.title}>
             <div className="mb-2 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
               {section.title}
             </div>
             <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-              {section.items.length ? section.items.map((item: AppGoogleBoundary) => (
+              {section.items.length ? section.items.map((item: AppGoogleInterop) => (
                 <button
                   key={`${item.type}:${item.id}`}
                   type="button"
@@ -1733,7 +1737,7 @@ function TimelineBoard({
 }) {
   const days: TripDayWeather[] = weatherDays?.length
     ? weatherDays
-    : DAYS.map((day: AppGoogleBoundary) => ({
+    : DAYS.map((day: AppGoogleInterop) => ({
       ...day,
       weatherIconKey: 'cloud',
       weatherLocation: day.title,
@@ -1754,13 +1758,13 @@ function TimelineBoard({
     { id: 'activities', label: 'Main Ops' },
     { id: 'support', label: 'Support' },
   ]
-  const rowLayouts = rows.map((row: AppGoogleBoundary,  index: AppGoogleBoundary) => ({
+  const rowLayouts = rows.map((row: AppGoogleInterop,  index: AppGoogleInterop) => ({
     ...row,
     height: rowHeights[row.id] || 40,
-    top: rows.slice(0, index).reduce((sum: AppGoogleBoundary,  item: AppGoogleBoundary) => sum + (rowHeights[item.id] || 40), 0),
+    top: rows.slice(0, index).reduce((sum: AppGoogleInterop,  item: AppGoogleInterop) => sum + (rowHeights[item.id] || 40), 0),
   }))
-  const timelineHeight = rowLayouts.reduce((sum: AppGoogleBoundary,  row: AppGoogleBoundary) => sum + row.height, 0)
-  const familyLaneMap = new Map(doc.families.map((family: AppGoogleBoundary,  index: AppGoogleBoundary) => [family.id, index]))
+  const timelineHeight = rowLayouts.reduce((sum: AppGoogleInterop,  row: AppGoogleInterop) => sum + row.height, 0)
+  const familyLaneMap = new Map(doc.families.map((family: AppGoogleInterop,  index: AppGoogleInterop) => [family.id, index]))
   const actualTimelineRatio = projectCursorToVisibleTimelineRatio(getCurrentTripCursor(liveNow), days.length)
   const actualNowLabel = `${liveNow.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })} ${liveNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
   const hoverCursorLabel = hoverCursorSlot == null ? null : getSlotLabel(hoverCursorSlot)
@@ -1825,7 +1829,7 @@ function TimelineBoard({
           </div>
         </div>
         <div className="flex flex-1 divide-x divide-[#30363D]/30">
-          {days.map((day: AppGoogleBoundary) => {
+          {days.map((day: AppGoogleInterop) => {
             const WeatherIcon = WEATHER_ICONS[day.weatherIconKey as keyof typeof WEATHER_ICONS] || Cloud
             return (
               <div key={day.id} className="flex flex-1 items-center gap-3 px-4">
@@ -1847,7 +1851,7 @@ function TimelineBoard({
 
       <div className="flex" style={{ height: `${timelineHeight}px` }}>
         <div className="flex w-28 flex-col border-r border-[#30363D] bg-[#0d1117]/50">
-          {rowLayouts.map((row: AppGoogleBoundary) => (
+          {rowLayouts.map((row: AppGoogleInterop) => (
             <div
               key={row.id}
               className="flex items-center justify-center border-b border-[#30363D]/30 px-2 text-center text-[9px] font-black uppercase tracking-widest text-[#8B949E] last:border-b-0"
@@ -1865,7 +1869,7 @@ function TimelineBoard({
           onMouseLeave={() => {
             if (!draggingRef.current) setHoverCursorSlot(null)
           }}
-          onMouseDown={(event: AppGoogleBoundary) => {
+          onMouseDown={(event: AppGoogleInterop) => {
             draggingRef.current = true
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot != null) {
@@ -1873,7 +1877,7 @@ function TimelineBoard({
               onSetCursor?.(nextCursorSlot)
             }
           }}
-          onMouseMove={(event: AppGoogleBoundary) => {
+          onMouseMove={(event: AppGoogleInterop) => {
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot == null) return
             setHoverCursorSlot(nextCursorSlot)
@@ -1881,7 +1885,7 @@ function TimelineBoard({
               onSetCursor?.(nextCursorSlot)
             }
           }}
-          onClick={(event: AppGoogleBoundary) => {
+          onClick={(event: AppGoogleInterop) => {
             const nextCursorSlot = scrubToClientX(event.clientX)
             if (nextCursorSlot != null) {
               onSetCursor?.(nextCursorSlot)
@@ -1889,7 +1893,7 @@ function TimelineBoard({
           }}
         >
           <div className="absolute inset-0">
-            {Array.from({ length: days.length * visibleHoursPerDay + 1 }).map((_: AppGoogleBoundary,  index: AppGoogleBoundary) => {
+            {Array.from({ length: days.length * visibleHoursPerDay + 1 }).map((_: AppGoogleInterop,  index: AppGoogleInterop) => {
               const hour = index % visibleHoursPerDay
               const actualHour = VISIBLE_TIMELINE_START_HOUR + hour
               const isMajor = hour % TIMELINE_HOURS_PER_SLOT === 0
@@ -1908,8 +1912,8 @@ function TimelineBoard({
           </div>
 
           <div className="absolute inset-0">
-            {rowLayouts.map((row: AppGoogleBoundary) => {
-              const rowItems = doc.itineraryItems.filter((item: AppGoogleBoundary) => item.rowId === row.id)
+            {rowLayouts.map((row: AppGoogleInterop) => {
+              const rowItems = doc.itineraryItems.filter((item: AppGoogleInterop) => item.rowId === row.id)
               const laneCount = row.id === 'travel' ? Math.max(doc.families.length, 1) : 1
               const laneHeight = row.height / laneCount
 
@@ -1920,7 +1924,7 @@ function TimelineBoard({
                   style={{ top: `${row.top}px`, height: `${row.height}px` }}
                 >
                   {row.id === 'travel'
-                    ? doc.families.slice(1).map((_: AppGoogleBoundary,  index: AppGoogleBoundary) => (
+                    ? doc.families.slice(1).map((_: AppGoogleInterop,  index: AppGoogleInterop) => (
                         <div
                           key={`travel-divider-${index}`}
                           className="absolute left-0 right-0 border-t border-[#30363D]/20"
@@ -1929,7 +1933,7 @@ function TimelineBoard({
                       ))
                     : null}
 
-                  {rowItems.map((item: AppGoogleBoundary) => {
+                  {rowItems.map((item: AppGoogleInterop) => {
                     const itemSpan = getItineraryItemEffectiveSpan(doc, item)
                     const itemEnd = item.startSlot + itemSpan
                     const itemDayIndex = Math.min(Math.max(Math.floor(item.startSlot / TIME_SLOTS.length), 0), days.length - 1)
@@ -1963,7 +1967,7 @@ function TimelineBoard({
                       <button
                         key={item.id}
                         type="button"
-                        onClick={(event: AppGoogleBoundary) => {
+                        onClick={(event: AppGoogleInterop) => {
                           event.stopPropagation()
                           onSetCursor?.(item.startSlot)
                           onSelectEntity(item.type, item.id)
@@ -2051,13 +2055,13 @@ function TimelineBoard({
           </div>
         </div>
         <div className="flex flex-1 divide-x divide-[#30363D]/50">
-          {days.map((day: AppGoogleBoundary,  dayIndex: AppGoogleBoundary) => (
+          {days.map((day: AppGoogleInterop,  dayIndex: AppGoogleInterop) => (
             <div key={day.id} className="relative flex flex-1 flex-col">
               <div className="absolute -top-2 left-2 bg-[#0d1117] px-1.5 text-[8px] font-black uppercase tracking-widest text-[#58A6FF]">
                 {day.shortLabel}
               </div>
               <div className="flex h-full">
-                {Array.from({ length: visibleHoursPerDay }).map((_: AppGoogleBoundary,  hourOffset: AppGoogleBoundary) => {
+                {Array.from({ length: visibleHoursPerDay }).map((_: AppGoogleInterop,  hourOffset: AppGoogleInterop) => {
                   const hour = VISIBLE_TIMELINE_START_HOUR + hourOffset
                   const hourCursor = clampTimelineCursor(dayIndex * TIME_SLOTS.length + hour / TIMELINE_HOURS_PER_SLOT)
                   const showLabel = (hour - VISIBLE_TIMELINE_START_HOUR) % 3 === 0
@@ -2092,7 +2096,7 @@ function TimelineBoard({
   )
 }
 
-function IntelAction({ icon: Icon, label, onClick, tone = 'default' }: AppPropsBoundary) {
+function IntelAction({ icon: Icon, label, onClick, tone = 'default' }: AppPropsInterop) {
   const tones: Record<string, string> = {
     default: 'border-[#30363D] bg-[#0d1117] text-[#C9D1D9] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]',
     amber: 'border-[#D29922]/30 bg-[#D29922]/10 text-[#D29922] hover:border-[#D29922]',
@@ -2113,7 +2117,7 @@ function IntelAction({ icon: Icon, label, onClick, tone = 'default' }: AppPropsB
   )
 }
 
-function InfoRow({ icon: Icon, label, value, muted = false }: AppPropsBoundary) {
+function InfoRow({ icon: Icon, label, value, muted = false }: AppPropsInterop) {
   if (!value) return null
 
   return (
@@ -2127,7 +2131,7 @@ function InfoRow({ icon: Icon, label, value, muted = false }: AppPropsBoundary) 
   )
 }
 
-function formatMealTravelSignal(meal: AppGoogleBoundary,  location: AppGoogleBoundary) {
+function formatMealTravelSignal(meal: AppGoogleInterop,  location: AppGoogleInterop) {
   if (!location) return 'Venue pending'
   if (location.id === 'pine-airbnb') return 'Basecamp meal'
   if (location.basecampDrive?.durationText) {
@@ -2137,7 +2141,7 @@ function formatMealTravelSignal(meal: AppGoogleBoundary,  location: AppGoogleBou
   return 'Venue intel loading'
 }
 
-function getMealContextNarrative(meal: AppGoogleBoundary,  location: AppGoogleBoundary,  linkedMission: AppGoogleBoundary) {
+function getMealContextNarrative(meal: AppGoogleInterop,  location: AppGoogleInterop,  linkedMission: AppGoogleInterop) {
   if (location?.id === 'pine-airbnb') {
     return 'Cook-in coverage keeps the day flexible and reduces logistics overhead for families with kids.'
   }
@@ -2153,9 +2157,9 @@ function getMealContextNarrative(meal: AppGoogleBoundary,  location: AppGoogleBo
   return linkedMission?.summary || location?.summary || meal.note
 }
 
-function getMealMedia(location: AppGoogleBoundary) {
-  const seen = new Set<AppGoogleBoundary>()
-  return [...(location?.livePhotos || []), ...(location?.photos || [])].filter((media: AppGoogleBoundary) => {
+function getMealMedia(location: AppGoogleInterop) {
+  const seen = new Set<AppGoogleInterop>()
+  return [...(location?.livePhotos || []), ...(location?.photos || [])].filter((media: AppGoogleInterop) => {
     const key = media.imageUrl || media.id
     if (!key || seen.has(key)) return false
     seen.add(key)
@@ -2163,7 +2167,7 @@ function getMealMedia(location: AppGoogleBoundary) {
   })
 }
 
-const ACTIVITY_RESEARCH: Record<string, AppGoogleBoundary> = {
+const ACTIVITY_RESEARCH: Record<string, AppGoogleInterop> = {
   'thu-transit': {
     headline: 'Arrival day should optimize for smooth landfall, not ambition.',
     cards: [
@@ -2293,7 +2297,7 @@ const JIANG_ROAD_TRIP_STOP_DEFAULTS = [
   },
 ]
 
-const FAMILY_VEHICLE_DEFAULTS: Record<string, AppGoogleBoundary> = {
+const FAMILY_VEHICLE_DEFAULTS: Record<string, AppGoogleInterop> = {
   'north-star': {
     originAddress: '2800 E Observatory Rd, Los Angeles, CA 90027',
     originCoordinates: { lat: 34.1184, lng: -118.3004 },
@@ -2327,7 +2331,7 @@ const YOSEMITE_ROUTE_DEFAULTS = {
     'Primary Saturday route anchor. Using the west entrance keeps park access, traffic watch, and drive planning grounded in a real checkpoint.',
 }
 
-const ROUTE_SIM_DEFAULTS: Record<string, AppGoogleBoundary> = {
+const ROUTE_SIM_DEFAULTS: Record<string, AppGoogleInterop> = {
   'route-la-north-star': {
     originCoordinates: { lat: 34.1184, lng: -118.3004 },
     stopLocationIds: ['north-star-kettleman-lunch', 'north-star-oakdale-break'],
@@ -2373,12 +2377,12 @@ const ROUTE_SIM_DEFAULTS: Record<string, AppGoogleBoundary> = {
   },
 }
 
-function ActivityResearchCard({ eyebrow, title, bullets }: AppPropsBoundary) {
+function ActivityResearchCard({ eyebrow, title, bullets }: AppPropsInterop) {
   return (
     <div className="border border-[#30363D] bg-[#0d1117] p-4">
       <SectionTitle eyebrow={eyebrow} title={title} />
       <div className="space-y-2">
-        {bullets.map((bullet: AppGoogleBoundary) => (
+        {bullets.map((bullet: AppGoogleInterop) => (
           <div key={bullet} className="text-[11px] leading-relaxed text-[#C9D1D9]">
             {bullet}
           </div>
@@ -2388,7 +2392,7 @@ function ActivityResearchCard({ eyebrow, title, bullets }: AppPropsBoundary) {
   )
 }
 
-function TransitStopCard({ stop, onSelectEntity }: AppPropsBoundary) {
+function TransitStopCard({ stop, onSelectEntity }: AppPropsInterop) {
   return (
     <button
       type="button"
@@ -2418,19 +2422,19 @@ function ItineraryPage({
   weatherDays,
   mapWeather,
   mapWeatherTargets,
-}: AppPropsBoundary) {
+}: AppPropsInterop) {
   const [briefingOpen, setBriefingOpen] = useState(false)
-  const [playbackCursorSlot, setPlaybackCursorSlot] = useState<AppGoogleBoundary>(null)
+  const [playbackCursorSlot, setPlaybackCursorSlot] = useState<AppGoogleInterop>(null)
   const [isPlaybackPlaying, setIsPlaybackPlaying] = useState(false)
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
-  const [missionFeedItems, setMissionFeedItems] = useState<AppGoogleBoundary[]>([])
+  const [missionFeedItems, setMissionFeedItems] = useState<AppGoogleInterop[]>([])
   const [missionFeedNow, setMissionFeedNow] = useState(() => Date.now())
-  const [operationGate, setOperationGate] = useState<AppGoogleBoundary>(null)
+  const [operationGate, setOperationGate] = useState<AppGoogleInterop>(null)
   const [operationGateRemainingMs, setOperationGateRemainingMs] = useState(0)
   const playbackCursorRef = useRef(doc.ui.timeline.cursorSlot)
   const playbackRunRef = useRef({ anchorCursor: doc.ui.timeline.cursorSlot, anchorTimestamp: null })
-  const operationGateRef = useRef<AppGoogleBoundary>(null)
-  const triggeredOperationCheckpointIdsRef = useRef(new Set<AppGoogleBoundary>())
+  const operationGateRef = useRef<AppGoogleInterop>(null)
+  const triggeredOperationCheckpointIdsRef = useRef(new Set<AppGoogleInterop>())
   const effectiveCursorSlot = playbackCursorSlot ?? doc.ui.timeline.cursorSlot
   const context = useMemo(() => getTimelineContext(doc, effectiveCursorSlot), [doc, effectiveCursorSlot])
   const dailyBriefing = useMemo(() => buildDailyBriefing(doc, context), [doc, context])
@@ -2442,7 +2446,7 @@ function ItineraryPage({
   const renderedMissionFeedItems = useMemo(() => {
     const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
     return missionFeedItems
-      .map((item: AppGoogleBoundary) => {
+      .map((item: AppGoogleInterop) => {
         const ageMs = Math.max(missionFeedNow - (item.createdAt || 0), 0)
         if (ageMs >= expirationMs) return null
         return {
@@ -2461,8 +2465,8 @@ function ItineraryPage({
     operationGateRef.current = operationGate
   }, [operationGate])
 
-  const updateMissionFeedItems = useCallback((updater: AppGoogleBoundary) => {
-    setMissionFeedItems((current: AppGoogleBoundary) => (typeof updater === 'function' ? updater(current) : updater))
+  const updateMissionFeedItems = useCallback((updater: AppGoogleInterop) => {
+    setMissionFeedItems((current: AppGoogleInterop) => (typeof updater === 'function' ? updater(current) : updater))
   }, [])
 
   const clearMissionFeed = useCallback(() => {
@@ -2477,8 +2481,8 @@ function ItineraryPage({
       const now = Date.now()
       const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
       setMissionFeedNow(now)
-      updateMissionFeedItems((current: AppGoogleBoundary) => {
-        const next = current.filter((item: AppGoogleBoundary) => now - (item.createdAt || 0) < expirationMs)
+      updateMissionFeedItems((current: AppGoogleInterop) => {
+        const next = current.filter((item: AppGoogleInterop) => now - (item.createdAt || 0) < expirationMs)
         return next.length === current.length ? current : next
       })
     }
@@ -2488,19 +2492,19 @@ function ItineraryPage({
     return () => window.clearInterval(intervalId)
   }, [missionFeedItems.length, updateMissionFeedItems])
 
-  const handlePlaybackFeedItems = useCallback((items: AppGoogleBoundary) => {
+  const handlePlaybackFeedItems = useCallback((items: AppGoogleInterop) => {
     const nextItems = (Array.isArray(items) ? items : [items]).filter(Boolean)
     if (!nextItems.length) return
 
     const createdAt = Date.now()
-    updateMissionFeedItems((current: AppGoogleBoundary) => {
+    updateMissionFeedItems((current: AppGoogleInterop) => {
       const next = [...current]
-      nextItems.forEach((item: AppGoogleBoundary) => {
+      nextItems.forEach((item: AppGoogleInterop) => {
         const nextItem = {
           ...item,
           createdAt,
         }
-        const existingIndex = next.findIndex((existing: AppGoogleBoundary) => existing.key === item.key)
+        const existingIndex = next.findIndex((existing: AppGoogleInterop) => existing.key === item.key)
         if (existingIndex >= 0) {
           next.splice(existingIndex, 1)
         }
@@ -2511,7 +2515,7 @@ function ItineraryPage({
     setMissionFeedNow(createdAt)
   }, [updateMissionFeedItems])
 
-  const handleMissionFeedActivate = useCallback((item: AppGoogleBoundary) => {
+  const handleMissionFeedActivate = useCallback((item: AppGoogleInterop) => {
     if (item.entityType && item.entityId) {
       onOpenEntity(item.entityType, item.entityId)
       return
@@ -2533,16 +2537,16 @@ function ItineraryPage({
     setOperationGateRemainingMs(0)
   }, [])
 
-  const armOperationCheckpointsFromCursor = useCallback((cursorSlot: AppGoogleBoundary) => {
+  const armOperationCheckpointsFromCursor = useCallback((cursorSlot: AppGoogleInterop) => {
     const normalizedCursor = clampTimelineCursor(cursorSlot)
     triggeredOperationCheckpointIdsRef.current = new Set(
       operationCheckpoints
-        .filter((checkpoint: AppGoogleBoundary) => checkpoint.startSlot <= normalizedCursor + 0.001)
-        .map((checkpoint: AppGoogleBoundary) => checkpoint.id),
+        .filter((checkpoint: AppGoogleInterop) => checkpoint.startSlot <= normalizedCursor + 0.001)
+        .map((checkpoint: AppGoogleInterop) => checkpoint.id),
     )
   }, [operationCheckpoints])
 
-  const triggerOperationGate = useCallback((checkpoint: AppGoogleBoundary) => {
+  const triggerOperationGate = useCallback((checkpoint: AppGoogleInterop) => {
     const holdCursor = clampTimelineCursor(checkpoint.startSlot)
     playbackCursorRef.current = holdCursor
     setPlaybackCursorSlot(holdCursor)
@@ -2589,7 +2593,7 @@ function ItineraryPage({
       day: dailyBriefing?.day?.id,
     })
 
-    const handleKeyDown = (event: AppGoogleBoundary) => {
+    const handleKeyDown = (event: AppGoogleInterop) => {
       if (event.key === 'Escape') {
         console.info('[TripCommand] Daily briefing closed via Escape')
         setBriefingOpen(false)
@@ -2603,14 +2607,14 @@ function ItineraryPage({
   useEffect(() => {
     if (!isPlaybackPlaying) return undefined
 
-    let frameId: AppGoogleBoundary = null
+    let frameId: AppGoogleInterop = null
     const maxCursor = clampTimelineCursor(DAYS.length * TIME_SLOTS.length)
     playbackRunRef.current = {
       anchorCursor: playbackCursorRef.current,
       anchorTimestamp: null,
     }
 
-    const animate = (timestamp: AppGoogleBoundary) => {
+    const animate = (timestamp: AppGoogleInterop) => {
       if (operationGateRef.current) {
         playbackRunRef.current.anchorTimestamp = timestamp
         frameId = window.requestAnimationFrame(animate)
@@ -2669,7 +2673,7 @@ function ItineraryPage({
   }, [isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed, triggerOperationGate])
 
   const handleTimelineCursorChange = useCallback(
-    (slot: AppGoogleBoundary) => {
+    (slot: AppGoogleInterop) => {
       const nextCursor = clampTimelineCursor(slot)
       setOperationGate(null)
       setOperationGateRemainingMs(0)
@@ -2768,7 +2772,7 @@ function ItineraryPage({
               <PageNotesCard
                 title="Planner note"
                 value={getPageNote(doc, 'itinerary')}
-                onChange={(value: AppGoogleBoundary) => onUpdatePageNote('itinerary', value)}
+                onChange={(value: AppGoogleInterop) => onUpdatePageNote('itinerary', value)}
                 onConvert={() => onConvertPageNote('itinerary')}
                 placeholder="Add a planning note..."
               />
@@ -2824,7 +2828,7 @@ function ItineraryPage({
         <DailyBriefingModal
           briefing={dailyBriefing}
           onClose={() => setBriefingOpen(false)}
-          onOpenEntity={(type: AppGoogleBoundary,  id: AppGoogleBoundary) => {
+          onOpenEntity={(type: AppGoogleInterop,  id: AppGoogleInterop) => {
             onOpenEntity(type, id)
             setBriefingOpen(false)
           }}
@@ -2843,7 +2847,7 @@ function ItineraryPage({
   )
 }
 
-function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: AppPropsBoundary) {
+function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: AppPropsInterop) {
   const airbnb = getTypedEntityById(doc, 'location', 'pine-airbnb')
   if (!airbnb) return null
 
@@ -2869,7 +2873,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
           ) : null}
         </SelectableCard>
         <div className="space-y-4">
-          {doc.stayItems.map((item: AppGoogleBoundary) => (
+          {doc.stayItems.map((item: AppGoogleInterop) => (
             <SelectableCard
               key={item.id}
               selected={selection.type === item.type && selection.id === item.id}
@@ -2965,7 +2969,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               {showExternalListing ? (
                 <button
                   type="button"
-                  onClick={() => (window.open as AppGoogleBoundary)(airbnb.externalUrl, '_blank', 'noreferrer')}
+                  onClick={() => (window.open as AppGoogleInterop)(airbnb.externalUrl, '_blank', 'noreferrer')}
                   className="inline-flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]"
                 >
                   Open listing <ExternalLink size={12} />
@@ -2973,7 +2977,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               ) : null}
             </div>
             <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              {(airbnb.photos || []).slice(0, 2).map((media: AppGoogleBoundary) => (
+              {(airbnb.photos || []).slice(0, 2).map((media: AppGoogleInterop) => (
                 <a
                   key={media.id}
                   href={media.sourceUrl || media.imageUrl}
@@ -2996,7 +3000,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
               {showManual ? (
                 <button
                   type="button"
-                  onClick={() => (window.open as AppGoogleBoundary)(airbnb.manualUrl, '_blank', 'noreferrer')}
+                  onClick={() => (window.open as AppGoogleInterop)(airbnb.manualUrl, '_blank', 'noreferrer')}
                   className="flex w-full items-center justify-between border border-[#30363D] bg-[#0d1117] px-3 py-3 text-left hover:border-[#58A6FF]/40"
                 >
                   <div>
@@ -3016,7 +3020,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
 
         <SectionTitle eyebrow="House Ops" title="Basecamp assignments" meta="Sleep + arrival + reset" />
         <div className="mb-6 grid gap-4 md:grid-cols-2">
-          {doc.families.map((family: AppGoogleBoundary,  index: AppGoogleBoundary) => (
+          {doc.families.map((family: AppGoogleInterop,  index: AppGoogleInterop) => (
             <SelectableCard
               key={family.id}
               selected={selection.type === 'family' && selection.id === family.id}
@@ -3034,7 +3038,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
         <PageNotesCard
           title="Stay note"
           value={getPageNote(doc, 'stay')}
-          onChange={(value: AppGoogleBoundary) => onUpdatePageNote('stay', value)}
+          onChange={(value: AppGoogleInterop) => onUpdatePageNote('stay', value)}
           onConvert={() => onConvertPageNote('stay')}
           placeholder="Record gate instructions, sleeping concerns, quiet hours, or house logistics..."
         />
@@ -3043,14 +3047,14 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
   )
 }
 
-function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }: AppPropsBoundary) {
+function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }: AppPropsInterop) {
   const selectedMeal = selection.type === 'meal'
     ? getTypedEntityById(doc, 'meal', selection.id) || doc.meals[0]
     : doc.meals[0]
   const selectedLocation = getLocationForEntity(doc, selectedMeal)
-  const selectedTasks = getTasksForEntity(doc, selectedMeal).filter((task: AppGoogleBoundary) => task.status !== 'done').slice(0, 2)
+  const selectedTasks = getTasksForEntity(doc, selectedMeal).filter((task: AppGoogleInterop) => task.status !== 'done').slice(0, 2)
   const linkedMission = getLinkedEntities(doc, selectedMeal).find(
-    (entity: AppGoogleBoundary) => entity.type === 'activity' || entity.type === 'itineraryItem',
+    (entity: AppGoogleInterop) => entity.type === 'activity' || entity.type === 'itineraryItem',
   )
   const media = getMealMedia(selectedLocation).slice(0, 3)
   const travelSummary = selectedLocation?.basecampDrive
@@ -3068,7 +3072,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Meal Logistics" title="Shared feeding plan" meta="Ownership + prep + kid friendliness" />
         <div className="space-y-3">
-          {doc.meals.map((meal: AppGoogleBoundary) => (
+          {doc.meals.map((meal: AppGoogleInterop) => (
             <div
               key={meal.id}
               className={cn(
@@ -3142,14 +3146,14 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                   <IntelAction
                     icon={MapPin}
                     label="Open in Google Maps"
-                    onClick={() => (window.open as AppGoogleBoundary)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
+                    onClick={() => (window.open as AppGoogleInterop)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {selectedLocation?.websiteUrl ? (
                   <IntelAction
                     icon={Globe}
                     label="Venue website"
-                    onClick={() => (window.open as AppGoogleBoundary)(selectedLocation.websiteUrl, '_blank', 'noreferrer')}
+                    onClick={() => (window.open as AppGoogleInterop)(selectedLocation.websiteUrl, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {linkedMission ? (
@@ -3199,7 +3203,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                           Critical calls
                         </div>
                         <div className="space-y-2">
-                          {selectedTasks.map((task: AppGoogleBoundary) => (
+                          {selectedTasks.map((task: AppGoogleInterop) => (
                             <div key={task.id} className="text-[11px] text-[#C9D1D9]">
                               {task.title}
                             </div>
@@ -3216,7 +3220,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
               <div className="mt-5 border border-[#30363D] bg-[#161b22] p-5">
                 <SectionTitle eyebrow="Visual Intel" title="Venue references" meta={`${media.length} asset${media.length > 1 ? 's' : ''}`} />
                 <div className="grid gap-4 md:grid-cols-3">
-                  {media.map((item: AppGoogleBoundary) => (
+                  {media.map((item: AppGoogleInterop) => (
                     <a
                       key={item.id}
                       href={item.sourceUrl || selectedLocation?.externalUrl || '#'}
@@ -3244,7 +3248,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
               <PageNotesCard
                 title="Feeding note"
                 value={getPageNote(doc, 'meals')}
-                onChange={(value: AppGoogleBoundary) => onUpdatePageNote('meals', value)}
+                onChange={(value: AppGoogleInterop) => onUpdatePageNote('meals', value)}
                 onConvert={() => onConvertPageNote('meals')}
                 placeholder="Capture grocery strategy, allergy notes, kid fallback meals, or timing calls for restaurant stops..."
               />
@@ -3256,15 +3260,15 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
   )
 }
 
-function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }: AppPropsBoundary) {
+function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }: AppPropsInterop) {
   const selectedActivity = useMemo(
-    () => (selection.type === 'activity' ? doc.activities.find((activity: AppGoogleBoundary) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
+    () => (selection.type === 'activity' ? doc.activities.find((activity: AppGoogleInterop) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
     [doc.activities, selection],
   )
   const selectedLocation = useMemo(() => getLocationForEntity(doc, selectedActivity), [doc, selectedActivity])
   const linkedEntities = useMemo(() => getLinkedEntities(doc, selectedActivity), [doc, selectedActivity])
   const linkedTimelineItems = useMemo(
-    () => linkedEntities.filter((entity: AppGoogleBoundary) => entity.type === 'itineraryItem'),
+    () => linkedEntities.filter((entity: AppGoogleInterop) => entity.type === 'itineraryItem'),
     [linkedEntities],
   )
   const research = selectedActivity ? ACTIVITY_RESEARCH[selectedActivity.id] : null
@@ -3272,12 +3276,12 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
     if (!selectedActivity || selectedActivity.id !== 'thu-transit') return []
 
     return linkedTimelineItems
-      .filter((item: AppGoogleBoundary) => item.familyIds?.length === 1)
-      .map((item: AppGoogleBoundary) => {
+      .filter((item: AppGoogleInterop) => item.familyIds?.length === 1)
+      .map((item: AppGoogleInterop) => {
         const family = getTypedEntityById(doc, 'family', item.familyIds[0])
         const route = getRouteForEntity(doc, item)
         const stops = (route?.stopLocationIds || [])
-          .map((stopId: AppGoogleBoundary) => getTypedEntityById(doc, 'location', stopId))
+          .map((stopId: AppGoogleInterop) => getTypedEntityById(doc, 'location', stopId))
           .filter(Boolean)
 
         return family && route
@@ -3291,19 +3295,19 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
       })
       .filter(Boolean)
   }, [doc, linkedTimelineItems, selectedActivity])
-  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState<AppGoogleBoundary>(null)
+  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState<AppGoogleInterop>(null)
   useEffect(() => {
     if (!transitFamilies.length) {
       setSelectedTransitFamilyId(null)
       return
     }
 
-    if (!transitFamilies.some((entry: AppGoogleBoundary) => entry.family.id === selectedTransitFamilyId)) {
-      setSelectedTransitFamilyId((transitFamilies[0] as AppGoogleBoundary).family.id)
+    if (!transitFamilies.some((entry: AppGoogleInterop) => entry.family.id === selectedTransitFamilyId)) {
+      setSelectedTransitFamilyId((transitFamilies[0] as AppGoogleInterop).family.id)
     }
   }, [selectedTransitFamilyId, transitFamilies])
   const selectedTransitPlan = useMemo(
-    () => transitFamilies.find((entry: AppGoogleBoundary) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
+    () => transitFamilies.find((entry: AppGoogleInterop) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
     [selectedTransitFamilyId, transitFamilies],
   )
   const [draftTitle, setDraftTitle] = useState('')
@@ -3316,7 +3320,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Activity Board" title="Day missions" meta={`${doc.activities.length} tracked`} />
         <div className="space-y-4">
-          {doc.activities.map((activity: AppGoogleBoundary) => (
+          {doc.activities.map((activity: AppGoogleInterop) => (
             <SelectableCard
               key={activity.id}
               selected={selection.type === 'activity' && selection.id === activity.id}
@@ -3342,17 +3346,17 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
           <div className="space-y-3">
             <input
               value={draftTitle}
-              onChange={(event: AppGoogleBoundary) => setDraftTitle(event.target.value)}
+              onChange={(event: AppGoogleInterop) => setDraftTitle(event.target.value)}
               placeholder="Activity title"
               className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
             <div className="grid grid-cols-[110px_1fr] gap-2">
               <select
                 value={draftDayId}
-                onChange={(event: AppGoogleBoundary) => setDraftDayId(event.target.value)}
+                onChange={(event: AppGoogleInterop) => setDraftDayId(event.target.value)}
                 className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               >
-                {DAYS.map((day: AppGoogleBoundary) => (
+                {DAYS.map((day: AppGoogleInterop) => (
                   <option key={day.id} value={day.id}>
                     {day.shortLabel.toUpperCase()}
                   </option>
@@ -3360,7 +3364,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               </select>
               <input
                 value={draftWindow}
-                onChange={(event: AppGoogleBoundary) => setDraftWindow(event.target.value)}
+                onChange={(event: AppGoogleInterop) => setDraftWindow(event.target.value)}
                 placeholder="Window label"
                 className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               />
@@ -3415,7 +3419,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                   <IntelAction
                     icon={MapPin}
                     label="Open location"
-                    onClick={() => (window.open as AppGoogleBoundary)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
+                    onClick={() => (window.open as AppGoogleInterop)(selectedLocation.externalUrl, '_blank', 'noreferrer')}
                   />
                 ) : null}
                 {selectedLocation ? (
@@ -3443,7 +3447,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               <div className="mt-5 border border-[#30363D] bg-[#161b22] p-5">
                 <SectionTitle eyebrow="Transit Planning" title="Family road trips" meta={`${transitFamilies.length} active routes`} />
                 <div className="mb-4 flex flex-wrap gap-2">
-                  {transitFamilies.map((entry: AppGoogleBoundary) => (
+                  {transitFamilies.map((entry: AppGoogleInterop) => (
                     <button
                       key={entry.family.id}
                       type="button"
@@ -3488,7 +3492,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                     <SectionTitle eyebrow="Road-trip Stops" title="Good break points" meta={`${selectedTransitPlan.stops.length} planned`} />
                     {selectedTransitPlan.stops.length ? (
                       <div className="grid gap-3 md:grid-cols-2">
-                        {selectedTransitPlan.stops.map((stop: AppGoogleBoundary) => (
+                        {selectedTransitPlan.stops.map((stop: AppGoogleInterop) => (
                           <TransitStopCard key={stop.id} stop={stop} onSelectEntity={onSelectEntity} />
                         ))}
                       </div>
@@ -3500,7 +3504,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               </div>
             ) : research?.cards?.length ? (
               <div className="mt-5 grid gap-4 xl:grid-cols-2">
-                {research.cards.map((card: AppGoogleBoundary) => (
+                {research.cards.map((card: AppGoogleInterop) => (
                   <ActivityResearchCard
                     key={`${selectedActivity.id}-${card.title}`}
                     eyebrow={card.eyebrow}
@@ -3515,7 +3519,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               <PageNotesCard
                 title="Activities note"
                 value={getPageNote(doc, 'activities')}
-                onChange={(value: AppGoogleBoundary) => onUpdatePageNote('activities', value)}
+                onChange={(value: AppGoogleInterop) => onUpdatePageNote('activities', value)}
                 onConvert={() => onConvertPageNote('activities')}
                 placeholder="Capture alternate plans, micro-itineraries, weather triggers, or new activity ideas..."
               />
@@ -3540,18 +3544,18 @@ function ExpensesPage({
   onResetExpenseAllocationsToEqual,
   onUpdatePageNote,
   onConvertPageNote,
-}: AppPropsBoundary) {
+}: AppPropsInterop) {
   const activeExpenseId =
-    selection.type === 'expense' && doc.expenses.some((expense: AppGoogleBoundary) => expense.id === selection.id)
+    selection.type === 'expense' && doc.expenses.some((expense: AppGoogleInterop) => expense.id === selection.id)
       ? selection.id
       : doc.expenses[0]?.id
-  const activeExpense = doc.expenses.find((expense: AppGoogleBoundary) => expense.id === activeExpenseId) || null
+  const activeExpense = doc.expenses.find((expense: AppGoogleInterop) => expense.id === activeExpenseId) || null
   const [amountDraft, setAmountDraft] = useState('')
-  const [manualAllocationDrafts, setManualAllocationDrafts] = useState<AppGoogleBoundary>({})
+  const [manualAllocationDrafts, setManualAllocationDrafts] = useState<AppGoogleInterop>({})
   const [customPayerDraft, setCustomPayerDraft] = useState('')
-  const total = useMemo(() => doc.expenses.reduce((sum: AppGoogleBoundary,  expense: AppGoogleBoundary) => sum + expense.amount, 0), [doc.expenses])
+  const total = useMemo(() => doc.expenses.reduce((sum: AppGoogleInterop,  expense: AppGoogleInterop) => sum + expense.amount, 0), [doc.expenses])
   const outstanding = useMemo(
-    () => doc.expenses.filter((expense: AppGoogleBoundary) => !expense.settled).reduce((sum: AppGoogleBoundary,  expense: AppGoogleBoundary) => sum + expense.amount, 0),
+    () => doc.expenses.filter((expense: AppGoogleInterop) => !expense.settled).reduce((sum: AppGoogleInterop,  expense: AppGoogleInterop) => sum + expense.amount, 0),
     [doc.expenses],
   )
   const familyBurden = useMemo(() => getFamilyExpenseBurden(doc.expenses, doc.families), [doc.expenses, doc.families])
@@ -3560,7 +3564,7 @@ function ExpensesPage({
     [activeExpense, doc.families],
   )
   const manualAllocatedTotal = useMemo(
-    () => activeAllocations.reduce((sum: AppGoogleBoundary,  allocation: AppGoogleBoundary) => sum + allocation.amount, 0),
+    () => activeAllocations.reduce((sum: AppGoogleInterop,  allocation: AppGoogleInterop) => sum + allocation.amount, 0),
     [activeAllocations],
   )
   const allocationDelta = activeExpense?.allocationMode === 'manual'
@@ -3568,7 +3572,7 @@ function ExpensesPage({
     : 0
   const payerOptions = useMemo(
     () => [
-      ...doc.families.map((family: AppGoogleBoundary) => family.title),
+      ...doc.families.map((family: AppGoogleInterop) => family.title),
       'Each family',
       'Unassigned',
     ],
@@ -3591,7 +3595,7 @@ function ExpensesPage({
 
     setManualAllocationDrafts(
       Object.fromEntries(
-        getExpenseAllocations(activeExpense, doc.families).map((allocation: AppGoogleBoundary) => [
+        getExpenseAllocations(activeExpense, doc.families).map((allocation: AppGoogleInterop) => [
           allocation.familyId,
           allocation.amount === 0 ? '' : String(allocation.amount),
         ]),
@@ -3606,11 +3610,11 @@ function ExpensesPage({
     setAmountDraft(parsed === 0 ? '' : String(parsed))
   }, [activeExpense, amountDraft, onUpdateExpenseFields])
 
-  const commitManualAllocationDraft = useCallback((familyId: AppGoogleBoundary) => {
+  const commitManualAllocationDraft = useCallback((familyId: AppGoogleInterop) => {
     if (!activeExpense) return
     const parsed = parseCurrencyInput(manualAllocationDrafts[familyId] || '')
     onUpdateExpenseAllocation(activeExpense.id, familyId, parsed)
-    setManualAllocationDrafts((current: AppGoogleBoundary) => ({
+    setManualAllocationDrafts((current: AppGoogleInterop) => ({
       ...current,
       [familyId]: parsed === 0 ? '' : String(parsed),
     }))
@@ -3646,13 +3650,13 @@ function ExpensesPage({
         </div>
 
         <div className="border border-[#30363D] bg-[#0d1117]">
-          {doc.expenses.map((expense: AppGoogleBoundary) => (
+          {doc.expenses.map((expense: AppGoogleInterop) => (
             <div
               key={expense.id}
               role="button"
               tabIndex={0}
               onClick={() => onSelectEntity('expense', expense.id)}
-              onKeyDown={(event: AppGoogleBoundary) => {
+              onKeyDown={(event: AppGoogleInterop) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault()
                   onSelectEntity('expense', expense.id)
@@ -3684,7 +3688,7 @@ function ExpensesPage({
               <div className="font-mono text-[12px] text-[#C9D1D9]">{formatCurrency(expense.amount)}</div>
               <button
                 type="button"
-                onClick={(event: AppGoogleBoundary) => {
+                onClick={(event: AppGoogleInterop) => {
                   event.stopPropagation()
                   onToggleExpenseSettled(expense.id)
                 }}
@@ -3725,7 +3729,7 @@ function ExpensesPage({
                   <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense title</span>
                   <input
                     value={activeExpense.title || ''}
-                    onChange={(event: AppGoogleBoundary) => onUpdateExpenseFields(activeExpense.id, { title: event.target.value })}
+                    onChange={(event: AppGoogleInterop) => onUpdateExpenseFields(activeExpense.id, { title: event.target.value })}
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
                 </label>
@@ -3734,7 +3738,7 @@ function ExpensesPage({
                   <div className="grid gap-2">
                     <select
                       value={payerMode}
-                      onChange={(event: AppGoogleBoundary) => {
+                      onChange={(event: AppGoogleInterop) => {
                         const value = event.target.value
                         if (value === '__custom__') {
                           onUpdateExpenseFields(activeExpense.id, { payer: customPayerDraft || activeExpense.payer || '' })
@@ -3744,7 +3748,7 @@ function ExpensesPage({
                       }}
                       className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                     >
-                      {payerOptions.map((option: AppGoogleBoundary) => (
+                      {payerOptions.map((option: AppGoogleInterop) => (
                         <option key={option} value={option}>
                           {option}
                         </option>
@@ -3754,7 +3758,7 @@ function ExpensesPage({
                     {payerMode === '__custom__' ? (
                       <input
                         value={customPayerDraft}
-                        onChange={(event: AppGoogleBoundary) => setCustomPayerDraft(event.target.value)}
+                        onChange={(event: AppGoogleInterop) => setCustomPayerDraft(event.target.value)}
                         onBlur={() => onUpdateExpenseFields(activeExpense.id, { payer: customPayerDraft.trim() || 'Unassigned' })}
                         placeholder="Custom payer label"
                         className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
@@ -3767,9 +3771,9 @@ function ExpensesPage({
                   <input
                     inputMode="decimal"
                     value={amountDraft}
-                    onChange={(event: AppGoogleBoundary) => setAmountDraft(event.target.value)}
+                    onChange={(event: AppGoogleInterop) => setAmountDraft(event.target.value)}
                     onBlur={commitAmountDraft}
-                    onFocus={(event: AppGoogleBoundary) => event.target.select()}
+                    onFocus={(event: AppGoogleInterop) => event.target.select()}
                     placeholder="0"
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
@@ -3798,7 +3802,7 @@ function ExpensesPage({
                     { id: 'equal', label: 'Equal split' },
                     { id: 'manual', label: 'Manual allocation' },
                     { id: 'individual', label: 'Individual' },
-                  ].map((mode: AppGoogleBoundary) => (
+                  ].map((mode: AppGoogleInterop) => (
                     <button
                       key={mode.id}
                       type="button"
@@ -3821,7 +3825,7 @@ function ExpensesPage({
                   </div>
                 ) : (
                   <div className="grid gap-2">
-                    {activeAllocations.map((allocation: AppGoogleBoundary) => (
+                    {activeAllocations.map((allocation: AppGoogleInterop) => (
                       <div
                         key={allocation.familyId}
                         className="grid grid-cols-[minmax(0,1fr)_132px] items-center gap-3 border border-[#30363D]/60 bg-[#0d1117] px-3 py-3"
@@ -3836,14 +3840,14 @@ function ExpensesPage({
                           <input
                             inputMode="decimal"
                             value={manualAllocationDrafts[allocation.familyId] ?? ''}
-                            onChange={(event: AppGoogleBoundary) =>
-                              setManualAllocationDrafts((current: AppGoogleBoundary) => ({
+                            onChange={(event: AppGoogleInterop) =>
+                              setManualAllocationDrafts((current: AppGoogleInterop) => ({
                                 ...current,
                                 [allocation.familyId]: event.target.value,
                               }))
                             }
                             onBlur={() => commitManualAllocationDraft(allocation.familyId)}
-                            onFocus={(event: AppGoogleBoundary) => event.target.select()}
+                            onFocus={(event: AppGoogleInterop) => event.target.select()}
                             placeholder="0"
                             className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                           />
@@ -3891,7 +3895,7 @@ function ExpensesPage({
                 <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense note</span>
                 <textarea
                   value={activeExpense.note || ''}
-                  onChange={(event: AppGoogleBoundary) => onUpdateExpenseFields(activeExpense.id, { note: event.target.value })}
+                  onChange={(event: AppGoogleInterop) => onUpdateExpenseFields(activeExpense.id, { note: event.target.value })}
                   rows={4}
                   className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                 />
@@ -3903,7 +3907,7 @@ function ExpensesPage({
         <div className="mb-6 border border-[#30363D] bg-[#161b22] p-4">
           <SectionTitle eyebrow="Shared Burden" title="Per-family exposure" />
           <div className="grid gap-2">
-            {familyBurden.map((entry: AppGoogleBoundary) => (
+            {familyBurden.map((entry: AppGoogleInterop) => (
               <div
                 key={entry.familyId}
                 className="flex items-center justify-between border border-[#30363D]/60 bg-[#0d1117] px-3 py-2"
@@ -3918,7 +3922,7 @@ function ExpensesPage({
         <PageNotesCard
           title="Expenses note"
           value={getPageNote(doc, 'expenses')}
-          onChange={(value: AppGoogleBoundary) => onUpdatePageNote('expenses', value)}
+          onChange={(value: AppGoogleInterop) => onUpdatePageNote('expenses', value)}
           onConvert={() => onConvertPageNote('expenses')}
           placeholder="Capture split assumptions, cash items, or things to settle after the trip..."
         />
@@ -3927,7 +3931,7 @@ function ExpensesPage({
   )
 }
 
-function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: AppPropsBoundary) {
+function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: AppPropsInterop) {
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
@@ -3937,7 +3941,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
           <PageNotesCard
             title="Families note"
             value={getPageNote(doc, 'families')}
-            onChange={(value: AppGoogleBoundary) => onUpdatePageNote('families', value)}
+            onChange={(value: AppGoogleInterop) => onUpdatePageNote('families', value)}
             onConvert={() => onConvertPageNote('families')}
             placeholder="Capture cross-family coordination details..."
           />
@@ -3947,7 +3951,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
       <div className="overflow-y-auto bg-[#0d1117] p-6">
         <SectionTitle eyebrow="Readiness" title="Family task posture" />
         <div className="grid gap-4">
-          {doc.families.map((family: AppGoogleBoundary) => {
+          {doc.families.map((family: AppGoogleInterop) => {
             const tasks = getTasksByFamily(doc, family.id)
             const readiness = getFamilyReadiness(doc, family.id)
             return (
@@ -3971,7 +3975,7 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
                   />
                 </div>
                 <div className="space-y-2">
-                  {tasks.map((task: AppGoogleBoundary) => (
+                  {tasks.map((task: AppGoogleInterop) => (
                     <div key={task.id} className="flex items-center justify-between text-[11px]">
                       <span className="text-[#C9D1D9]">{task.title}</span>
                       <span className={task.status === 'done' ? 'text-[#3FB950]' : 'text-[#D29922]'}>
@@ -3989,10 +3993,10 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
   )
 }
 
-function withRefreshedFamilies(nextDoc: AppGoogleBoundary) {
+function withRefreshedFamilies(nextDoc: AppGoogleInterop) {
   return {
     ...nextDoc,
-    families: nextDoc.families.map((family: AppGoogleBoundary) => ({
+    families: nextDoc.families.map((family: AppGoogleInterop) => ({
       ...family,
       readiness: getFamilyReadiness(nextDoc, family.id),
     })),
@@ -4007,10 +4011,10 @@ function App() {
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
-  const locationIntelHydrationRef = useRef(new Set<AppGoogleBoundary>())
+  const locationIntelHydrationRef = useRef(new Set<AppGoogleInterop>())
   const startupTimelineSyncRef = useRef(false)
   const seededPlanRefreshRef = useRef(false)
-  const [weatherState, setWeatherState] = useState<AppGoogleBoundary>({
+  const [weatherState, setWeatherState] = useState<AppGoogleInterop>({
     status: 'loading',
     targets: {},
     updatedAt: null,
@@ -4018,17 +4022,17 @@ function App() {
   })
 
   const selection = displayDoc.selection
-  const currentFamily = displayDoc.families.find((family: AppGoogleBoundary) => family.id === viewerProfile?.familyId) || null
+  const currentFamily = displayDoc.families.find((family: AppGoogleInterop) => family.id === viewerProfile?.familyId) || null
   const currentFamilyId = currentFamily?.id || null
   const selectedEntity = getEntityBySelection(displayDoc, selection)
   const selectedLocation = getLocationForEntity(displayDoc, selectedEntity)
   const selectedRoute = getRouteForEntity(displayDoc, selectedEntity)
 
   useEffect(() => {
-    clearLegacyTripStorage()
+    clearOldTripStorage()
   }, [])
 
-  const setActiveFamilyProfile = useCallback((familyId: AppGoogleBoundary) => {
+  const setActiveFamilyProfile = useCallback((familyId: AppGoogleInterop) => {
     setViewerProfile({ familyId })
   }, [setViewerProfile])
 
@@ -4037,7 +4041,7 @@ function App() {
     startupTimelineSyncRef.current = true
 
     const nowCursor = getCurrentTripCursor()
-    setDoc((current: AppGoogleBoundary) => ({
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4055,16 +4059,16 @@ function App() {
   }, [setDoc])
 
   useEffect(() => {
-    const jiangRoute = doc.routes.find((route: AppGoogleBoundary) => route.id === 'route-la-north-star')
-    const jiangFamily = doc.families.find((family: AppGoogleBoundary) => family.id === 'north-star')
-    const yosemiteLocation = doc.locations.find((location: AppGoogleBoundary) => location.id === 'yosemite')
+    const jiangRoute = doc.routes.find((route: AppGoogleInterop) => route.id === 'route-la-north-star')
+    const jiangFamily = doc.families.find((family: AppGoogleInterop) => family.id === 'north-star')
+    const yosemiteLocation = doc.locations.find((location: AppGoogleInterop) => location.id === 'yosemite')
     const missingStopLocations = JIANG_ROAD_TRIP_STOP_DEFAULTS.filter(
-      (stop: AppGoogleBoundary) => !doc.locations.some((location: AppGoogleBoundary) => location.id === stop.id),
+      (stop: AppGoogleInterop) => !doc.locations.some((location: AppGoogleInterop) => location.id === stop.id),
     )
 
     const needsRouteStops = jiangRoute && !jiangRoute.stopLocationIds?.length
     const needsFamilyStops = jiangFamily && !jiangFamily.plannedStopIds?.length
-    const needsVehicleFamilyBackfill = doc.families.some((family: AppGoogleBoundary) => {
+    const needsVehicleFamilyBackfill = doc.families.some((family: AppGoogleInterop) => {
       const defaults = FAMILY_VEHICLE_DEFAULTS[family.id]
       if (!defaults) return false
       return (
@@ -4074,7 +4078,7 @@ function App() {
         (defaults.plannedStopIds?.length && !family.plannedStopIds?.length)
       )
     })
-    const needsVehicleRouteBackfill = doc.routes.some((route: AppGoogleBoundary) => {
+    const needsVehicleRouteBackfill = doc.routes.some((route: AppGoogleInterop) => {
       const defaults = ROUTE_SIM_DEFAULTS[route.id]
       if (!defaults) return false
       return (
@@ -4106,13 +4110,13 @@ function App() {
       return
     }
 
-    setDoc((current: AppGoogleBoundary) => {
+    setDoc((current: AppGoogleInterop) => {
       const nextLocations = [
         ...current.locations,
         ...JIANG_ROAD_TRIP_STOP_DEFAULTS.filter(
-          (stop: AppGoogleBoundary) => !current.locations.some((location: AppGoogleBoundary) => location.id === stop.id),
+          (stop: AppGoogleInterop) => !current.locations.some((location: AppGoogleInterop) => location.id === stop.id),
         ),
-      ].map((location: AppGoogleBoundary) =>
+      ].map((location: AppGoogleInterop) =>
         location.id === 'yosemite'
           ? {
               ...location,
@@ -4120,7 +4124,7 @@ function App() {
             }
           : location,
       )
-      const nextFamilies = current.families.map((family: AppGoogleBoundary) => {
+      const nextFamilies = current.families.map((family: AppGoogleInterop) => {
         const defaults = FAMILY_VEHICLE_DEFAULTS[family.id]
         if (!defaults && family.id !== 'north-star') return family
 
@@ -4135,7 +4139,7 @@ function App() {
       })
 
       const nextRoutes = synchronizeRoutePaths(
-        current.routes.map((route: AppGoogleBoundary) => {
+        current.routes.map((route: AppGoogleInterop) => {
           const defaults = ROUTE_SIM_DEFAULTS[route.id]
           if (!defaults) return route
 
@@ -4185,22 +4189,22 @@ function App() {
     if (seededPlanRefreshRef.current) return
 
     const initialDoc = getInitialTripDocument()
-    const currentById = (collection: AppGoogleBoundary) => new Map(collection.map((item: AppGoogleBoundary) => [item.id, item]))
-    const collectionNeedsRefresh = (currentCollection: AppGoogleBoundary,  initialCollection: AppGoogleBoundary,  refreshIds: AppGoogleBoundary) => {
+    const currentById = (collection: AppGoogleInterop) => new Map(collection.map((item: AppGoogleInterop) => [item.id, item]))
+    const collectionNeedsRefresh = (currentCollection: AppGoogleInterop,  initialCollection: AppGoogleInterop,  refreshIds: AppGoogleInterop) => {
       const currentMap = currentById(currentCollection)
       const initialMap = currentById(initialCollection)
-      return [...refreshIds].some((id: AppGoogleBoundary) => {
+      return [...refreshIds].some((id: AppGoogleInterop) => {
         const currentItem = currentMap.get(id)
         const initialItem = initialMap.get(id)
         return !currentItem || !initialItem || JSON.stringify(currentItem) !== JSON.stringify(initialItem)
       })
     }
-    const missingRoutes = initialDoc.routes.filter((route: AppGoogleBoundary) => !doc.routes.some((currentRoute: AppGoogleBoundary) => currentRoute.id === route.id))
+    const missingRoutes = initialDoc.routes.filter((route: AppGoogleInterop) => !doc.routes.some((currentRoute: AppGoogleInterop) => currentRoute.id === route.id))
     const missingItineraryItems = initialDoc.itineraryItems.filter(
-      (item: AppGoogleBoundary) => !doc.itineraryItems.some((currentItem: AppGoogleBoundary) => currentItem.id === item.id),
+      (item: AppGoogleInterop) => !doc.itineraryItems.some((currentItem: AppGoogleInterop) => currentItem.id === item.id),
     )
-    const hasObsoleteRoutes = doc.routes.some((route: AppGoogleBoundary) => OBSOLETE_PLAN_ROUTE_IDS.has(route.id))
-    const hasObsoleteItineraryItems = doc.itineraryItems.some((item: AppGoogleBoundary) => OBSOLETE_PLAN_ITINERARY_IDS.has(item.id))
+    const hasObsoleteRoutes = doc.routes.some((route: AppGoogleInterop) => OBSOLETE_PLAN_ROUTE_IDS.has(route.id))
+    const hasObsoleteItineraryItems = doc.itineraryItems.some((item: AppGoogleInterop) => OBSOLETE_PLAN_ITINERARY_IDS.has(item.id))
     const needsPlanRefresh =
       collectionNeedsRefresh(doc.families, initialDoc.families, SEEDED_PLAN_REFRESH_IDS.families) ||
       collectionNeedsRefresh(doc.locations, initialDoc.locations, SEEDED_PLAN_REFRESH_IDS.locations) ||
@@ -4216,15 +4220,15 @@ function App() {
     }
 
     seededPlanRefreshRef.current = true
-    setDoc((current: AppGoogleBoundary) => {
-  const syncCollection = (currentCollection: AppGoogleBoundary[], initialCollection: AppGoogleBoundary[], refreshIds: Set<AppGoogleBoundary>, obsoleteIds = new Set<AppGoogleBoundary>()) => {
-        const initialMap = new Map(initialCollection.map((item: AppGoogleBoundary) => [item.id, item]))
-        const filtered = currentCollection.filter((item: AppGoogleBoundary) => !obsoleteIds.has(item.id))
-        const existingIds = new Set(filtered.map((item: AppGoogleBoundary) => item.id))
-        const replaced = filtered.map((item: AppGoogleBoundary) => (refreshIds.has(item.id) && initialMap.has(item.id) ? initialMap.get(item.id) : item))
+    setDoc((current: AppGoogleInterop) => {
+  const syncCollection = (currentCollection: AppGoogleInterop[], initialCollection: AppGoogleInterop[], refreshIds: Set<AppGoogleInterop>, obsoleteIds = new Set<AppGoogleInterop>()) => {
+        const initialMap = new Map(initialCollection.map((item: AppGoogleInterop) => [item.id, item]))
+        const filtered = currentCollection.filter((item: AppGoogleInterop) => !obsoleteIds.has(item.id))
+        const existingIds = new Set(filtered.map((item: AppGoogleInterop) => item.id))
+        const replaced = filtered.map((item: AppGoogleInterop) => (refreshIds.has(item.id) && initialMap.has(item.id) ? initialMap.get(item.id) : item))
         const additions = [...refreshIds]
-          .filter((id: AppGoogleBoundary) => !existingIds.has(id) && initialMap.has(id))
-          .map((id: AppGoogleBoundary) => initialMap.get(id))
+          .filter((id: AppGoogleInterop) => !existingIds.has(id) && initialMap.has(id))
+          .map((id: AppGoogleInterop) => initialMap.get(id))
         return [...replaced, ...additions]
       }
 
@@ -4237,7 +4241,7 @@ function App() {
         syncCollection(
           [
             ...current.routes,
-            ...initialDoc.routes.filter((route: AppGoogleBoundary) => !current.routes.some((currentRoute: AppGoogleBoundary) => currentRoute.id === route.id)),
+            ...initialDoc.routes.filter((route: AppGoogleInterop) => !current.routes.some((currentRoute: AppGoogleInterop) => currentRoute.id === route.id)),
           ],
           initialDoc.routes,
           SEEDED_PLAN_REFRESH_IDS.routes,
@@ -4248,7 +4252,7 @@ function App() {
       const nextItineraryItems = syncCollection(
         [
           ...current.itineraryItems,
-          ...initialDoc.itineraryItems.filter((item: AppGoogleBoundary) => !current.itineraryItems.some((currentItem: AppGoogleBoundary) => currentItem.id === item.id)),
+          ...initialDoc.itineraryItems.filter((item: AppGoogleInterop) => !current.itineraryItems.some((currentItem: AppGoogleInterop) => currentItem.id === item.id)),
         ],
         initialDoc.itineraryItems,
         SEEDED_PLAN_REFRESH_IDS.itineraryItems,
@@ -4283,7 +4287,7 @@ function App() {
     [displayDoc],
   )
   const timelineWeatherDays = useMemo(
-    () => DAYS.map((day: AppGoogleBoundary) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
+    () => DAYS.map((day: AppGoogleInterop) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
     [weatherState.targets],
   )
   const mapWeather = useMemo(
@@ -4295,8 +4299,8 @@ function App() {
     [doc.ui.map.focusDayId, weatherState.targets],
   )
 
-  const setSelectedPage = useCallback((pageId: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const setSelectedPage = useCallback((pageId: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       selectedPage: pageId,
       selection: ensureSelectionForPage(current, pageId),
@@ -4307,8 +4311,8 @@ function App() {
     }))
   }, [setDoc])
 
-  const selectEntity = useCallback((type: AppGoogleBoundary,  id: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => {
+  const selectEntity = useCallback((type: AppGoogleInterop,  id: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => {
       if (current.selection?.type === type && current.selection?.id === id && current.ui.searchQuery === '') {
         return current
       }
@@ -4321,20 +4325,20 @@ function App() {
     })
   }, [setDoc])
 
-  const openEntity = useCallback((type: AppGoogleBoundary,  id: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const openEntity = useCallback((type: AppGoogleInterop,  id: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       selection: { type, id },
       ui: { ...current.ui, searchQuery: '' },
     }))
   }, [setDoc])
 
-  const hydrateLocationDetails = useCallback((locationId: AppGoogleBoundary,  patch: AppGoogleBoundary) => {
+  const hydrateLocationDetails = useCallback((locationId: AppGoogleInterop,  patch: AppGoogleInterop) => {
     if (!locationId || !patch) return
 
-    setDoc((current: AppGoogleBoundary) => {
+    setDoc((current: AppGoogleInterop) => {
       let changed = false
-      const locations = current.locations.map((location: AppGoogleBoundary) => {
+      const locations = current.locations.map((location: AppGoogleInterop) => {
         if (location.id !== locationId) return location
 
         const nextLocation = {
@@ -4359,12 +4363,12 @@ function App() {
     })
   }, [setDoc])
 
-  const hydrateRouteDetails = useCallback((routeId: AppGoogleBoundary,  patch: AppGoogleBoundary) => {
+  const hydrateRouteDetails = useCallback((routeId: AppGoogleInterop,  patch: AppGoogleInterop) => {
     if (!routeId || !patch) return
 
-    setDoc((current: AppGoogleBoundary) => {
+    setDoc((current: AppGoogleInterop) => {
       let changed = false
-      const routes = current.routes.map((route: AppGoogleBoundary) => {
+      const routes = current.routes.map((route: AppGoogleInterop) => {
         if (route.id !== routeId) return route
 
         const nextRoute = {
@@ -4388,9 +4392,9 @@ function App() {
     })
   }, [setDoc])
 
-  const updateLocationFields = useCallback((locationId: AppGoogleBoundary,  patch: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => {
-      const locations = current.locations.map((location: AppGoogleBoundary) =>
+  const updateLocationFields = useCallback((locationId: AppGoogleInterop,  patch: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => {
+      const locations = current.locations.map((location: AppGoogleInterop) =>
         location.id === locationId ? stampFamilyMetadata({ ...location, ...patch }, currentFamilyId) : location,
       )
 
@@ -4406,8 +4410,8 @@ function App() {
     if (!liveExternalData) return
     if (!GOOGLE_MAPS_API_KEY) return
 
-    const basecampLocation = doc.locations.find((location: AppGoogleBoundary) => location.id === 'pine-airbnb')
-    const pendingPlaceLocations = doc.locations.filter((location: AppGoogleBoundary) => {
+    const basecampLocation = doc.locations.find((location: AppGoogleInterop) => location.id === 'pine-airbnb')
+    const pendingPlaceLocations = doc.locations.filter((location: AppGoogleInterop) => {
       if (!location.placesQuery) return false
 
       const needsPlaceMatch = location.placesQuery && !location.placeId
@@ -4428,7 +4432,7 @@ function App() {
     async function hydrateMealIntel() {
       try {
         if (!window.__tripCommandCenterMapsConfigured) {
-          (setOptions as AppGoogleBoundary)({
+          (setOptions as AppGoogleInterop)({
             key: GOOGLE_MAPS_API_KEY,
             version: 'weekly',
             mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
@@ -4449,8 +4453,8 @@ function App() {
           ? null
           : new google.maps.DirectionsService()
 
-        const findPlaceMatch = (location: AppGoogleBoundary) =>
-          new Promise<AppGoogleBoundary>((resolve: AppGoogleBoundary,  reject: AppGoogleBoundary) => {
+        const findPlaceMatch = (location: AppGoogleInterop) =>
+          new Promise<AppGoogleInterop>((resolve: AppGoogleInterop,  reject: AppGoogleInterop) => {
             if (!location.placesQuery || location.placeId) {
               resolve(null)
               return
@@ -4466,7 +4470,7 @@ function App() {
                 query: location.placesQuery,
                 fields: ['name', 'formatted_address', 'geometry', 'place_id'],
               },
-              (results: AppGoogleBoundary,  status: AppGoogleBoundary) => {
+              (results: AppGoogleInterop,  status: AppGoogleInterop) => {
                 if (status !== google.maps.places.PlacesServiceStatus.OK || !results?.length) {
                   reject(new Error(`Place match failed for ${location.id}: ${status}`))
                   return
@@ -4476,8 +4480,8 @@ function App() {
             )
           })
 
-        const fetchPlaceDetails = (placeId: AppGoogleBoundary) =>
-          new Promise<AppGoogleBoundary>((resolve: AppGoogleBoundary,  reject: AppGoogleBoundary) => {
+        const fetchPlaceDetails = (placeId: AppGoogleInterop) =>
+          new Promise<AppGoogleInterop>((resolve: AppGoogleInterop,  reject: AppGoogleInterop) => {
             if (!placeId) {
               resolve(null)
               return
@@ -4493,7 +4497,7 @@ function App() {
                 placeId,
                 fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
               },
-              (result: AppGoogleBoundary,  status: AppGoogleBoundary) => {
+              (result: AppGoogleInterop,  status: AppGoogleInterop) => {
                 if (status !== google.maps.places.PlacesServiceStatus.OK || !result) {
                   reject(new Error(`Place details failed for ${placeId}: ${status}`))
                   return
@@ -4503,8 +4507,8 @@ function App() {
             )
           })
 
-        const fetchDriveProfile = (origin: AppGoogleBoundary,  destination: AppGoogleBoundary) =>
-          new Promise<AppGoogleBoundary>((resolve: AppGoogleBoundary,  reject: AppGoogleBoundary) => {
+        const fetchDriveProfile = (origin: AppGoogleInterop,  destination: AppGoogleInterop) =>
+          new Promise<AppGoogleInterop>((resolve: AppGoogleInterop,  reject: AppGoogleInterop) => {
             if (!origin || !destination) {
               resolve(null)
               return
@@ -4522,7 +4526,7 @@ function App() {
                 travelMode: google.maps.TravelMode.DRIVING,
                 provideRouteAlternatives: false,
               },
-              (result: AppGoogleBoundary,  status: AppGoogleBoundary) => {
+              (result: AppGoogleInterop,  status: AppGoogleInterop) => {
                 if (status !== 'OK' || !result?.routes?.length) {
                   reject(new Error(`Drive profile failed: ${status}`))
                   return
@@ -4560,7 +4564,7 @@ function App() {
             const placeDetails = placeId ? await fetchPlaceDetails(placeId) : null
             if (cancelled) return
 
-            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo: AppGoogleBoundary,  index: AppGoogleBoundary) => ({
+            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo: AppGoogleInterop,  index: AppGoogleInterop) => ({
               id: `${location.id}-live-photo-${index + 1}`,
               label: index === 0 ? 'Live venue photo' : `Venue photo ${index + 1}`,
               imageUrl: photo.getUrl({ maxWidth: 900 }),
@@ -4619,8 +4623,8 @@ function App() {
       return
     }
 
-    const basecamp = doc.locations.find((location: AppGoogleBoundary) => location.id === 'pine-airbnb')
-    const yosemite = doc.locations.find((location: AppGoogleBoundary) => location.id === 'yosemite')
+    const basecamp = doc.locations.find((location: AppGoogleInterop) => location.id === 'pine-airbnb')
+    const yosemite = doc.locations.find((location: AppGoogleInterop) => location.id === 'yosemite')
     if (!basecamp?.coordinates || !yosemite?.coordinates) return
 
     let cancelled = false
@@ -4645,10 +4649,10 @@ function App() {
         })
       } catch (error) {
         if (cancelled) return
-        setWeatherState((current: AppGoogleBoundary) => ({
+        setWeatherState((current: AppGoogleInterop) => ({
           ...current,
           status: 'error',
-          error: (error as AppGoogleBoundary)?.message || 'Weather fetch failed',
+          error: (error as AppGoogleInterop)?.message || 'Weather fetch failed',
         }))
       }
     }
@@ -4662,8 +4666,8 @@ function App() {
     }
   }, [doc.locations, liveExternalData])
 
-  const updatePageNote = (pageId: AppGoogleBoundary,  value: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const updatePageNote = (pageId: AppGoogleInterop,  value: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       pageNotes: { ...current.pageNotes, [pageId]: value },
       pageNoteMeta: {
@@ -4678,8 +4682,8 @@ function App() {
     }))
   }
 
-  const updateEntityNote = (type: AppGoogleBoundary,  id: AppGoogleBoundary,  value: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => {
+  const updateEntityNote = (type: AppGoogleInterop,  id: AppGoogleInterop,  value: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => {
       const collectionName = ({
         family: 'families',
         location: 'locations',
@@ -4690,11 +4694,11 @@ function App() {
         stayItem: 'stayItems',
         expense: 'expenses',
         task: 'tasks',
-      } as AppGoogleBoundary)[type]
+      } as AppGoogleInterop)[type]
       if (!collectionName) return current
       return {
         ...current,
-        [collectionName]: updateEntityInCollection(current[collectionName], id, (item: AppGoogleBoundary) => ({
+        [collectionName]: updateEntityInCollection(current[collectionName], id, (item: AppGoogleInterop) => ({
           ...stampFamilyMetadata(item, currentFamilyId),
           note: value,
         })),
@@ -4702,11 +4706,11 @@ function App() {
     })
   }
 
-  const toggleTask = (taskId: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => {
+  const toggleTask = (taskId: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => {
       const nextDoc = {
         ...current,
-        tasks: current.tasks.map((task: AppGoogleBoundary) =>
+        tasks: current.tasks.map((task: AppGoogleInterop) =>
           task.id === taskId
             ? { ...task, status: task.status === 'done' ? 'open' : 'done' }
             : task,
@@ -4716,8 +4720,8 @@ function App() {
     })
   }
 
-  const addTask = (entityType: AppGoogleBoundary,  entityId: AppGoogleBoundary,  title: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => {
+  const addTask = (entityType: AppGoogleInterop,  entityId: AppGoogleInterop,  title: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => {
       const entity = getEntityById(current, entityType, entityId)
       if (!entity || !title.trim()) return current
       const newTaskId = `task-user-${Date.now()}`
@@ -4748,7 +4752,7 @@ function App() {
         stayItem: 'stayItems',
         expense: 'expenses',
         task: 'tasks',
-      } as AppGoogleBoundary)[entityType]
+      } as AppGoogleInterop)[entityType]
 
       const nextDoc = {
         ...current,
@@ -4756,7 +4760,7 @@ function App() {
         [collectionName]:
           entityType === 'task'
             ? current[collectionName]
-            : updateEntityInCollection(current[collectionName], entityId, (item: AppGoogleBoundary) => ({
+            : updateEntityInCollection(current[collectionName], entityId, (item: AppGoogleInterop) => ({
                 ...item,
                 taskIds: [...(item.taskIds || []), newTaskId],
               })),
@@ -4766,7 +4770,7 @@ function App() {
     })
   }
 
-  const addActivity = ({ title, dayId, window, description }: AppPropsBoundary) => {
+  const addActivity = ({ title, dayId, window, description }: AppPropsInterop) => {
     if (!title?.trim()) return
 
     const fallbackWindow = `${getDayMeta(dayId)?.shortLabel?.toUpperCase() || dayId?.toUpperCase() || 'DAY'} / flexible`
@@ -4787,20 +4791,20 @@ function App() {
       note: '',
     }, currentFamilyId)
 
-    setDoc((current: AppGoogleBoundary) => ({
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       activities: [...current.activities, newActivity],
       selection: { type: 'activity', id: newActivity.id },
     }))
   }
 
-  const convertNoteToTask = (entityType: AppGoogleBoundary,  entityId: AppGoogleBoundary) => {
+  const convertNoteToTask = (entityType: AppGoogleInterop,  entityId: AppGoogleInterop) => {
     const entity = getEntityById(doc, entityType, entityId)
     if (!entity?.note?.trim()) return
     addTask(entityType, entityId, entity.note.trim().split('\n')[0].slice(0, 96))
   }
 
-  const convertPageNoteToTask = (pageId: AppGoogleBoundary) => {
+  const convertPageNoteToTask = (pageId: AppGoogleInterop) => {
     const note = getPageNote(doc, pageId)
     if (!note.trim()) return
       const pageToEntityType = {
@@ -4811,23 +4815,23 @@ function App() {
       expenses: 'expense',
       families: 'family',
     }
-      const entityType = (pageToEntityType as AppGoogleBoundary)[pageId]
-      const collectionName = (ENTITY_PAGE as AppGoogleBoundary)[entityType] ? ({
+      const entityType = (pageToEntityType as AppGoogleInterop)[pageId]
+      const collectionName = (ENTITY_PAGE as AppGoogleInterop)[entityType] ? ({
       activity: 'activities',
       stayItem: 'stayItems',
       meal: 'meals',
       expense: 'expenses',
       family: 'families',
-      } as AppGoogleBoundary)[entityType] : null
-      const target = collectionName ? (doc as AppGoogleBoundary)[collectionName]?.[0] : null
+      } as AppGoogleInterop)[entityType] : null
+      const target = collectionName ? (doc as AppGoogleInterop)[collectionName]?.[0] : null
     if (!target) return
     addTask(target.type, target.id, note.trim().split('\n')[0].slice(0, 96))
   }
 
-  const toggleMealStatus = (mealId: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const toggleMealStatus = (mealId: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
-      meals: current.meals.map((meal: AppGoogleBoundary) =>
+      meals: current.meals.map((meal: AppGoogleInterop) =>
         meal.id === mealId
           ? stampFamilyMetadata({ ...meal, status: meal.status === 'Assigned' ? 'Pending' : 'Assigned' }, currentFamilyId)
           : meal,
@@ -4835,10 +4839,10 @@ function App() {
     }))
   }
 
-  const toggleExpenseSettled = (expenseId: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const toggleExpenseSettled = (expenseId: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleBoundary) =>
+      expenses: current.expenses.map((expense: AppGoogleInterop) =>
         expense.id === expenseId
           ? stampFamilyMetadata({ ...expense, settled: !expense.settled }, currentFamilyId)
           : expense,
@@ -4846,10 +4850,10 @@ function App() {
     }))
   }
 
-  const updateExpenseFields = (expenseId: AppGoogleBoundary,  patch: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const updateExpenseFields = (expenseId: AppGoogleInterop,  patch: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleBoundary) => {
+      expenses: current.expenses.map((expense: AppGoogleInterop) => {
         if (expense.id !== expenseId) return expense
 
         const nextExpense = { ...expense, ...patch }
@@ -4861,10 +4865,10 @@ function App() {
     }))
   }
 
-  const setExpenseAllocationMode = (expenseId: AppGoogleBoundary,  allocationMode: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const setExpenseAllocationMode = (expenseId: AppGoogleInterop,  allocationMode: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleBoundary) => {
+      expenses: current.expenses.map((expense: AppGoogleInterop) => {
         if (expense.id !== expenseId) return expense
 
         if (allocationMode === 'manual') {
@@ -4889,10 +4893,10 @@ function App() {
     }))
   }
 
-  const updateExpenseAllocation = (expenseId: AppGoogleBoundary,  familyId: AppGoogleBoundary,  amount: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const updateExpenseAllocation = (expenseId: AppGoogleInterop,  familyId: AppGoogleInterop,  amount: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleBoundary) =>
+      expenses: current.expenses.map((expense: AppGoogleInterop) =>
         expense.id === expenseId
           ? stampFamilyMetadata({
               ...expense,
@@ -4908,10 +4912,10 @@ function App() {
     }))
   }
 
-  const resetExpenseAllocationsToEqual = (expenseId: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const resetExpenseAllocationsToEqual = (expenseId: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
-      expenses: current.expenses.map((expense: AppGoogleBoundary) =>
+      expenses: current.expenses.map((expense: AppGoogleInterop) =>
         expense.id === expenseId
           ? stampFamilyMetadata({
               ...expense,
@@ -4925,7 +4929,7 @@ function App() {
   }
 
   const addExpense = () => {
-    setDoc((current: AppGoogleBoundary) => {
+    setDoc((current: AppGoogleInterop) => {
       const familyLabel = getFamilyLabel(current.families, currentFamilyId || '')
       const newExpense = stampFamilyMetadata({
         id: `expense-user-${Date.now()}`,
@@ -4950,8 +4954,8 @@ function App() {
     })
   }
 
-  const updateMapUi = (patch: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const updateMapUi = (patch: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4960,8 +4964,8 @@ function App() {
     }))
   }
 
-  const setTimelineCursor = useCallback((cursorSlot: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const setTimelineCursor = useCallback((cursorSlot: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       ui: {
         ...current.ui,
@@ -4970,8 +4974,8 @@ function App() {
     }))
   }, [setDoc])
 
-  const updateSearchQuery = (searchQuery: AppGoogleBoundary) => {
-    setDoc((current: AppGoogleBoundary) => ({
+  const updateSearchQuery = (searchQuery: AppGoogleInterop) => {
+    setDoc((current: AppGoogleInterop) => ({
       ...current,
       ui: { ...current.ui, searchQuery },
     }))

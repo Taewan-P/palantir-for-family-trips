@@ -5,13 +5,14 @@ import { isLiveExternalDataEnabled } from './publishConfig'
 import { DAYS, TIME_SLOTS } from './tripData'
 import { getRouteDurationSlotSpan, parseEntityKey } from './tripModel'
 
-type CommandMapGoogleBoundary = ReturnType<typeof JSON.parse>
-type CommandMapPropsBoundary = ReturnType<typeof JSON.parse>
+type JsonReviverValue = Parameters<NonNullable<Parameters<typeof JSON.parse>[1]>>[1]
+type CommandMapGoogleInterop = JsonReviverValue
+type CommandMapPropsInterop = JsonReviverValue
 
 declare global {
   interface Window {
     __tripCommandCenterMapsConfigured?: boolean
-    google?: CommandMapGoogleBoundary
+    google?: CommandMapGoogleInterop
   }
 }
 
@@ -50,7 +51,7 @@ const MAX_ROUTE_LOOP_SECONDS = 34
 const LIVE_EXTERNAL_DATA = isLiveExternalDataEnabled()
 const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = import.meta.env.VITE_DISABLE_LEGACY_GOOGLE_ROUTING === 'true'
 const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = Boolean(import.meta.env?.DEV)
-const WEATHER_ICONS: Record<string, CommandMapGoogleBoundary> = {
+const WEATHER_ICONS: Record<string, CommandMapGoogleInterop> = {
   sun: Sun,
   partly: Cloud,
   cloud: Cloud,
@@ -61,7 +62,7 @@ const WEATHER_ICONS: Record<string, CommandMapGoogleBoundary> = {
   snow: Cloud,
 }
 
-function formatDurationText(totalSeconds: CommandMapGoogleBoundary) {
+function formatDurationText(totalSeconds: CommandMapGoogleInterop) {
   if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return ''
 
   const totalMinutes = Math.round(totalSeconds / 60)
@@ -73,7 +74,7 @@ function formatDurationText(totalSeconds: CommandMapGoogleBoundary) {
   return `${hours} hr ${minutes} min`
 }
 
-function formatDistanceText(distanceMeters: CommandMapGoogleBoundary) {
+function formatDistanceText(distanceMeters: CommandMapGoogleInterop) {
   if (!Number.isFinite(distanceMeters) || distanceMeters <= 0) return ''
 
   const miles = distanceMeters / 1609.344
@@ -81,7 +82,7 @@ function formatDistanceText(distanceMeters: CommandMapGoogleBoundary) {
   return `${miles.toFixed(decimals)} mi`
 }
 
-function buildAnimatedPath(google: CommandMapGoogleBoundary,  path: CommandMapGoogleBoundary) {
+function buildAnimatedPath(google: CommandMapGoogleInterop,  path: CommandMapGoogleInterop) {
   if (!path?.length || path.length < 4) return path
 
   const totalLength = google.maps.geometry.spherical.computeLength(path)
@@ -101,7 +102,7 @@ function buildAnimatedPath(google: CommandMapGoogleBoundary,  path: CommandMapGo
 
   if (reduced.length < 4) return path
 
-  return reduced.map((point: CommandMapGoogleBoundary,  index: CommandMapGoogleBoundary) => {
+  return reduced.map((point: CommandMapGoogleInterop,  index: CommandMapGoogleInterop) => {
     if (index === 0 || index === reduced.length - 1) return point
 
     const previous = reduced[index - 1]
@@ -114,39 +115,39 @@ function buildAnimatedPath(google: CommandMapGoogleBoundary,  path: CommandMapGo
   })
 }
 
-function matchesDay(dayId: CommandMapGoogleBoundary,  focusDayId: CommandMapGoogleBoundary) {
+function matchesDay(dayId: CommandMapGoogleInterop,  focusDayId: CommandMapGoogleInterop) {
   return focusDayId === 'all' || dayId === 'all' || dayId === focusDayId
 }
 
-function isFacility(location: CommandMapGoogleBoundary) {
+function isFacility(location: CommandMapGoogleInterop) {
   return location.category === 'logistics' || location.category === 'park'
 }
 
-function colorForCategory(location: CommandMapGoogleBoundary) {
+function colorForCategory(location: CommandMapGoogleInterop) {
   if (location.category === 'meal') return '#D29922'
   if (location.category === 'park') return '#3FB950'
   if (location.category === 'logistics') return '#8B949E'
   return '#58A6FF'
 }
 
-function getPlaybackCueTone(route: CommandMapGoogleBoundary,  location: CommandMapGoogleBoundary) {
+function getPlaybackCueTone(route: CommandMapGoogleInterop,  location: CommandMapGoogleInterop) {
   if (location) return colorForCategory(location)
   return getVehicleColor(route)
 }
 
-function getPlaybackCueSlotBucket(slot: CommandMapGoogleBoundary) {
+function getPlaybackCueSlotBucket(slot: CommandMapGoogleInterop) {
   return Number.isFinite(slot) ? Math.floor(slot * 10) : 'na'
 }
 
-function buildPlaybackCueKey({ kind, route = null, location = null, entity = null, slot = null }: CommandMapPropsBoundary) {
+function buildPlaybackCueKey({ kind, route = null, location = null, entity = null, slot = null }: CommandMapPropsInterop) {
   const dayId = entity?.dayId || route?.dayId || 'all'
   const anchorId = entity?.id || location?.id || route?.destinationLocationId || route?.id || 'unknown'
   return `${kind}:${dayId}:${anchorId}:${getPlaybackCueSlotBucket(slot)}`
 }
 
-function getPlaybackCueSignature(cue: CommandMapGoogleBoundary) {
+function getPlaybackCueSignature(cue: CommandMapGoogleInterop) {
   const familyIds = [...(cue.families || [])]
-    .map((family: CommandMapGoogleBoundary) => family.id)
+    .map((family: CommandMapGoogleInterop) => family.id)
     .sort()
     .join('|')
   return [
@@ -160,9 +161,9 @@ function getPlaybackCueSignature(cue: CommandMapGoogleBoundary) {
   ].join(':')
 }
 
-function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, entity = null, subtitleOverride = null, captionOverride = null }: CommandMapPropsBoundary) {
+function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, entity = null, subtitleOverride = null, captionOverride = null }: CommandMapPropsInterop) {
   const tone = getPlaybackCueTone(route, location)
-  const familyTitles = families.map((family: CommandMapGoogleBoundary) => family.title)
+  const familyTitles = families.map((family: CommandMapGoogleInterop) => family.title)
   const caravan = families.length > 1
   const caravanLabel = caravan ? `${families.length}-car caravan` : familyTitles[0]
   if (kind === 'departure') {
@@ -200,15 +201,15 @@ function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, ent
   }
 }
 
-function averagePoint(points: CommandMapGoogleBoundary) {
+function averagePoint(points: CommandMapGoogleInterop) {
   if (!points.length) return null
   return {
-    lat: points.reduce((sum: CommandMapGoogleBoundary,  point: CommandMapGoogleBoundary) => sum + point.lat, 0) / points.length,
-    lng: points.reduce((sum: CommandMapGoogleBoundary,  point: CommandMapGoogleBoundary) => sum + point.lng, 0) / points.length,
+    lat: points.reduce((sum: CommandMapGoogleInterop,  point: CommandMapGoogleInterop) => sum + point.lat, 0) / points.length,
+    lng: points.reduce((sum: CommandMapGoogleInterop,  point: CommandMapGoogleInterop) => sum + point.lng, 0) / points.length,
   }
 }
 
-function getCueEntityPriority(entity: CommandMapGoogleBoundary) {
+function getCueEntityPriority(entity: CommandMapGoogleInterop) {
   if (!entity) return 0
   if (entity.type === 'meal') return 4
   if (entity.type === 'itineraryItem' && entity.rowId === 'activities') return 3
@@ -217,18 +218,18 @@ function getCueEntityPriority(entity: CommandMapGoogleBoundary) {
   return 0
 }
 
-function collapseOnsiteCueEntities(entities: CommandMapGoogleBoundary) {
+function collapseOnsiteCueEntities(entities: CommandMapGoogleInterop) {
   if (!entities.length) return []
 
-  const sorted = [...entities].sort((left: CommandMapGoogleBoundary,  right: CommandMapGoogleBoundary) => {
+  const sorted = [...entities].sort((left: CommandMapGoogleInterop,  right: CommandMapGoogleInterop) => {
     if (left.dayId !== right.dayId) return `${left.dayId}`.localeCompare(`${right.dayId}`)
     if (left.locationId !== right.locationId) return `${left.locationId}`.localeCompare(`${right.locationId}`)
     if (left.startSlot !== right.startSlot) return left.startSlot - right.startSlot
     return getCueEntityPriority(right) - getCueEntityPriority(left)
   })
 
-  const groups: CommandMapGoogleBoundary[] = []
-  sorted.forEach((entity: CommandMapGoogleBoundary) => {
+  const groups: CommandMapGoogleInterop[] = []
+  sorted.forEach((entity: CommandMapGoogleInterop) => {
     const previous = groups[groups.length - 1]
     if (
       previous &&
@@ -249,8 +250,8 @@ function collapseOnsiteCueEntities(entities: CommandMapGoogleBoundary) {
     })
   })
 
-  return groups.map((group: CommandMapGoogleBoundary) => {
-    const primary = [...group.entities].sort((left: CommandMapGoogleBoundary,  right: CommandMapGoogleBoundary) => {
+  return groups.map((group: CommandMapGoogleInterop) => {
+    const primary = [...group.entities].sort((left: CommandMapGoogleInterop,  right: CommandMapGoogleInterop) => {
       const priorityDelta = getCueEntityPriority(right) - getCueEntityPriority(left)
       if (priorityDelta !== 0) return priorityDelta
       return left.startSlot - right.startSlot
@@ -263,7 +264,7 @@ function collapseOnsiteCueEntities(entities: CommandMapGoogleBoundary) {
   })
 }
 
-function escapeHtml(value: CommandMapGoogleBoundary = '') {
+function escapeHtml(value: CommandMapGoogleInterop = '') {
   return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -272,27 +273,27 @@ function escapeHtml(value: CommandMapGoogleBoundary = '') {
     .replaceAll("'", '&#39;')
 }
 
-function formatCategoryLabel(location: CommandMapGoogleBoundary) {
+function formatCategoryLabel(location: CommandMapGoogleInterop) {
   if (location.stopType) return location.stopType
   if (!location.category) return 'Location'
   return location.category.replaceAll('-', ' ')
 }
 
-function getLocationPhoto(location: CommandMapGoogleBoundary) {
-  return [...(location.livePhotos || []), ...(location.photos || [])].find((media: CommandMapGoogleBoundary) => media?.imageUrl) || null
+function getLocationPhoto(location: CommandMapGoogleInterop) {
+  return [...(location.livePhotos || []), ...(location.photos || [])].find((media: CommandMapGoogleInterop) => media?.imageUrl) || null
 }
 
-function getHoursPreview(location: CommandMapGoogleBoundary) {
+function getHoursPreview(location: CommandMapGoogleInterop) {
   return Array.isArray(location.openingHours) && location.openingHours.length ? location.openingHours[0] : ''
 }
 
-function getRatingSummary(location: CommandMapGoogleBoundary) {
+function getRatingSummary(location: CommandMapGoogleInterop) {
   if (typeof location.rating !== 'number') return ''
   const reviewText = location.userRatingsTotal ? ` · ${location.userRatingsTotal} reviews` : ''
   return `${location.rating.toFixed(1)} rating${reviewText}`
 }
 
-function buildLocationBriefingContent(location: CommandMapGoogleBoundary) {
+function buildLocationBriefingContent(location: CommandMapGoogleInterop) {
   const accent = colorForCategory(location)
   const photo = getLocationPhoto(location)
   const categoryLabel = formatCategoryLabel(location)
@@ -314,7 +315,7 @@ function buildLocationBriefingContent(location: CommandMapGoogleBoundary) {
     { label: 'Hours', value: hoursPreview },
     { label: 'Rating', value: ratingSummary },
     { label: 'Phone', value: phone },
-  ].filter((row: CommandMapGoogleBoundary) => row.value)
+  ].filter((row: CommandMapGoogleInterop) => row.value)
 
   const actions = [
     website
@@ -337,7 +338,7 @@ function buildLocationBriefingContent(location: CommandMapGoogleBoundary) {
         <div class="trip-briefing__meta">
           ${metaRows
             .map(
-              (row: CommandMapGoogleBoundary) => `
+              (row: CommandMapGoogleInterop) => `
                 <div class="trip-briefing__meta-row">
                   <div class="trip-briefing__meta-label">${escapeHtml(row.label)}</div>
                   <div class="trip-briefing__meta-value">${escapeHtml(row.value)}</div>
@@ -491,7 +492,7 @@ function ensureLocationBriefingStyles() {
   document.head.appendChild(style)
 }
 
-function MapChip({ active, onClick, children, tone = 'neutral' }: CommandMapPropsBoundary) {
+function MapChip({ active, onClick, children, tone = 'neutral' }: CommandMapPropsInterop) {
   const activeClasses = {
     neutral: 'border-[#58A6FF]/50 bg-[#58A6FF]/12 text-[#C9D1D9]',
     green: 'border-[#3FB950]/50 bg-[#3FB950]/12 text-[#3FB950]',
@@ -504,7 +505,7 @@ function MapChip({ active, onClick, children, tone = 'neutral' }: CommandMapProp
       onClick={onClick}
       className={`rounded-[2px] border px-2.5 py-1 text-[9px] font-black uppercase tracking-wider transition-colors ${
         active
-          ? (activeClasses as CommandMapGoogleBoundary)[tone]
+          ? (activeClasses as CommandMapGoogleInterop)[tone]
           : 'border-[#30363D] bg-[#0d1117] text-[#8B949E] hover:border-[#58A6FF]/40 hover:text-[#C9D1D9]'
       }`}
     >
@@ -513,22 +514,22 @@ function MapChip({ active, onClick, children, tone = 'neutral' }: CommandMapProp
   )
 }
 
-function clamp01(value: CommandMapGoogleBoundary) {
+function clamp01(value: CommandMapGoogleInterop) {
   return Math.min(Math.max(value, 0), 1)
 }
 
-function lerp(start: CommandMapGoogleBoundary,  end: CommandMapGoogleBoundary,  alpha: CommandMapGoogleBoundary) {
+function lerp(start: CommandMapGoogleInterop,  end: CommandMapGoogleInterop,  alpha: CommandMapGoogleInterop) {
   return start + (end - start) * alpha
 }
 
-function lerpPoint(start: CommandMapGoogleBoundary,  end: CommandMapGoogleBoundary,  alpha: CommandMapGoogleBoundary) {
+function lerpPoint(start: CommandMapGoogleInterop,  end: CommandMapGoogleInterop,  alpha: CommandMapGoogleInterop) {
   return {
     lat: lerp(start.lat, end.lat, alpha),
     lng: lerp(start.lng, end.lng, alpha),
   }
 }
 
-function smoothstep(edgeStart: CommandMapGoogleBoundary,  edgeEnd: CommandMapGoogleBoundary,  value: CommandMapGoogleBoundary) {
+function smoothstep(edgeStart: CommandMapGoogleInterop,  edgeEnd: CommandMapGoogleInterop,  value: CommandMapGoogleInterop) {
   if (edgeStart === edgeEnd) {
     return value >= edgeEnd ? 1 : 0
   }
@@ -536,11 +537,11 @@ function smoothstep(edgeStart: CommandMapGoogleBoundary,  edgeEnd: CommandMapGoo
   return normalized * normalized * (3 - 2 * normalized)
 }
 
-function getVehicleColor(route: CommandMapGoogleBoundary) {
+function getVehicleColor(route: CommandMapGoogleInterop) {
   return TONE_COLORS[route?.tone] || TONE_COLORS.info
 }
 
-function buildPathDistanceProfile(google: CommandMapGoogleBoundary,  path: CommandMapGoogleBoundary) {
+function buildPathDistanceProfile(google: CommandMapGoogleInterop,  path: CommandMapGoogleInterop) {
   if (!google || !path?.length || path.length < 2) return null
 
   const cumulative = [0]
@@ -560,13 +561,13 @@ function buildPathDistanceProfile(google: CommandMapGoogleBoundary,  path: Comma
   }
 }
 
-function getNearestPathProgress(google: CommandMapGoogleBoundary,  pathProfile: CommandMapGoogleBoundary,  coordinate: CommandMapGoogleBoundary) {
+function getNearestPathProgress(google: CommandMapGoogleInterop,  pathProfile: CommandMapGoogleInterop,  coordinate: CommandMapGoogleInterop) {
   if (!google || !pathProfile || !coordinate) return null
 
   let nearestIndex = 0
   let nearestDistance = Number.POSITIVE_INFINITY
 
-  pathProfile.path.forEach((point: CommandMapGoogleBoundary,  index: CommandMapGoogleBoundary) => {
+  pathProfile.path.forEach((point: CommandMapGoogleInterop,  index: CommandMapGoogleInterop) => {
     const distance = google.maps.geometry.spherical.computeDistanceBetween(point, coordinate)
     if (distance < nearestDistance) {
       nearestDistance = distance
@@ -577,25 +578,25 @@ function getNearestPathProgress(google: CommandMapGoogleBoundary,  pathProfile: 
   return clamp01(pathProfile.cumulative[nearestIndex] / pathProfile.totalDistance)
 }
 
-function buildRoutePlaybackProfile(google: CommandMapGoogleBoundary,  route: CommandMapGoogleBoundary,  pathProfile: CommandMapGoogleBoundary,  locationsById: CommandMapGoogleBoundary,  routeWindowSlots: CommandMapGoogleBoundary) {
+function buildRoutePlaybackProfile(google: CommandMapGoogleInterop,  route: CommandMapGoogleInterop,  pathProfile: CommandMapGoogleInterop,  locationsById: CommandMapGoogleInterop,  routeWindowSlots: CommandMapGoogleInterop) {
   if (!pathProfile) return null
   const { path } = pathProfile
 
   const origin = route?.originCoordinates || path[0]
   const intermediateStops = (route?.stopLocationIds || [])
-    .map((locationId: CommandMapGoogleBoundary) => locationsById.get(locationId)?.coordinates || null)
+    .map((locationId: CommandMapGoogleInterop) => locationsById.get(locationId)?.coordinates || null)
     .filter(Boolean)
   const destination = route?.destinationLocationId
     ? locationsById.get(route.destinationLocationId)?.coordinates || path[path.length - 1]
     : path[path.length - 1]
 
-  const rawAnchorProgresses = [origin, ...intermediateStops, destination].map((coordinate: CommandMapGoogleBoundary,  index: CommandMapGoogleBoundary,  anchors: CommandMapGoogleBoundary) => {
+  const rawAnchorProgresses = [origin, ...intermediateStops, destination].map((coordinate: CommandMapGoogleInterop,  index: CommandMapGoogleInterop,  anchors: CommandMapGoogleInterop) => {
     if (index === 0) return 0
     if (index === anchors.length - 1) return 1
     return getNearestPathProgress(google, pathProfile, coordinate)
   })
 
-  const anchorProgresses = rawAnchorProgresses.map((progress: CommandMapGoogleBoundary,  index: CommandMapGoogleBoundary,  anchors: CommandMapGoogleBoundary) => {
+  const anchorProgresses = rawAnchorProgresses.map((progress: CommandMapGoogleInterop,  index: CommandMapGoogleInterop,  anchors: CommandMapGoogleInterop) => {
     if (index === 0) return 0
     if (index === anchors.length - 1) return 1
     return clamp01(Number.isFinite(progress) ? progress : index / (anchors.length - 1))
@@ -607,8 +608,8 @@ function buildRoutePlaybackProfile(google: CommandMapGoogleBoundary,  route: Com
 
   const legDistanceShares = anchorProgresses
     .slice(1)
-    .map((progress: CommandMapGoogleBoundary,  index: CommandMapGoogleBoundary) => Math.max(progress - anchorProgresses[index], 0))
-  const totalLegShare = legDistanceShares.reduce((sum: CommandMapGoogleBoundary,  share: CommandMapGoogleBoundary) => sum + share, 0)
+    .map((progress: CommandMapGoogleInterop,  index: CommandMapGoogleInterop) => Math.max(progress - anchorProgresses[index], 0))
+  const totalLegShare = legDistanceShares.reduce((sum: CommandMapGoogleInterop,  share: CommandMapGoogleInterop) => sum + share, 0)
   const stopCount = intermediateStops.length
   const shouldPauseAtStops = stopCount > 0 && routeWindowSlots >= 0.5
   const totalStopFraction = shouldPauseAtStops ? Math.min(0.12 * stopCount, 0.24) : 0
@@ -622,7 +623,7 @@ function buildRoutePlaybackProfile(google: CommandMapGoogleBoundary,  route: Com
   }
 }
 
-function getRoutePlaybackState(playbackProfile: CommandMapGoogleBoundary,  rawProgress: CommandMapGoogleBoundary) {
+function getRoutePlaybackState(playbackProfile: CommandMapGoogleInterop,  rawProgress: CommandMapGoogleInterop) {
   const normalized = clamp01(rawProgress)
   if (!playbackProfile || playbackProfile.anchorProgresses.length < 2) {
     return {
@@ -669,7 +670,7 @@ function getRoutePlaybackState(playbackProfile: CommandMapGoogleBoundary,  rawPr
   }
 }
 
-function getRoutePlaybackProgress(google: CommandMapGoogleBoundary,  routeEntry: CommandMapGoogleBoundary,  pathProfile: CommandMapGoogleBoundary,  locationsById: CommandMapGoogleBoundary,  rawProgress: CommandMapGoogleBoundary,  routeWindowSlots: CommandMapGoogleBoundary) {
+function getRoutePlaybackProgress(google: CommandMapGoogleInterop,  routeEntry: CommandMapGoogleInterop,  pathProfile: CommandMapGoogleInterop,  locationsById: CommandMapGoogleInterop,  rawProgress: CommandMapGoogleInterop,  routeWindowSlots: CommandMapGoogleInterop) {
   const profile = buildRoutePlaybackProfile(
     google,
     routeEntry?.route,
@@ -680,7 +681,7 @@ function getRoutePlaybackProgress(google: CommandMapGoogleBoundary,  routeEntry:
   return getRoutePlaybackState(profile, rawProgress)
 }
 
-function interpolateAlongPath(google: CommandMapGoogleBoundary,  pathProfile: CommandMapGoogleBoundary,  progress: CommandMapGoogleBoundary) {
+function interpolateAlongPath(google: CommandMapGoogleInterop,  pathProfile: CommandMapGoogleInterop,  progress: CommandMapGoogleInterop) {
   const path = pathProfile?.path
   if (!path?.length) return null
   if (path.length === 1 || !pathProfile.totalDistance) return path[0]
@@ -703,7 +704,7 @@ function interpolateAlongPath(google: CommandMapGoogleBoundary,  pathProfile: Co
   return path[path.length - 1]
 }
 
-function appendDistinctPoint(points: CommandMapGoogleBoundary,  point: CommandMapGoogleBoundary) {
+function appendDistinctPoint(points: CommandMapGoogleInterop,  point: CommandMapGoogleInterop) {
   if (!point) return
 
   const normalizedPoint = { lat: point.lat, lng: point.lng }
@@ -719,18 +720,18 @@ function appendDistinctPoint(points: CommandMapGoogleBoundary,  point: CommandMa
   points.push(normalizedPoint)
 }
 
-function extractPathSegment(google: CommandMapGoogleBoundary,  pathProfile: CommandMapGoogleBoundary,  startProgress: CommandMapGoogleBoundary = 0,  endProgress: CommandMapGoogleBoundary = 1) {
+function extractPathSegment(google: CommandMapGoogleInterop,  pathProfile: CommandMapGoogleInterop,  startProgress: CommandMapGoogleInterop = 0,  endProgress: CommandMapGoogleInterop = 1) {
   const path = pathProfile?.path
   if (!google || !path?.length) return []
   if (path.length === 1 || !pathProfile.totalDistance) {
-    return path.map((point: CommandMapGoogleBoundary) => ({ lat: point.lat, lng: point.lng }))
+    return path.map((point: CommandMapGoogleInterop) => ({ lat: point.lat, lng: point.lng }))
   }
 
   const start = clamp01(Math.min(startProgress, endProgress))
   const end = clamp01(Math.max(startProgress, endProgress))
   const startDistance = start * pathProfile.totalDistance
   const endDistance = end * pathProfile.totalDistance
-  const segment: CommandMapGoogleBoundary[] = []
+  const segment: CommandMapGoogleInterop[] = []
 
   appendDistinctPoint(segment, interpolateAlongPath(google, pathProfile, start))
 
@@ -745,11 +746,11 @@ function extractPathSegment(google: CommandMapGoogleBoundary,  pathProfile: Comm
   return segment
 }
 
-function buildRouteCameraViewportPoints(google: CommandMapGoogleBoundary,  pathProfile: CommandMapGoogleBoundary,  progress: CommandMapGoogleBoundary,  mode: CommandMapGoogleBoundary) {
+function buildRouteCameraViewportPoints(google: CommandMapGoogleInterop,  pathProfile: CommandMapGoogleInterop,  progress: CommandMapGoogleInterop,  mode: CommandMapGoogleInterop) {
   if (!pathProfile?.path?.length) return []
   if (mode === 'arrival') return []
   if (mode === 'premove') {
-    return pathProfile.path.map((point: CommandMapGoogleBoundary) => ({ lat: point.lat, lng: point.lng }))
+    return pathProfile.path.map((point: CommandMapGoogleInterop) => ({ lat: point.lat, lng: point.lng }))
   }
 
   const clampedProgress = clamp01(progress)
@@ -761,20 +762,20 @@ function buildRouteCameraViewportPoints(google: CommandMapGoogleBoundary,  pathP
   return extractPathSegment(google, pathProfile, viewportStart, 1)
 }
 
-function findNearestPlaybackStop(google: CommandMapGoogleBoundary,  position: CommandMapGoogleBoundary,  route: CommandMapGoogleBoundary,  locationsById: CommandMapGoogleBoundary) {
+function findNearestPlaybackStop(google: CommandMapGoogleInterop,  position: CommandMapGoogleInterop,  route: CommandMapGoogleInterop,  locationsById: CommandMapGoogleInterop) {
   if (!google || !position || !route) return null
 
   const PLAYBACK_STOP_FOCUS_RADIUS_METERS = 1800
   const candidates = [...(route.stopLocationIds || []), route.destinationLocationId]
     .filter(Boolean)
-    .map((locationId: CommandMapGoogleBoundary) => locationsById.get(locationId))
-    .filter((location: CommandMapGoogleBoundary) => location?.coordinates)
+    .map((locationId: CommandMapGoogleInterop) => locationsById.get(locationId))
+    .filter((location: CommandMapGoogleInterop) => location?.coordinates)
 
   if (!candidates.length) return null
 
-  let nearest: CommandMapGoogleBoundary = null
+  let nearest: CommandMapGoogleInterop = null
 
-  candidates.forEach((location: CommandMapGoogleBoundary) => {
+  candidates.forEach((location: CommandMapGoogleInterop) => {
     const distanceMeters = google.maps.geometry.spherical.computeDistanceBetween(position, location.coordinates)
     if (!nearest || distanceMeters < nearest.distanceMeters) {
       nearest = { location, distanceMeters }
@@ -784,7 +785,7 @@ function findNearestPlaybackStop(google: CommandMapGoogleBoundary,  position: Co
   return nearest && nearest.distanceMeters < PLAYBACK_STOP_FOCUS_RADIUS_METERS ? nearest.location : null
 }
 
-function getRouteWindowDistance(route: CommandMapGoogleBoundary,  cursorSlot: CommandMapGoogleBoundary,  itineraryItems: CommandMapGoogleBoundary = []) {
+function getRouteWindowDistance(route: CommandMapGoogleInterop,  cursorSlot: CommandMapGoogleInterop,  itineraryItems: CommandMapGoogleInterop = []) {
   const { startSlot, endSlot } = getRouteSimulationWindow(route, itineraryItems)
 
   if (cursorSlot < startSlot) return startSlot - cursorSlot
@@ -792,7 +793,7 @@ function getRouteWindowDistance(route: CommandMapGoogleBoundary,  cursorSlot: Co
   return 0
 }
 
-function getRouteSimulationWindow(route: CommandMapGoogleBoundary,  itineraryItems: CommandMapGoogleBoundary = []) {
+function getRouteSimulationWindow(route: CommandMapGoogleInterop,  itineraryItems: CommandMapGoogleInterop = []) {
   if (!route) {
     return { startSlot: 0, endSlot: 1 }
   }
@@ -800,7 +801,7 @@ function getRouteSimulationWindow(route: CommandMapGoogleBoundary,  itineraryIte
   if (route.linkedEntityKey) {
     const linked = parseEntityKey(route.linkedEntityKey)
     if (linked.type === 'itineraryItem') {
-      const linkedItem = itineraryItems.find((item: CommandMapGoogleBoundary) => item.id === linked.id)
+      const linkedItem = itineraryItems.find((item: CommandMapGoogleInterop) => item.id === linked.id)
       if (linkedItem && Number.isFinite(linkedItem.startSlot)) {
         const fallbackSpan = Number.isFinite(linkedItem.span) && linkedItem.span > 0 ? linkedItem.span : 1
         const span = getRouteDurationSlotSpan(route, fallbackSpan)
@@ -821,36 +822,36 @@ function getRouteSimulationWindow(route: CommandMapGoogleBoundary,  itineraryIte
   return { startSlot, endSlot }
 }
 
-function getCursorDayId(cursorSlot: CommandMapGoogleBoundary) {
+function getCursorDayId(cursorSlot: CommandMapGoogleInterop) {
   const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / TIME_SLOTS.length), 0), DAYS.length - 1)
   return DAYS[dayIndex]?.id || DAYS[0]?.id || 'all'
 }
 
-function resolveOnsiteCueFamilies(group: CommandMapGoogleBoundary,  itineraryItems: CommandMapGoogleBoundary,  routeEntries: CommandMapGoogleBoundary,  families: CommandMapGoogleBoundary) {
+function resolveOnsiteCueFamilies(group: CommandMapGoogleInterop,  itineraryItems: CommandMapGoogleInterop,  routeEntries: CommandMapGoogleInterop,  families: CommandMapGoogleInterop) {
   if (!group?.primary) return []
 
-  const familyIds = new Set<CommandMapGoogleBoundary>()
+  const familyIds = new Set<CommandMapGoogleInterop>()
   const groupLocationId = group.primary.locationId
   const groupDayId = group.primary.dayId
   const groupStartSlot = group.primary.startSlot
 
-  group.entities.forEach((entity: CommandMapGoogleBoundary) => {
-    ;(entity.familyIds || []).forEach((familyId: CommandMapGoogleBoundary) => familyIds.add(familyId))
-    ;(entity.linkedEntityKeys || []).forEach((key: CommandMapGoogleBoundary) => {
+  group.entities.forEach((entity: CommandMapGoogleInterop) => {
+    ;(entity.familyIds || []).forEach((familyId: CommandMapGoogleInterop) => familyIds.add(familyId))
+    ;(entity.linkedEntityKeys || []).forEach((key: CommandMapGoogleInterop) => {
       const linked = parseEntityKey(key)
       if (linked.type === 'family') {
         familyIds.add(linked.id)
         return
       }
       if (linked.type !== 'itineraryItem') return
-      const linkedItem = itineraryItems.find((item: CommandMapGoogleBoundary) => item.id === linked.id)
-      ;(linkedItem?.familyIds || []).forEach((familyId: CommandMapGoogleBoundary) => familyIds.add(familyId))
+      const linkedItem = itineraryItems.find((item: CommandMapGoogleInterop) => item.id === linked.id)
+      ;(linkedItem?.familyIds || []).forEach((familyId: CommandMapGoogleInterop) => familyIds.add(familyId))
     })
   })
 
-  itineraryItems.forEach((item: CommandMapGoogleBoundary) => {
+  itineraryItems.forEach((item: CommandMapGoogleInterop) => {
     if (item.rowId !== 'travel' || !item.familyIds?.length || item.dayId !== groupDayId) return
-    const route = routeEntries.find((entry: CommandMapGoogleBoundary) => entry.route.id === item.routeId)?.route
+    const route = routeEntries.find((entry: CommandMapGoogleInterop) => entry.route.id === item.routeId)?.route
     const routeWindow = route
       ? getRouteSimulationWindow(route, itineraryItems)
       : {
@@ -867,17 +868,17 @@ function resolveOnsiteCueFamilies(group: CommandMapGoogleBoundary,  itineraryIte
       (groupStartSlot >= routeWindow.startSlot && groupStartSlot <= routeWindow.endSlot)
 
     if (!sameLocation || !nearWindow) return
-    item.familyIds.forEach((familyId: CommandMapGoogleBoundary) => familyIds.add(familyId))
+    item.familyIds.forEach((familyId: CommandMapGoogleInterop) => familyIds.add(familyId))
   })
 
-  return families.filter((family: CommandMapGoogleBoundary) => familyIds.has(family.id))
+  return families.filter((family: CommandMapGoogleInterop) => familyIds.has(family.id))
 }
 
-function clamp(value: CommandMapGoogleBoundary,  min: CommandMapGoogleBoundary,  max: CommandMapGoogleBoundary) {
+function clamp(value: CommandMapGoogleInterop,  min: CommandMapGoogleInterop,  max: CommandMapGoogleInterop) {
   return Math.min(Math.max(value, min), max)
 }
 
-function getCameraPadding(map: CommandMapGoogleBoundary,  pointCount: CommandMapGoogleBoundary,  mode: CommandMapGoogleBoundary) {
+function getCameraPadding(map: CommandMapGoogleInterop,  pointCount: CommandMapGoogleInterop,  mode: CommandMapGoogleInterop) {
   const mapDiv = map?.getDiv?.()
   const width = Math.max(mapDiv?.clientWidth || 0, 1)
   const height = Math.max(mapDiv?.clientHeight || 0, 1)
@@ -904,15 +905,15 @@ function getCameraPadding(map: CommandMapGoogleBoundary,  pointCount: CommandMap
   }
 }
 
-function latRad(lat: CommandMapGoogleBoundary) {
+function latRad(lat: CommandMapGoogleInterop) {
   const sin = Math.sin((lat * Math.PI) / 180)
   const radX2 = Math.log((1 + sin) / (1 - sin)) / 2
   return clamp(radX2 / 2, -Math.PI / 2, Math.PI / 2)
 }
 
-function getBoundsFromPoints(points: CommandMapGoogleBoundary) {
+function getBoundsFromPoints(points: CommandMapGoogleInterop) {
   return points.reduce(
-    (bounds: CommandMapGoogleBoundary,  point: CommandMapGoogleBoundary) => ({
+    (bounds: CommandMapGoogleInterop,  point: CommandMapGoogleInterop) => ({
       minLat: Math.min(bounds.minLat, point.lat),
       maxLat: Math.max(bounds.maxLat, point.lat),
       minLng: Math.min(bounds.minLng, point.lng),
@@ -927,7 +928,7 @@ function getBoundsFromPoints(points: CommandMapGoogleBoundary) {
   )
 }
 
-function getBoundsCenter(points: CommandMapGoogleBoundary) {
+function getBoundsCenter(points: CommandMapGoogleInterop) {
   if (!points.length) return null
   const bounds = getBoundsFromPoints(points)
   return {
@@ -936,7 +937,7 @@ function getBoundsCenter(points: CommandMapGoogleBoundary) {
   }
 }
 
-function getViewportAwareZoom(map: CommandMapGoogleBoundary, points: CommandMapGoogleBoundary, padding: CommandMapGoogleBoundary, { minZoom = 6.9, maxZoom = 10.9 }: CommandMapGoogleBoundary = {}) {
+function getViewportAwareZoom(map: CommandMapGoogleInterop, points: CommandMapGoogleInterop, padding: CommandMapGoogleInterop, { minZoom = 6.9, maxZoom = 10.9 }: CommandMapGoogleInterop = {}) {
   if (!map || !points.length) return minZoom
 
   const mapDiv = map.getDiv?.()
@@ -956,10 +957,10 @@ function getViewportAwareZoom(map: CommandMapGoogleBoundary, points: CommandMapG
   return clamp(Math.min(lngZoom, latZoom), minZoom, maxZoom)
 }
 
-function weightedCenter(points: CommandMapGoogleBoundary) {
+function weightedCenter(points: CommandMapGoogleInterop) {
   if (!points.length) return null
   const totals = points.reduce(
-    (accumulator: CommandMapGoogleBoundary,  point: CommandMapGoogleBoundary) => ({
+    (accumulator: CommandMapGoogleInterop,  point: CommandMapGoogleInterop) => ({
       lat: accumulator.lat + point.lat * point.weight,
       lng: accumulator.lng + point.lng * point.weight,
       weight: accumulator.weight + point.weight,
@@ -979,25 +980,25 @@ function buildParticipantCameraTarget({
   vehicleEntries,
   highlightedLocation,
   cursorSlot,
-}: CommandMapPropsBoundary) {
+}: CommandMapPropsInterop) {
   const currentDayId = getCursorDayId(cursorSlot)
   const visibleEntries = vehicleEntries
-    .filter((entry: CommandMapGoogleBoundary) => entry.marker.getMap())
-    .filter((entry: CommandMapGoogleBoundary) => {
+    .filter((entry: CommandMapGoogleInterop) => entry.marker.getMap())
+    .filter((entry: CommandMapGoogleInterop) => {
       const routeDayId = entry.routeEntry?.route?.dayId
       return !routeDayId || routeDayId === 'all' || routeDayId === currentDayId
     })
-    .map((entry: CommandMapGoogleBoundary) => ({
+    .map((entry: CommandMapGoogleInterop) => ({
       ...entry,
       position: entry.currentPosition || entry.targetPosition,
     }))
-    .filter((entry: CommandMapGoogleBoundary) => entry.position)
+    .filter((entry: CommandMapGoogleInterop) => entry.position)
 
   if (!visibleEntries.length) return null
 
-  const activeEntries = visibleEntries.filter((entry: CommandMapGoogleBoundary) => entry.isInTransit)
-  const preMoveEntries = visibleEntries.filter((entry: CommandMapGoogleBoundary) => !entry.isInTransit && entry.isPreMove)
-  const arrivalEntries = visibleEntries.filter((entry: CommandMapGoogleBoundary) => !entry.isInTransit && !entry.isPreMove)
+  const activeEntries = visibleEntries.filter((entry: CommandMapGoogleInterop) => entry.isInTransit)
+  const preMoveEntries = visibleEntries.filter((entry: CommandMapGoogleInterop) => !entry.isInTransit && entry.isPreMove)
+  const arrivalEntries = visibleEntries.filter((entry: CommandMapGoogleInterop) => !entry.isInTransit && !entry.isPreMove)
   const trackedEntries = activeEntries.length
     ? activeEntries
     : preMoveEntries.length
@@ -1012,13 +1013,13 @@ function buildParticipantCameraTarget({
           { ...trackedEntries[0].position, weight: 1.15 },
           { ...(trackedEntries[0].cameraLeadPosition || trackedEntries[0].position), weight: 1.85 },
         ]
-      : trackedEntries.map((entry: CommandMapGoogleBoundary) => ({ ...entry.position, weight: entry.isInTransit ? 1.2 : 1 }))
+      : trackedEntries.map((entry: CommandMapGoogleInterop) => ({ ...entry.position, weight: entry.isInTransit ? 1.2 : 1 }))
 
   const mode = activeEntries.length ? 'active' : preMoveEntries.length ? 'premove' : 'arrival'
   const routeViewportPoints =
     mode === 'arrival'
       ? []
-      : trackedEntries.flatMap((entry: CommandMapGoogleBoundary) => {
+      : trackedEntries.flatMap((entry: CommandMapGoogleInterop) => {
           const pathProfile =
             entry.routePathProfile ||
             buildPathDistanceProfile(google, entry.routeEntry?.currentPath || entry.routeEntry?.route?.path || [])
@@ -1077,11 +1078,11 @@ function buildParticipantCameraTarget({
   }
 }
 
-function getRouteOrigin(family: CommandMapGoogleBoundary,  route: CommandMapGoogleBoundary,  path: CommandMapGoogleBoundary) {
+function getRouteOrigin(family: CommandMapGoogleInterop,  route: CommandMapGoogleInterop,  path: CommandMapGoogleInterop) {
   return route?.originCoordinates || path?.[0] || family?.originCoordinates || null
 }
 
-function buildRouteCoordinatePath(route: CommandMapGoogleBoundary,  locationsById: CommandMapGoogleBoundary) {
+function buildRouteCoordinatePath(route: CommandMapGoogleInterop,  locationsById: CommandMapGoogleInterop) {
   if (route?.path?.length) {
     return route.path
   }
@@ -1091,27 +1092,27 @@ function buildRouteCoordinatePath(route: CommandMapGoogleBoundary,  locationsByI
     ? locationsById.get(route.destinationLocationId)?.coordinates || null
     : null
   const stops = (route?.stopLocationIds || [])
-    .map((locationId: CommandMapGoogleBoundary) => locationsById.get(locationId)?.coordinates || null)
+    .map((locationId: CommandMapGoogleInterop) => locationsById.get(locationId)?.coordinates || null)
     .filter(Boolean)
 
   const points = [origin, ...stops, destination].filter(Boolean)
   return points.length >= 2 ? points : null
 }
 
-function pickFamilyRouteEntry(routeEntries: CommandMapGoogleBoundary,  familyId: CommandMapGoogleBoundary,  cursorSlot: CommandMapGoogleBoundary,  focusDayId: CommandMapGoogleBoundary = 'all',  itineraryItems: CommandMapGoogleBoundary = []) {
-  const directCandidates = routeEntries.filter((entry: CommandMapGoogleBoundary) => entry.route.familyId === familyId)
+function pickFamilyRouteEntry(routeEntries: CommandMapGoogleInterop,  familyId: CommandMapGoogleInterop,  cursorSlot: CommandMapGoogleInterop,  focusDayId: CommandMapGoogleInterop = 'all',  itineraryItems: CommandMapGoogleInterop = []) {
+  const directCandidates = routeEntries.filter((entry: CommandMapGoogleInterop) => entry.route.familyId === familyId)
   if (!directCandidates.length) return null
 
-  const focusedCandidates = directCandidates.filter((entry: CommandMapGoogleBoundary) => matchesDay(entry.route.dayId, focusDayId))
+  const focusedCandidates = directCandidates.filter((entry: CommandMapGoogleInterop) => matchesDay(entry.route.dayId, focusDayId))
   const candidates = focusedCandidates.length ? focusedCandidates : directCandidates
 
-  const activeCandidates = candidates.filter((entry: CommandMapGoogleBoundary) => {
+  const activeCandidates = candidates.filter((entry: CommandMapGoogleInterop) => {
     const { startSlot, endSlot } = getRouteSimulationWindow(entry.route, itineraryItems)
     return cursorSlot >= startSlot && cursorSlot <= endSlot
   })
 
   if (activeCandidates.length) {
-    return activeCandidates.reduce((bestEntry: CommandMapGoogleBoundary,  entry: CommandMapGoogleBoundary) => {
+    return activeCandidates.reduce((bestEntry: CommandMapGoogleInterop,  entry: CommandMapGoogleInterop) => {
       if (!bestEntry) return entry
 
       const bestStart = getRouteSimulationWindow(bestEntry.route, itineraryItems).startSlot
@@ -1120,7 +1121,7 @@ function pickFamilyRouteEntry(routeEntries: CommandMapGoogleBoundary,  familyId:
     }, null)
   }
 
-  return candidates.reduce((bestEntry: CommandMapGoogleBoundary,  entry: CommandMapGoogleBoundary) => {
+  return candidates.reduce((bestEntry: CommandMapGoogleInterop,  entry: CommandMapGoogleInterop) => {
     if (!bestEntry) return entry
 
     const bestDistance = getRouteWindowDistance(bestEntry.route, cursorSlot, itineraryItems)
@@ -1138,7 +1139,7 @@ function pickFamilyRouteEntry(routeEntries: CommandMapGoogleBoundary,  familyId:
   }, null)
 }
 
-function getPlaybackDayId(cursorSlot: CommandMapGoogleBoundary) {
+function getPlaybackDayId(cursorSlot: CommandMapGoogleInterop) {
   const slotsPerDay = TIME_SLOTS.length || 1
   const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / slotsPerDay), 0), DAYS.length - 1)
   return DAYS[dayIndex]?.id || DAYS[0]?.id || 'all'
@@ -1164,25 +1165,25 @@ export default function CommandMap({
   onHydrateRouteDetails,
   onSelectEntity,
   onPlaybackFeedItems,
-}: CommandMapPropsBoundary) {
-  const containerRef = useRef<CommandMapGoogleBoundary>(null)
-  const mapRef = useRef<CommandMapGoogleBoundary>(null)
-  const googleRef = useRef<CommandMapGoogleBoundary>(null)
-  const trafficLayerRef = useRef<CommandMapGoogleBoundary>(null)
-  const routeEntriesRef = useRef<CommandMapGoogleBoundary[]>([])
-  const markerEntriesRef = useRef<CommandMapGoogleBoundary[]>([])
-  const vehicleEntriesRef = useRef<CommandMapGoogleBoundary[]>([])
-  const animationFrameRef = useRef<CommandMapGoogleBoundary>(null)
-  const lastAnimationTimestampRef = useRef<CommandMapGoogleBoundary>(null)
+}: CommandMapPropsInterop) {
+  const containerRef = useRef<CommandMapGoogleInterop>(null)
+  const mapRef = useRef<CommandMapGoogleInterop>(null)
+  const googleRef = useRef<CommandMapGoogleInterop>(null)
+  const trafficLayerRef = useRef<CommandMapGoogleInterop>(null)
+  const routeEntriesRef = useRef<CommandMapGoogleInterop[]>([])
+  const markerEntriesRef = useRef<CommandMapGoogleInterop[]>([])
+  const vehicleEntriesRef = useRef<CommandMapGoogleInterop[]>([])
+  const animationFrameRef = useRef<CommandMapGoogleInterop>(null)
+  const lastAnimationTimestampRef = useRef<CommandMapGoogleInterop>(null)
   const lastViewportTargetRef = useRef('')
-  const playbackStopSelectionRef = useRef<CommandMapGoogleBoundary>(null)
-  const playbackCameraTargetRef = useRef<CommandMapGoogleBoundary>(null)
-  const cameraStateRef = useRef<CommandMapGoogleBoundary>(null)
-  const prevCursorSlotRef = useRef<CommandMapGoogleBoundary>(null)
+  const playbackStopSelectionRef = useRef<CommandMapGoogleInterop>(null)
+  const playbackCameraTargetRef = useRef<CommandMapGoogleInterop>(null)
+  const cameraStateRef = useRef<CommandMapGoogleInterop>(null)
+  const prevCursorSlotRef = useRef<CommandMapGoogleInterop>(null)
   const playbackCueKeysRef = useRef(new Map())
-  const directionsServiceRef = useRef<CommandMapGoogleBoundary>(null)
+  const directionsServiceRef = useRef<CommandMapGoogleInterop>(null)
   const directionsAvailabilityRef = useRef('unknown')
-  const placesServiceRef = useRef<CommandMapGoogleBoundary>(null)
+  const placesServiceRef = useRef<CommandMapGoogleInterop>(null)
   const placesAvailabilityRef = useRef('unknown')
   const [status, setStatus] = useState('loading')
   const [statusDetail, setStatusDetail] = useState('Connecting to Google Maps...')
@@ -1191,13 +1192,13 @@ export default function CommandMap({
   const effectiveFocusDayId =
     playbackActive && mapUi.focusDayId === 'all' ? getPlaybackDayId(cursorSlot) : mapUi.focusDayId
 
-  const getRoutePath = (entry: CommandMapGoogleBoundary) => entry.currentPath || entry.route.path
+  const getRoutePath = (entry: CommandMapGoogleInterop) => entry.currentPath || entry.route.path
 
-  const showPlaybackCues = useCallback((cues: CommandMapGoogleBoundary) => {
+  const showPlaybackCues = useCallback((cues: CommandMapGoogleInterop) => {
     const nextCues = (Array.isArray(cues) ? cues : [cues]).filter(Boolean)
     if (!nextCues.length) return
 
-    const freshCues = nextCues.filter((cue: CommandMapGoogleBoundary) => {
+    const freshCues = nextCues.filter((cue: CommandMapGoogleInterop) => {
       const nextSignature = getPlaybackCueSignature(cue)
       const previousSignature = playbackCueKeysRef.current.get(cue.key)
       if (previousSignature === nextSignature) return false
@@ -1209,8 +1210,8 @@ export default function CommandMap({
     onPlaybackFeedItems?.(freshCues)
   }, [onPlaybackFeedItems])
 
-  const resolveDrivingPath = async (google: CommandMapGoogleBoundary,  route: CommandMapGoogleBoundary) => {
-    const locationsById = new Map<CommandMapGoogleBoundary, CommandMapGoogleBoundary>(locations.map((location: CommandMapGoogleBoundary) => [location.id, location]))
+  const resolveDrivingPath = async (google: CommandMapGoogleInterop,  route: CommandMapGoogleInterop) => {
+    const locationsById = new Map<CommandMapGoogleInterop, CommandMapGoogleInterop>(locations.map((location: CommandMapGoogleInterop) => [location.id, location]))
     const fallbackPath = buildRouteCoordinatePath(route, locationsById)
     if (!fallbackPath || fallbackPath.length < 2) {
       return { path: fallbackPath, source: 'seeded' }
@@ -1225,22 +1226,22 @@ export default function CommandMap({
 
     const origin = route?.originCoordinates || fallbackPath[0]
     const destination = route?.destinationLocationId
-      ? (locationsById.get(route.destinationLocationId) as CommandMapGoogleBoundary)?.coordinates || fallbackPath[fallbackPath.length - 1]
+      ? (locationsById.get(route.destinationLocationId) as CommandMapGoogleInterop)?.coordinates || fallbackPath[fallbackPath.length - 1]
       : fallbackPath[fallbackPath.length - 1]
     const waypointPoints = (route?.stopLocationIds || [])
-      .map((locationId: CommandMapGoogleBoundary) => (locationsById.get(locationId) as CommandMapGoogleBoundary)?.coordinates || null)
+      .map((locationId: CommandMapGoogleInterop) => (locationsById.get(locationId) as CommandMapGoogleInterop)?.coordinates || null)
       .filter(Boolean)
 
-    return new Promise<CommandMapGoogleBoundary>((resolve: CommandMapGoogleBoundary,  reject: CommandMapGoogleBoundary) => {
+    return new Promise<CommandMapGoogleInterop>((resolve: CommandMapGoogleInterop,  reject: CommandMapGoogleInterop) => {
       directionsServiceRef.current.route(
         {
           origin,
           destination,
-          waypoints: waypointPoints.map((point: CommandMapGoogleBoundary) => ({ location: point, stopover: false })),
+          waypoints: waypointPoints.map((point: CommandMapGoogleInterop) => ({ location: point, stopover: false })),
           travelMode: google.maps.TravelMode.DRIVING,
           provideRouteAlternatives: false,
         },
-        (result: CommandMapGoogleBoundary,  routeStatus: CommandMapGoogleBoundary) => {
+        (result: CommandMapGoogleInterop,  routeStatus: CommandMapGoogleInterop) => {
           if (routeStatus !== 'OK' || !result?.routes?.length) {
             if (routeStatus === 'REQUEST_DENIED') {
               directionsAvailabilityRef.current = 'unavailable'
@@ -1249,13 +1250,13 @@ export default function CommandMap({
             return
           }
 
-          const overviewPath = result.routes[0].overview_path?.map((point: CommandMapGoogleBoundary) => ({
+          const overviewPath = result.routes[0].overview_path?.map((point: CommandMapGoogleInterop) => ({
             lat: point.lat(),
             lng: point.lng(),
           }))
           const legs = result.routes[0].legs || []
-          const durationSeconds = legs.reduce((sum: CommandMapGoogleBoundary,  leg: CommandMapGoogleBoundary) => sum + (leg.duration?.value || 0), 0)
-          const distanceMeters = legs.reduce((sum: CommandMapGoogleBoundary,  leg: CommandMapGoogleBoundary) => sum + (leg.distance?.value || 0), 0)
+          const durationSeconds = legs.reduce((sum: CommandMapGoogleInterop,  leg: CommandMapGoogleInterop) => sum + (leg.duration?.value || 0), 0)
+          const distanceMeters = legs.reduce((sum: CommandMapGoogleInterop,  leg: CommandMapGoogleInterop) => sum + (leg.distance?.value || 0), 0)
 
           resolve({
             path: overviewPath?.length ? overviewPath : fallbackPath,
@@ -1276,7 +1277,7 @@ export default function CommandMap({
     })
   }
 
-  const resolvePlaceMatch = async (google: CommandMapGoogleBoundary,  location: CommandMapGoogleBoundary) => {
+  const resolvePlaceMatch = async (google: CommandMapGoogleInterop,  location: CommandMapGoogleInterop) => {
     if (!location.placesQuery || location.placeId) return null
     if (!LIVE_EXTERNAL_DATA) return null
     if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) return null
@@ -1286,13 +1287,13 @@ export default function CommandMap({
       placesServiceRef.current = new google.maps.places.PlacesService(mapRef.current)
     }
 
-    return new Promise<CommandMapGoogleBoundary>((resolve: CommandMapGoogleBoundary,  reject: CommandMapGoogleBoundary) => {
+    return new Promise<CommandMapGoogleInterop>((resolve: CommandMapGoogleInterop,  reject: CommandMapGoogleInterop) => {
       placesServiceRef.current.findPlaceFromQuery(
         {
           query: location.placesQuery,
           fields: ['name', 'formatted_address', 'geometry', 'place_id'],
         },
-        (results: CommandMapGoogleBoundary,  placeStatus: CommandMapGoogleBoundary) => {
+        (results: CommandMapGoogleInterop,  placeStatus: CommandMapGoogleInterop) => {
           if (placeStatus !== google.maps.places.PlacesServiceStatus.OK || !results?.length) {
             if (placeStatus === google.maps.places.PlacesServiceStatus.REQUEST_DENIED) {
               placesAvailabilityRef.current = 'unavailable'
@@ -1307,7 +1308,7 @@ export default function CommandMap({
     })
   }
 
-  const resolvePlaceDetails = async (google: CommandMapGoogleBoundary,  placeId: CommandMapGoogleBoundary) => {
+  const resolvePlaceDetails = async (google: CommandMapGoogleInterop,  placeId: CommandMapGoogleInterop) => {
     if (!placeId) return null
     if (!LIVE_EXTERNAL_DATA) return null
     if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) return null
@@ -1317,13 +1318,13 @@ export default function CommandMap({
       placesServiceRef.current = new google.maps.places.PlacesService(mapRef.current)
     }
 
-    return new Promise<CommandMapGoogleBoundary>((resolve: CommandMapGoogleBoundary,  reject: CommandMapGoogleBoundary) => {
+    return new Promise<CommandMapGoogleInterop>((resolve: CommandMapGoogleInterop,  reject: CommandMapGoogleInterop) => {
       placesServiceRef.current.getDetails(
         {
           placeId,
           fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
         },
-        (result: CommandMapGoogleBoundary,  placeStatus: CommandMapGoogleBoundary) => {
+        (result: CommandMapGoogleInterop,  placeStatus: CommandMapGoogleInterop) => {
           if (placeStatus !== google.maps.places.PlacesServiceStatus.OK || !result) {
             if (placeStatus === google.maps.places.PlacesServiceStatus.REQUEST_DENIED) {
               placesAvailabilityRef.current = 'unavailable'
@@ -1338,7 +1339,7 @@ export default function CommandMap({
     })
   }
 
-  const resolveDriveProfile = async (google: CommandMapGoogleBoundary,  origin: CommandMapGoogleBoundary,  destination: CommandMapGoogleBoundary) => {
+  const resolveDriveProfile = async (google: CommandMapGoogleInterop,  origin: CommandMapGoogleInterop,  destination: CommandMapGoogleInterop) => {
     if (!origin || !destination) return null
     if (!LIVE_EXTERNAL_DATA) return null
     if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) return null
@@ -1348,7 +1349,7 @@ export default function CommandMap({
       directionsServiceRef.current = new google.maps.DirectionsService()
     }
 
-    return new Promise<CommandMapGoogleBoundary>((resolve: CommandMapGoogleBoundary,  reject: CommandMapGoogleBoundary) => {
+    return new Promise<CommandMapGoogleInterop>((resolve: CommandMapGoogleInterop,  reject: CommandMapGoogleInterop) => {
       directionsServiceRef.current.route(
         {
           origin,
@@ -1356,7 +1357,7 @@ export default function CommandMap({
           travelMode: google.maps.TravelMode.DRIVING,
           provideRouteAlternatives: false,
         },
-        (result: CommandMapGoogleBoundary,  routeStatus: CommandMapGoogleBoundary) => {
+        (result: CommandMapGoogleInterop,  routeStatus: CommandMapGoogleInterop) => {
           if (routeStatus !== 'OK' || !result?.routes?.length) {
             if (routeStatus === 'REQUEST_DENIED') {
               directionsAvailabilityRef.current = 'unavailable'
@@ -1403,7 +1404,7 @@ export default function CommandMap({
         ensureLocationBriefingStyles()
 
         if (!window.__tripCommandCenterMapsConfigured) {
-          (setOptions as CommandMapGoogleBoundary)({
+          (setOptions as CommandMapGoogleInterop)({
             key: GOOGLE_MAPS_API_KEY,
             version: 'weekly',
             mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
@@ -1419,9 +1420,9 @@ export default function CommandMap({
         googleRef.current = google
 
         const bounds = new google.maps.LatLngBounds()
-        initialLocations.forEach((location: CommandMapGoogleBoundary) => bounds.extend(location.coordinates))
+        initialLocations.forEach((location: CommandMapGoogleInterop) => bounds.extend(location.coordinates))
         const initialBasecampCenter =
-          initialLocations.find((location: CommandMapGoogleBoundary) => location.id === 'pine-airbnb')?.coordinates || { lat: 37.8586, lng: -120.2142 }
+          initialLocations.find((location: CommandMapGoogleInterop) => location.id === 'pine-airbnb')?.coordinates || { lat: 37.8586, lng: -120.2142 }
 
         const map = new google.maps.Map(containerRef.current, {
           center: initialBasecampCenter,
@@ -1445,9 +1446,9 @@ export default function CommandMap({
           await importLibrary('places')
         }
 
-        const initialLocationsById = new Map<CommandMapGoogleBoundary, CommandMapGoogleBoundary>(initialLocations.map((location: CommandMapGoogleBoundary) => [location.id, location]))
+        const initialLocationsById = new Map<CommandMapGoogleInterop, CommandMapGoogleInterop>(initialLocations.map((location: CommandMapGoogleInterop) => [location.id, location]))
 
-        routeEntriesRef.current = initialRoutes.map((route: CommandMapGoogleBoundary) => {
+        routeEntriesRef.current = initialRoutes.map((route: CommandMapGoogleInterop) => {
           const seededPath = buildRouteCoordinatePath(route, initialLocationsById)
           const basePolyline = new google.maps.Polyline({
             map,
@@ -1537,7 +1538,7 @@ export default function CommandMap({
           }
         }
 
-        markerEntriesRef.current = initialLocations.map((location: CommandMapGoogleBoundary) => {
+        markerEntriesRef.current = initialLocations.map((location: CommandMapGoogleInterop) => {
           const marker = new google.maps.Marker({
             map,
             position: location.coordinates,
@@ -1582,7 +1583,7 @@ export default function CommandMap({
           return { location, marker, pulseMarker, infoWindow, pulseOffset: Math.random(), pulseVisible: false }
         })
 
-        vehicleEntriesRef.current = families.map((family: CommandMapGoogleBoundary) => {
+        vehicleEntriesRef.current = families.map((family: CommandMapGoogleInterop) => {
           const routeEntry = pickFamilyRouteEntry(routeEntriesRef.current, family.id, cursorSlot, effectiveFocusDayId, itineraryItems)
           const originPosition = getRouteOrigin(family, routeEntry?.route, routeEntry?.route.path)
           const marker = new google.maps.Marker({
@@ -1632,7 +1633,7 @@ export default function CommandMap({
           }
         })
 
-        const basecampLocation = initialLocations.find((location: CommandMapGoogleBoundary) => location.id === 'pine-airbnb')
+        const basecampLocation = initialLocations.find((location: CommandMapGoogleInterop) => location.id === 'pine-airbnb')
 
         for (const entry of markerEntriesRef.current) {
           try {
@@ -1666,7 +1667,7 @@ export default function CommandMap({
             }
 
             if (placeDetails) {
-              livePhotos = (placeDetails.photos || []).slice(0, 3).map((photo: CommandMapGoogleBoundary,  index: CommandMapGoogleBoundary) => ({
+              livePhotos = (placeDetails.photos || []).slice(0, 3).map((photo: CommandMapGoogleInterop,  index: CommandMapGoogleInterop) => ({
                 id: `${entry.location.id}-live-photo-${index + 1}`,
                 label: index === 0 ? 'Live venue photo' : `Venue photo ${index + 1}`,
                 imageUrl: photo.getUrl({ maxWidth: 900 }),
@@ -1742,7 +1743,7 @@ export default function CommandMap({
       } catch (error) {
         if (cancelled) return
         setStatus('error')
-        setStatusDetail((error as CommandMapGoogleBoundary)?.message || 'Google Maps failed to load')
+        setStatusDetail((error as CommandMapGoogleInterop)?.message || 'Google Maps failed to load')
       }
     }
 
@@ -1774,8 +1775,8 @@ export default function CommandMap({
   useEffect(() => {
     if (status !== 'ready') return
 
-    markerEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
-      const latestLocation = locations.find((location: CommandMapGoogleBoundary) => location.id === entry.location.id)
+    markerEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
+      const latestLocation = locations.find((location: CommandMapGoogleInterop) => location.id === entry.location.id)
       if (!latestLocation) return
 
       entry.location = latestLocation
@@ -1789,8 +1790,8 @@ export default function CommandMap({
   useEffect(() => {
     if (status !== 'ready') return
 
-    vehicleEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
-      const latestFamily = families.find((family: CommandMapGoogleBoundary) => family.id === entry.family.id)
+    vehicleEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
+      const latestFamily = families.find((family: CommandMapGoogleInterop) => family.id === entry.family.id)
       const latestRouteEntry = pickFamilyRouteEntry(
         routeEntriesRef.current,
         entry.family.id,
@@ -1810,8 +1811,8 @@ export default function CommandMap({
   useEffect(() => {
     if (status !== 'ready') return
 
-    routeEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
-      const latestRoute = routes.find((route: CommandMapGoogleBoundary) => route.id === entry.route.id)
+    routeEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
+      const latestRoute = routes.find((route: CommandMapGoogleInterop) => route.id === entry.route.id)
       if (!latestRoute) return
       entry.route = latestRoute
     })
@@ -1824,8 +1825,8 @@ export default function CommandMap({
     let targetLocationId = playbackActive ? playbackHighlightLocationId : null
 
     if (playbackActive && !targetLocationId) {
-      const locationsById = new Map<CommandMapGoogleBoundary, CommandMapGoogleBoundary>(locations.map((location: CommandMapGoogleBoundary) => [location.id, location]))
-      vehicleEntriesRef.current.some((entry: CommandMapGoogleBoundary) => {
+      const locationsById = new Map<CommandMapGoogleInterop, CommandMapGoogleInterop>(locations.map((location: CommandMapGoogleInterop) => [location.id, location]))
+      vehicleEntriesRef.current.some((entry: CommandMapGoogleInterop) => {
         if (!entry.marker.getMap()) return false
         if (!entry.isInTransit) return false
         const markerPosition = entry.marker.getPosition()
@@ -1848,7 +1849,7 @@ export default function CommandMap({
       return
     }
 
-    const targetEntry = markerEntriesRef.current.find((entry: CommandMapGoogleBoundary) => entry.location.id === targetLocationId)
+    const targetEntry = markerEntriesRef.current.find((entry: CommandMapGoogleInterop) => entry.location.id === targetLocationId)
     if (!targetEntry) return
 
     if (playbackStopSelectionRef.current === targetLocationId) {
@@ -1868,13 +1869,13 @@ export default function CommandMap({
 
     let mounted = true
 
-    const animate = (timestamp: CommandMapGoogleBoundary) => {
+    const animate = (timestamp: CommandMapGoogleInterop) => {
       const previousTimestamp = lastAnimationTimestampRef.current ?? timestamp
       const deltaSeconds = Math.min((timestamp - previousTimestamp) / 1000, 0.1)
       lastAnimationTimestampRef.current = timestamp
       const cameraAnimationAlpha = 1 - Math.exp(-deltaSeconds * 2.7)
 
-      routeEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
+      routeEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
         if (!entry.animatedPolyline.getMap()) return
         const icons = entry.animatedPolyline.get('icons')
         if (!icons?.length) return
@@ -1894,7 +1895,7 @@ export default function CommandMap({
         entry.animatedPolyline.set('icons', icons)
       })
 
-      vehicleEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
+      vehicleEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
         if (!entry.radarMarker) return
 
         if (!entry.alertVisible || !entry.currentPosition) {
@@ -1917,7 +1918,7 @@ export default function CommandMap({
         })
       })
 
-      markerEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
+      markerEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
         if (!entry.pulseMarker) return
 
         if (!entry.pulseVisible || !entry.marker.getMap()) {
@@ -1991,11 +1992,11 @@ export default function CommandMap({
     const map = mapRef.current
     if (!map || status !== 'ready') return
 
-    const locationsById = new Map<CommandMapGoogleBoundary, CommandMapGoogleBoundary>(locations.map((location: CommandMapGoogleBoundary) => [location.id, location]))
+    const locationsById = new Map<CommandMapGoogleInterop, CommandMapGoogleInterop>(locations.map((location: CommandMapGoogleInterop) => [location.id, location]))
     let playbackAutoLocationId = playbackHighlightLocationId || null
 
     if (playbackActive && !playbackAutoLocationId) {
-      vehicleEntriesRef.current.some((entry: CommandMapGoogleBoundary) => {
+      vehicleEntriesRef.current.some((entry: CommandMapGoogleInterop) => {
         if (!entry.isInTransit) return false
         const routeEntry = pickFamilyRouteEntry(routeEntriesRef.current, entry.family.id, cursorSlot, effectiveFocusDayId, itineraryItems)
         if (!routeEntry) return false
@@ -2040,7 +2041,7 @@ export default function CommandMap({
       })
     }
 
-    routeEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
+    routeEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
       const { route, basePolyline, animatedPolyline } = entry
       const visible =
         route.id === selectedRouteId ||
@@ -2098,7 +2099,7 @@ export default function CommandMap({
       animatedPolyline.setMap(visible ? map : null)
     })
 
-    markerEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
+    markerEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
       const { location, marker, pulseMarker } = entry
       const highlightedByPlayback = playbackActive && location.id === playbackAutoLocationId
       const visible =
@@ -2137,7 +2138,7 @@ export default function CommandMap({
       })
     })
 
-    vehicleEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
+    vehicleEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
       const routeEntry = pickFamilyRouteEntry(routeEntriesRef.current, entry.family.id, cursorSlot, effectiveFocusDayId, itineraryItems)
       if (!routeEntry) {
         entry.marker.setMap(null)
@@ -2257,8 +2258,8 @@ export default function CommandMap({
       playbackCueKeysRef.current.clear()
     }
 
-    const locationsById = new Map<CommandMapGoogleBoundary, CommandMapGoogleBoundary>(locations.map((location: CommandMapGoogleBoundary) => [location.id, location]))
-    const crossedThreshold = (threshold: CommandMapGoogleBoundary) => {
+    const locationsById = new Map<CommandMapGoogleInterop, CommandMapGoogleInterop>(locations.map((location: CommandMapGoogleInterop) => [location.id, location]))
+    const crossedThreshold = (threshold: CommandMapGoogleInterop) => {
       if (previousCursor == null) {
         return cursorSlot >= threshold && cursorSlot <= threshold + 0.08
       }
@@ -2268,23 +2269,23 @@ export default function CommandMap({
     const onsiteEntities = [
       ...meals,
       ...activities,
-      ...itineraryItems.filter((item: CommandMapGoogleBoundary) => item.rowId !== 'travel' && item.locationId),
-    ].filter((entity: CommandMapGoogleBoundary) => entity.locationId && matchesDay(entity.dayId, effectiveFocusDayId))
+      ...itineraryItems.filter((item: CommandMapGoogleInterop) => item.rowId !== 'travel' && item.locationId),
+    ].filter((entity: CommandMapGoogleInterop) => entity.locationId && matchesDay(entity.dayId, effectiveFocusDayId))
 
     const crossedOnsiteEntityGroups = collapseOnsiteCueEntities(
-      onsiteEntities.filter((entity: CommandMapGoogleBoundary) => crossedThreshold(entity.startSlot)),
+      onsiteEntities.filter((entity: CommandMapGoogleInterop) => crossedThreshold(entity.startSlot)),
     )
-    const hasNearbyOnsitePhase = (locationId: CommandMapGoogleBoundary,  slot: CommandMapGoogleBoundary) =>
+    const hasNearbyOnsitePhase = (locationId: CommandMapGoogleInterop,  slot: CommandMapGoogleInterop) =>
       onsiteEntities.some(
-        (entity: CommandMapGoogleBoundary) =>
+        (entity: CommandMapGoogleInterop) =>
           entity.locationId === locationId &&
           entity.startSlot >= slot &&
           entity.startSlot <= slot + 0.22,
       )
 
-    const candidates: CommandMapGoogleBoundary[] = []
+    const candidates: CommandMapGoogleInterop[] = []
 
-    vehicleEntriesRef.current.forEach((entry: CommandMapGoogleBoundary) => {
+    vehicleEntriesRef.current.forEach((entry: CommandMapGoogleInterop) => {
       if (!entry.marker.getMap() || !entry.routeEntry) return false
 
       const { family, routeEntry } = entry
@@ -2312,10 +2313,10 @@ export default function CommandMap({
 
       if (!position) return
 
-      const stopLocations: CommandMapGoogleBoundary[] = [...(route.stopLocationIds || []), route.destinationLocationId]
+      const stopLocations: CommandMapGoogleInterop[] = [...(route.stopLocationIds || []), route.destinationLocationId]
         .filter(Boolean)
-        .map((locationId: CommandMapGoogleBoundary) => locationsById.get(locationId) as CommandMapGoogleBoundary)
-        .filter((location: CommandMapGoogleBoundary) => location?.coordinates)
+        .map((locationId: CommandMapGoogleInterop) => locationsById.get(locationId) as CommandMapGoogleInterop)
+        .filter((location: CommandMapGoogleInterop) => location?.coordinates)
 
       for (const location of stopLocations) {
         const distanceMeters = googleRef.current.maps.geometry.spherical.computeDistanceBetween(position, location.coordinates)
@@ -2345,14 +2346,14 @@ export default function CommandMap({
       }
     })
 
-    crossedOnsiteEntityGroups.forEach((group: CommandMapGoogleBoundary) => {
+    crossedOnsiteEntityGroups.forEach((group: CommandMapGoogleInterop) => {
       const entity = group.primary
       const location = locationsById.get(entity.locationId)
       if (!location) return
 
       const visibleFamilies = vehicleEntriesRef.current
-        .filter((entry: CommandMapGoogleBoundary) => entry.marker.getMap())
-        .map((entry: CommandMapGoogleBoundary) => entry.family)
+        .filter((entry: CommandMapGoogleInterop) => entry.marker.getMap())
+        .map((entry: CommandMapGoogleInterop) => entry.family)
       const cueFamilies = resolveOnsiteCueFamilies(group, itineraryItems, routeEntriesRef.current, families)
 
       candidates.push({
@@ -2367,17 +2368,17 @@ export default function CommandMap({
         entity,
         location,
         route: visibleFamilies[0]?.id
-          ? vehicleEntriesRef.current.find((entry: CommandMapGoogleBoundary) => entry.family.id === visibleFamilies[0].id)?.routeEntry?.route || null
+          ? vehicleEntriesRef.current.find((entry: CommandMapGoogleInterop) => entry.family.id === visibleFamilies[0].id)?.routeEntry?.route || null
           : null,
         families: cueFamilies.length ? cueFamilies : visibleFamilies.length ? visibleFamilies : families,
         anchor: location.coordinates,
       })
     })
 
-    let cuesToShow: CommandMapGoogleBoundary[] = []
+    let cuesToShow: CommandMapGoogleInterop[] = []
     if (candidates.length) {
       const grouped = new Map()
-      candidates.forEach((candidate: CommandMapGoogleBoundary) => {
+      candidates.forEach((candidate: CommandMapGoogleInterop) => {
         const existing = grouped.get(candidate.groupKey) || {
           cueKey: candidate.cueKey,
           kind: candidate.kind,
@@ -2396,8 +2397,8 @@ export default function CommandMap({
       })
 
       cuesToShow = [...grouped.values()]
-        .sort((left: CommandMapGoogleBoundary,  right: CommandMapGoogleBoundary) => right.families.length - left.families.length)
-        .map((group: CommandMapGoogleBoundary) => buildPlaybackCue({
+        .sort((left: CommandMapGoogleInterop,  right: CommandMapGoogleInterop) => right.families.length - left.families.length)
+        .map((group: CommandMapGoogleInterop) => buildPlaybackCue({
           cueKey: group.cueKey,
           families: group.families,
           route: group.route,
@@ -2423,14 +2424,14 @@ export default function CommandMap({
 
   useEffect(() => {
     const map = mapRef.current
-    const selectedLocation = locations.find((location: CommandMapGoogleBoundary) => location.id === selectedLocationId)
-    const selectedRouteEntry = routeEntriesRef.current.find((entry: CommandMapGoogleBoundary) => entry.route.id === selectedRouteId)
+    const selectedLocation = locations.find((location: CommandMapGoogleInterop) => location.id === selectedLocationId)
+    const selectedRouteEntry = routeEntriesRef.current.find((entry: CommandMapGoogleInterop) => entry.route.id === selectedRouteId)
     if (!map || status !== 'ready') return
 
     const highlightedLocation =
-      locations.find((location: CommandMapGoogleBoundary) => location.id === playbackHighlightLocationId) ||
-      locations.find((location: CommandMapGoogleBoundary) => location.id === playbackStopSelectionRef.current) ||
-      (!playbackActive ? locations.find((location: CommandMapGoogleBoundary) => location.id === selectedLocationId) : null)
+      locations.find((location: CommandMapGoogleInterop) => location.id === playbackHighlightLocationId) ||
+      locations.find((location: CommandMapGoogleInterop) => location.id === playbackStopSelectionRef.current) ||
+      (!playbackActive ? locations.find((location: CommandMapGoogleInterop) => location.id === selectedLocationId) : null)
 
     const participantCameraTarget = buildParticipantCameraTarget({
       google: googleRef.current,
@@ -2469,7 +2470,7 @@ export default function CommandMap({
         }
       } else {
         const bounds = new googleRef.current.maps.LatLngBounds()
-        routePath.forEach((point: CommandMapGoogleBoundary) => bounds.extend(point))
+        routePath.forEach((point: CommandMapGoogleInterop) => bounds.extend(point))
         map.fitBounds(bounds, 120)
       }
 
@@ -2513,13 +2514,13 @@ export default function CommandMap({
       summaryBits.push(
         mapUi.focusFamilyId === 'all'
           ? 'all family routes'
-          : `${families.find((item: CommandMapGoogleBoundary) => item.id === mapUi.focusFamilyId)?.title || 'family'} route focus`,
+          : `${families.find((item: CommandMapGoogleInterop) => item.id === mapUi.focusFamilyId)?.title || 'family'} route focus`,
       )
     }
     if (mapUi.showFacilities) summaryBits.push('logistics facilities')
     if (mapUi.showTraffic) summaryBits.push('live traffic')
     if (mapUi.focusDayId !== 'all') {
-      summaryBits.push(`${DAYS.find((item: CommandMapGoogleBoundary) => item.id === mapUi.focusDayId)?.title.toLowerCase() || mapUi.focusDayId} focus`)
+      summaryBits.push(`${DAYS.find((item: CommandMapGoogleInterop) => item.id === mapUi.focusDayId)?.title.toLowerCase() || mapUi.focusDayId} focus`)
     }
     return summaryBits.length ? `Showing ${summaryBits.join(', ')}` : 'No operational layers visible'
   }, [families, mapUi])
@@ -2583,7 +2584,7 @@ export default function CommandMap({
             Family Focus
           </div>
           <div className="mb-3 flex flex-wrap gap-2">
-            {[{ id: 'all', label: 'All Families' }, ...families.map((family: CommandMapGoogleBoundary) => ({ id: family.id, label: family.title }))].map((item: CommandMapGoogleBoundary) => (
+            {[{ id: 'all', label: 'All Families' }, ...families.map((family: CommandMapGoogleInterop) => ({ id: family.id, label: family.title }))].map((item: CommandMapGoogleInterop) => (
               <MapChip
                 key={item.id}
                 active={mapUi.focusFamilyId === item.id}
@@ -2598,7 +2599,7 @@ export default function CommandMap({
             Day Focus
           </div>
           <div className="mb-3 flex flex-wrap gap-2">
-            {[{ id: 'all', label: 'All Days' }, ...DAYS.map((day: CommandMapGoogleBoundary) => ({ id: day.id, label: day.title.replace(' Day', '') }))].map((item: CommandMapGoogleBoundary) => (
+            {[{ id: 'all', label: 'All Days' }, ...DAYS.map((day: CommandMapGoogleInterop) => ({ id: day.id, label: day.title.replace(' Day', '') }))].map((item: CommandMapGoogleInterop) => (
               <MapChip
                 key={item.id}
                 active={mapUi.focusDayId === item.id}
@@ -2621,7 +2622,7 @@ export default function CommandMap({
           onClick={() => setWeatherCollapsed(false)}
           className="absolute right-6 top-6 z-20 flex items-center gap-2 border border-[#58A6FF]/25 bg-[#111722]/94 px-3 py-2 shadow-[0_18px_40px_rgba(0,0,0,0.42)] backdrop-blur"
         >
-          {mapWeatherTargets.slice(0, 2).map((target: CommandMapGoogleBoundary) => {
+          {mapWeatherTargets.slice(0, 2).map((target: CommandMapGoogleInterop) => {
             const TargetIcon = WEATHER_ICONS[target.iconKey] || Cloud
             return (
               <div key={target.id} className="flex items-center gap-1 text-[#E6EDF3]">
@@ -2648,7 +2649,7 @@ export default function CommandMap({
             </div>
           </div>
           <div className="grid gap-px bg-[#58A6FF]/10 p-px">
-            {mapWeatherTargets.length ? mapWeatherTargets.map((target: CommandMapGoogleBoundary) => {
+            {mapWeatherTargets.length ? mapWeatherTargets.map((target: CommandMapGoogleInterop) => {
               const TargetIcon = WEATHER_ICONS[target.iconKey] || Cloud
               return (
                 <div
