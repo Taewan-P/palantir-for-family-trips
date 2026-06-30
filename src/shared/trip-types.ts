@@ -241,7 +241,7 @@ type TripEventBase = {
   tripId: string
   version: number
   previousVersion: number
-  actorUserId: string
+  actorUserId: string | null
   createdAt: string
 }
 
