@@ -161,7 +161,7 @@ export class TripRoom implements DurableObject {
       this.acceptedSinceSnapshot += 1
     }
 
-    this.broadcast({ type: 'event.accepted', event: result.event, version: result.version })
+    this.broadcast({ type: 'event.accepted', commandId: command.id, event: result.event, version: result.version })
   }
 
   private broadcast(message: unknown): void {

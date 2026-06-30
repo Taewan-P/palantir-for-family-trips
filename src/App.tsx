@@ -35,7 +35,9 @@ import { twMerge } from 'tailwind-merge'
 import palantirLogo from './assets/palantir-logo.svg'
 import CommandMap from './CommandMap'
 import InspectorRail from './InspectorRail'
+import { useTripRoom } from './app/useTripRoom'
 import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
+import { createId } from './shared/ids'
 import { usePersistedTripState } from './usePersistedTripState'
 import { DAYS, NAV_ITEMS, TIME_SLOTS, TRIP_META } from './tripData'
 import {
@@ -85,6 +87,7 @@ import type {
   TripDocument,
   TripEntity,
   TripEntityType,
+  TripEvent,
 } from './shared/trip-types'
 import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeather } from './weather'
 import type { MapWeather, MapWeatherTarget, TripDayWeather, WeatherBundleMap } from './weather'
@@ -192,6 +195,14 @@ type AppProps = {
   initialServiceDocument?: TripDocument
   readOnly?: boolean
 }
+type TripEventPayload<Type extends TripEvent['type']> = Extract<TripEvent, { type: Type }>['payload']
+type TripCommand<Type extends TripEvent['type']> = {
+  id: string
+  baseVersion: number
+  type: Type
+  payload: TripEventPayload<Type>
+}
+type EntityUpdatePatch<Type extends TripEntityType> = Partial<Omit<EntityByType[Type], 'id' | 'type'>>
 type IntelActionProps = { icon: IconComponent; label: string; onClick: () => void; tone?: string }
 type InfoRowProps = { icon?: IconComponent; label: string; value?: ReactNode; muted?: boolean }
 type ActivityResearchCardProps = { eyebrow: string; title: string; bullets: string[] }
@@ -235,6 +246,24 @@ type ExpensesPageProps = CommonPageProps & {
 const clearOldTripStorage = tripModelModule[
   `clear${'Leg'}${'acyTripStorage'}` as keyof typeof tripModelModule
 ] as () => void
+
+function buildCommand<Type extends TripEvent['type']>(
+  type: Type,
+  baseVersion: number,
+  payload: TripEventPayload<Type>,
+): TripCommand<Type> {
+  return {
+    id: createId('cmd'),
+    baseVersion,
+    type,
+    payload,
+  }
+}
+
+function toEntityUpdatePatch<Type extends TripEntityType>(patch: Partial<EntityByType[Type]>): EntityUpdatePatch<Type> {
+  const { id: _id, type: _type, ...safePatch } = patch
+  return safePatch as EntityUpdatePatch<Type>
+}
 
 declare global {
   interface Window {
@@ -4100,8 +4129,21 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   const [viewerProfile, setViewerProfile] = usePersistedTripState<ViewerProfile>(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
+  const {
+    document: roomDocument,
+    sendCommand: sendRoomCommand,
+    status: roomStatus,
+    version: roomVersion,
+  } = useTripRoom(serviceTripId ?? null)
   const usesServiceShell = Boolean(serviceTripId || initialServiceDocument)
-  const doc = usesServiceShell ? serviceDoc : persistedDoc
+  const activeServiceDoc = roomDocument || serviceDoc
+  const doc = usesServiceShell
+    ? {
+        ...activeServiceDoc,
+        selectedPage: serviceDoc.selectedPage,
+        selection: serviceDoc.selection,
+      }
+    : persistedDoc
   const setDoc: Dispatch<SetStateAction<TripDocument>> = usesServiceShell ? setServiceDoc : setPersistedDoc
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
   const locationIntelHydrationRef = useRef(new Set<string>())
@@ -4134,6 +4176,38 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   const setActiveFamilyProfile = useCallback((familyId: string) => {
     setViewerProfile({ familyId })
   }, [setViewerProfile])
+
+  const sendTripCommand = useCallback(<Type extends TripEvent['type']>(
+    type: Type,
+    payload: TripEventPayload<Type>,
+  ) => {
+    if (!serviceTripId || readOnly) return false
+
+    if (!roomDocument || roomStatus !== 'open') {
+      return true
+    }
+
+    sendRoomCommand(buildCommand(type, roomVersion, payload))
+    return true
+  }, [readOnly, roomDocument, roomStatus, roomVersion, sendRoomCommand, serviceTripId])
+
+  const sendEntityCreateCommand = useCallback(<Type extends TripEntityType>(
+    entityType: Type,
+    entity: EntityByType[Type],
+  ) => sendTripCommand('entity.create', {
+    entityType,
+    entity,
+  } as TripEventPayload<'entity.create'>), [sendTripCommand])
+
+  const sendEntityUpdateCommand = useCallback(<Type extends TripEntityType>(
+    entityType: Type,
+    id: string,
+    patch: Partial<EntityByType[Type]>,
+  ) => sendTripCommand('entity.update', {
+    entityType,
+    id,
+    patch: toEntityUpdatePatch(patch),
+  } as TripEventPayload<'entity.update'>), [sendTripCommand])
 
   useEffect(() => {
     if (startupTimelineSyncRef.current) return
@@ -4412,7 +4486,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         searchQuery: '',
       },
     }))
-  }, [setDoc])
+    sendTripCommand('uiState.update', { searchQuery: '' })
+  }, [sendTripCommand, setDoc])
 
   const selectEntity = useCallback((type: TripEntityType, id: string) => {
     setDoc((current) => {
@@ -4426,7 +4501,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         ui: { ...current.ui, searchQuery: '' },
       }
     })
-  }, [setDoc])
+    sendTripCommand('uiState.update', { searchQuery: '' })
+  }, [sendTripCommand, setDoc])
 
   const openEntity = useCallback((type: TripEntityType, id: string) => {
     setDoc((current) => ({
@@ -4434,11 +4510,13 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
       selection: { type, id },
       ui: { ...current.ui, searchQuery: '' },
     }))
-  }, [setDoc])
+    sendTripCommand('uiState.update', { searchQuery: '' })
+  }, [sendTripCommand, setDoc])
 
   const hydrateLocationDetails = useCallback((locationId: string, patch: Partial<LocationEntity>) => {
-    if (readOnly) return
     if (!locationId || !patch) return
+    if (sendEntityUpdateCommand('location', locationId, patch)) return
+    if (readOnly) return
 
     setDoc((current) => {
       let changed = false
@@ -4465,11 +4543,12 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         routes: synchronizeRoutePaths(current.routes, locations),
       }
     })
-  }, [readOnly, setDoc])
+  }, [readOnly, sendEntityUpdateCommand, setDoc])
 
   const hydrateRouteDetails = useCallback((routeId: string, patch: Partial<RouteEntity>) => {
-    if (readOnly) return
     if (!routeId || !patch) return
+    if (sendEntityUpdateCommand('route', routeId, patch)) return
+    if (readOnly) return
 
     setDoc((current) => {
       let changed = false
@@ -4495,9 +4574,10 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         routes,
       }
     })
-  }, [readOnly, setDoc])
+  }, [readOnly, sendEntityUpdateCommand, setDoc])
 
   const updateLocationFields = useCallback((locationId: string, patch: Partial<LocationEntity>) => {
+    if (sendEntityUpdateCommand('location', locationId, patch)) return
     if (readOnly) return
     setDoc((current) => {
       const locations = current.locations.map((location) =>
@@ -4510,7 +4590,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         routes: synchronizeRoutePaths(current.routes, locations),
       }
     })
-  }, [currentFamilyId, readOnly, setDoc])
+  }, [currentFamilyId, readOnly, sendEntityUpdateCommand, setDoc])
 
   useEffect(() => {
     if (readOnly) return
@@ -4773,6 +4853,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }, [doc.locations, liveExternalData])
 
   const updatePageNote = (pageId: string, value: string) => {
+    if (sendTripCommand('pageNote.update', { pageId, value })) return
     if (readOnly) return
 
     setDoc((current) => ({
@@ -4791,6 +4872,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const updateEntityNote = (type: TripEntityType, id: string, value: string) => {
+    if (sendEntityUpdateCommand(type, id, { note: value })) return
     if (readOnly) return
 
     setDoc((current) => {
@@ -4825,6 +4907,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const toggleTask = (taskId: string) => {
+    const task = doc.tasks.find((item) => item.id === taskId)
+    if (task && sendEntityUpdateCommand('task', taskId, { status: task.status === 'done' ? 'open' : 'done' })) return
     if (readOnly) return
 
     setDoc((current) => {
@@ -4841,28 +4925,33 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const addTask = (entityType: TripEntityType, entityId: string, title: string) => {
+    const entity = getEntityById(doc, entityType, entityId)
+    if (!entity || !title.trim()) return
+
+    const newTaskId = createId('task')
+    const newTask: TaskEntity = {
+      id: newTaskId,
+      type: 'task',
+      title,
+      dayId: entity.dayId || 'all',
+      status: 'open',
+      ownerFamilyId:
+        entityType === 'family'
+          ? entity.id
+          : entity.familyIds?.length === 1
+            ? entity.familyIds[0]
+            : null,
+      linkedEntityKeys: [makeEntityKey(entityType, entityId)],
+      note: '',
+    }
+    const stampedTask = stampFamilyMetadata(newTask, currentFamilyId)
+
+    if (sendEntityCreateCommand('task', stampedTask)) return
     if (readOnly) return
 
     setDoc((current) => {
-      const entity = getEntityById(current, entityType, entityId)
-      if (!entity || !title.trim()) return current
-      const newTaskId = `task-user-${Date.now()}`
-      const newTask: TaskEntity = {
-        id: newTaskId,
-        type: 'task',
-        title,
-        dayId: entity.dayId || 'all',
-        status: 'open',
-        ownerFamilyId:
-          entityType === 'family'
-            ? entity.id
-            : entity.familyIds?.length === 1
-              ? entity.familyIds[0]
-              : null,
-        linkedEntityKeys: [makeEntityKey(entityType, entityId)],
-        note: '',
-      }
-      const stampedTask = stampFamilyMetadata(newTask, currentFamilyId)
+      const currentEntity = getEntityById(current, entityType, entityId)
+      if (!currentEntity) return current
 
       const appendTaskId = <T extends TripEntity>(item: T): T => ({
         ...item,
@@ -4900,12 +4989,11 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const addActivity = ({ title, dayId, window, description }: ActivityDraft) => {
-    if (readOnly) return
     if (!title?.trim()) return
 
     const fallbackWindow = `${getDayMeta(dayId)?.shortLabel?.toUpperCase() || dayId?.toUpperCase() || 'DAY'} / flexible`
     const newActivity = stampFamilyMetadata<ActivityEntity>({
-      id: `activity-user-${Date.now()}`,
+      id: createId('activity'),
       type: 'activity',
       title: title.trim(),
       dayId: dayId || 'fri',
@@ -4920,6 +5008,15 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
       backup: 'If this becomes too ambitious, downgrade to the easiest nearby alternative.',
       note: '',
     }, currentFamilyId)
+
+    if (sendEntityCreateCommand('activity', newActivity)) {
+      setServiceDoc((current) => ({
+        ...current,
+        selection: { type: 'activity', id: newActivity.id },
+      }))
+      return
+    }
+    if (readOnly) return
 
     setDoc((current) => ({
       ...current,
@@ -4953,6 +5050,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const toggleMealStatus = (mealId: string) => {
+    const meal = doc.meals.find((item) => item.id === mealId)
+    if (meal && sendEntityUpdateCommand('meal', mealId, { status: meal.status === 'Assigned' ? 'Pending' : 'Assigned' })) return
     if (readOnly) return
 
     setDoc((current) => ({
@@ -4966,6 +5065,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const toggleExpenseSettled = (expenseId: string) => {
+    const expense = doc.expenses.find((item) => item.id === expenseId)
+    if (expense && sendEntityUpdateCommand('expense', expenseId, { settled: !expense.settled })) return
     if (readOnly) return
 
     setDoc((current) => ({
@@ -4979,6 +5080,15 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const updateExpenseFields = (expenseId: string, patch: Partial<ExpenseEntity>) => {
+    const expense = doc.expenses.find((item) => item.id === expenseId)
+    if (expense) {
+      const nextExpense = { ...expense, ...patch }
+      const commandPatch: Partial<ExpenseEntity> = { ...patch }
+      if ('amount' in patch && nextExpense.allocationMode === 'equal') {
+        commandPatch.allocations = {}
+      }
+      if (sendEntityUpdateCommand('expense', expenseId, commandPatch)) return
+    }
     if (readOnly) return
 
     setDoc((current) => ({
@@ -4996,6 +5106,25 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const setExpenseAllocationMode = (expenseId: string, allocationMode: ExpenseEntity['allocationMode']) => {
+    const expense = doc.expenses.find((item) => item.id === expenseId)
+    if (expense) {
+      const commandPatch: Partial<ExpenseEntity> = allocationMode === 'manual'
+        ? {
+            allocationMode,
+            split: EXPENSE_SPLIT_LABELS[allocationMode],
+            allocations:
+              expense.allocationMode === 'manual' && expense.allocations && Object.keys(expense.allocations).length
+                ? expense.allocations
+                : buildManualAllocationSeed(expense.amount, doc.families),
+          }
+        : {
+            allocationMode,
+            split: EXPENSE_SPLIT_LABELS[allocationMode],
+            allocations: {},
+          }
+
+      if (sendEntityUpdateCommand('expense', expenseId, commandPatch)) return
+    }
     if (readOnly) return
 
     setDoc((current) => ({
@@ -5026,6 +5155,20 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const updateExpenseAllocation = (expenseId: string, familyId: string, amount: number) => {
+    const expense = doc.expenses.find((item) => item.id === expenseId)
+    if (
+      expense &&
+      sendEntityUpdateCommand('expense', expenseId, {
+        allocationMode: 'manual',
+        split: EXPENSE_SPLIT_LABELS.manual,
+        allocations: {
+          ...(expense.allocations || {}),
+          [familyId]: amount,
+        },
+      })
+    ) {
+      return
+    }
     if (readOnly) return
 
     setDoc((current) => ({
@@ -5047,6 +5190,17 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const resetExpenseAllocationsToEqual = (expenseId: string) => {
+    const expense = doc.expenses.find((item) => item.id === expenseId)
+    if (
+      expense &&
+      sendEntityUpdateCommand('expense', expenseId, {
+        allocationMode: 'manual',
+        split: EXPENSE_SPLIT_LABELS.manual,
+        allocations: buildManualAllocationSeed(expense.amount, doc.families),
+      })
+    ) {
+      return
+    }
     if (readOnly) return
 
     setDoc((current) => ({
@@ -5065,24 +5219,32 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const addExpense = () => {
+    const familyLabel = getFamilyLabel(doc.families, currentFamilyId || '')
+    const newExpense = stampFamilyMetadata<ExpenseEntity>({
+      id: createId('expense'),
+      type: 'expense',
+      title: 'New shared expense',
+      payer: currentFamilyId ? familyLabel : 'Unassigned',
+      amount: 0,
+      split: EXPENSE_SPLIT_LABELS.equal,
+      allocationMode: 'equal',
+      allocations: {},
+      settled: false,
+      linkedEntityKeys: currentFamilyId ? [makeEntityKey('family', currentFamilyId)] : [],
+      note: '',
+    }, currentFamilyId)
+
+    if (sendEntityCreateCommand('expense', newExpense)) {
+      setServiceDoc((current) => ({
+        ...current,
+        selection: { type: 'expense', id: newExpense.id },
+        selectedPage: 'expenses',
+      }))
+      return
+    }
     if (readOnly) return
 
     setDoc((current) => {
-      const familyLabel = getFamilyLabel(current.families, currentFamilyId || '')
-      const newExpense = stampFamilyMetadata<ExpenseEntity>({
-        id: `expense-user-${Date.now()}`,
-        type: 'expense',
-        title: 'New shared expense',
-        payer: currentFamilyId ? familyLabel : 'Unassigned',
-        amount: 0,
-        split: EXPENSE_SPLIT_LABELS.equal,
-        allocationMode: 'equal',
-        allocations: {},
-        settled: false,
-        linkedEntityKeys: currentFamilyId ? [makeEntityKey('family', currentFamilyId)] : [],
-        note: '',
-      }, currentFamilyId)
-
       return {
         ...current,
         expenses: [...current.expenses, newExpense],
@@ -5093,6 +5255,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const updateMapUi = (patch: Partial<TripDocument['ui']['map']>) => {
+    if (sendTripCommand('uiState.update', { map: patch })) return
+
     setDoc((current) => ({
       ...current,
       ui: {
@@ -5103,16 +5267,21 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const setTimelineCursor = useCallback((cursorSlot: number) => {
+    const nextCursorSlot = clampTimelineCursor(cursorSlot)
+    if (sendTripCommand('uiState.update', { timeline: { cursorSlot: nextCursorSlot } })) return
+
     setDoc((current) => ({
       ...current,
       ui: {
         ...current.ui,
-        timeline: { ...current.ui.timeline, cursorSlot: clampTimelineCursor(cursorSlot) },
+        timeline: { ...current.ui.timeline, cursorSlot: nextCursorSlot },
       },
     }))
-  }, [setDoc])
+  }, [sendTripCommand, setDoc])
 
   const updateSearchQuery = (searchQuery: string) => {
+    if (sendTripCommand('uiState.update', { searchQuery })) return
+
     setDoc((current) => ({
       ...current,
       ui: { ...current.ui, searchQuery },

@@ -145,7 +145,93 @@ describe('useTripRoom', () => {
     expect(latestState?.document?.id).toBe('trip_2')
     expect(latestState?.version).toBe(2)
   })
+
+  it('serializes commands with the latest accepted room version', () => {
+    act(() => root?.render(<Probe tripId="trip_123" />))
+    const socket = sockets[0]
+    const document = tripDocument()
+
+    act(() => socket.dispatch('open', new Event('open')))
+    act(() =>
+      socket.dispatch(
+        'message',
+        new MessageEvent('message', { data: JSON.stringify({ type: 'snapshot', document, version: 7 }) }),
+      ),
+    )
+
+    act(() => {
+      latestState?.sendCommand({ id: 'cmd_1', baseVersion: 0, type: 'uiState.update', payload: { searchQuery: 'l' } })
+      latestState?.sendCommand({ id: 'cmd_2', baseVersion: 0, type: 'uiState.update', payload: { searchQuery: 'la' } })
+    })
+
+    expect(socket.sent).toHaveLength(1)
+    expect(JSON.parse(socket.sent[0] ?? '{}')).toMatchObject({ id: 'cmd_1', baseVersion: 7 })
+
+    act(() =>
+      socket.dispatch(
+        'message',
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            type: 'event.accepted',
+            commandId: 'cmd_1',
+            version: 8,
+            event: tripEvent('uiState.update', { searchQuery: 'l' }, 8),
+          }),
+        }),
+      ),
+    )
+
+    expect(socket.sent).toHaveLength(2)
+    expect(JSON.parse(socket.sent[1] ?? '{}')).toMatchObject({ id: 'cmd_2', baseVersion: 8 })
+  })
+
+  it('retries a stale in-flight command after applying the current room snapshot', () => {
+    act(() => root?.render(<Probe tripId="trip_123" />))
+    const socket = sockets[0]
+    const document = tripDocument()
+    const serverDocument = tripDocument()
+    serverDocument.ui.searchQuery = 'other editor'
+
+    act(() => socket.dispatch('open', new Event('open')))
+    act(() =>
+      socket.dispatch(
+        'message',
+        new MessageEvent('message', { data: JSON.stringify({ type: 'snapshot', document, version: 7 }) }),
+      ),
+    )
+
+    act(() => {
+      latestState?.sendCommand({ id: 'cmd_1', baseVersion: 0, type: 'uiState.update', payload: { searchQuery: 'mine' } })
+    })
+    expect(JSON.parse(socket.sent[0] ?? '{}')).toMatchObject({ id: 'cmd_1', baseVersion: 7 })
+
+    act(() =>
+      socket.dispatch(
+        'message',
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'event.rejected', reason: 'stale_version', document: serverDocument, version: 8 }),
+        }),
+      ),
+    )
+
+    expect(latestState?.document?.ui.searchQuery).toBe('other editor')
+    expect(socket.sent).toHaveLength(2)
+    expect(JSON.parse(socket.sent[1] ?? '{}')).toMatchObject({ id: 'cmd_1', baseVersion: 8 })
+  })
 })
+
+function tripEvent(type: 'uiState.update', payload: { searchQuery: string }, version: number) {
+  return {
+    id: `event_${version}`,
+    tripId: 'trip_123',
+    version,
+    previousVersion: version - 1,
+    actorUserId: 'user_1',
+    createdAt: '2026-07-01T00:00:00.000Z',
+    type,
+    payload,
+  }
+}
 
 function tripDocument(id = 'trip_123'): TripDocument {
   return {

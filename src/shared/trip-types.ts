@@ -242,6 +242,12 @@ export type TripUiState = {
   }
 }
 
+export type TripUiStateUpdate = {
+  searchQuery?: string
+  timeline?: Partial<TripUiState['timeline']>
+  map?: Partial<TripUiState['map']>
+}
+
 export type TripDocument = {
   id?: string
   title?: string
@@ -329,7 +335,7 @@ export type TripEvent =
     })
   | (TripEventBase & {
       type: 'uiState.update'
-      payload: Partial<TripUiState>
+      payload: TripUiStateUpdate
     })
   | (TripEventBase & {
       type: 'trip.meta.update'
