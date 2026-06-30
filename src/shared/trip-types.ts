@@ -28,6 +28,7 @@ export type BaseEntity = {
   name?: string
   dayId?: string
   note?: string
+  summary?: string
   linkedEntityKeys?: string[]
   taskIds?: string[]
   createdByFamilyId?: string | null
@@ -41,10 +42,19 @@ export type FamilyEntity = BaseEntity & {
   title: string
   origin?: string
   shortOrigin?: string
+  originAddress?: string
+  originCoordinates?: Coordinates
+  arrivalDayId?: string
   status?: string
   eta?: string
+  driveTime?: string
   headcount?: string
+  vehicle?: string
+  vehicleLabel?: string
+  responsibility?: string
   readiness?: number
+  routeSummary?: string
+  plannedStopIds?: string[]
 }
 
 export type LocationEntity = BaseEntity & {
@@ -68,7 +78,10 @@ export type LocationEntity = BaseEntity & {
 export type RouteEntity = BaseEntity & {
   type: 'route'
   title: string
+  dayId?: string
   familyId?: string
+  tone?: string
+  dashed?: boolean
   originCoordinates?: Coordinates
   destinationLocationId?: string
   stopLocationIds?: string[]
@@ -77,6 +90,10 @@ export type RouteEntity = BaseEntity & {
   simulationStartSlot?: number
   simulationEndSlot?: number
   durationSeconds?: number
+  durationText?: string
+  distanceMeters?: number
+  distanceText?: string
+  simulationMilestones?: { t: number; progress: number }[]
 }
 
 export type ItineraryItemEntity = BaseEntity & {
@@ -85,10 +102,12 @@ export type ItineraryItemEntity = BaseEntity & {
   rowId?: string
   startSlot: number
   span?: number
+  color?: string
   routeId?: string
   locationId?: string | null
   familyIds?: string[]
   status?: string
+  riskLevel?: string
 }
 
 export type MealEntity = BaseEntity & {
@@ -119,6 +138,7 @@ export type StayItemEntity = BaseEntity & {
   title: string
   category?: string
   summary?: string
+  locationId?: string | null
 }
 
 export type ExpenseEntity = BaseEntity & {

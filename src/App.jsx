@@ -53,6 +53,7 @@ import {
   getLinkedEntities,
   getLocationForEntity,
   getPageNote,
+  parsePersistedTripDocument,
   getRouteForEntity,
   getItineraryItemEffectiveSpan,
   getRouteSimulationWindow,
@@ -3868,7 +3869,9 @@ function withRefreshedFamilies(nextDoc) {
 }
 
 function App() {
-  const [doc, setDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument())
+  const [doc, setDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument(), {
+    deserialize: parsePersistedTripDocument,
+  })
   const [viewerProfile, setViewerProfile] = usePersistedTripState(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()

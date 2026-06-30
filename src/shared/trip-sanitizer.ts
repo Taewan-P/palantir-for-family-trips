@@ -1,4 +1,9 @@
-import type { LocationEntity, TripDocument } from './trip-types'
+import type { FamilyEntity, LocationEntity, RouteEntity, TripDocument } from './trip-types'
+
+function sanitizeFamily(family: FamilyEntity): FamilyEntity {
+  const { originAddress, originCoordinates, ...safeFamily } = family
+  return { ...safeFamily, note: '' }
+}
 
 function sanitizeLocation(location: LocationEntity): LocationEntity {
   if (location.category !== 'stay') {
@@ -31,6 +36,11 @@ function sanitizeLocation(location: LocationEntity): LocationEntity {
   }
 }
 
+function sanitizeRoute(route: RouteEntity): RouteEntity {
+  const { originCoordinates, path, ...safeRoute } = route
+  return { ...safeRoute, note: '' }
+}
+
 export function sanitizeTripForShare(document: TripDocument): TripDocument {
   return {
     ...document,
@@ -40,9 +50,9 @@ export function sanitizeTripForShare(document: TripDocument): TripDocument {
       ...document.ui,
       searchQuery: '',
     },
-    families: document.families.map((family) => ({ ...family, note: '' })),
+    families: document.families.map(sanitizeFamily),
     locations: document.locations.map(sanitizeLocation),
-    routes: document.routes.map((route) => ({ ...route, note: '' })),
+    routes: document.routes.map(sanitizeRoute),
     itineraryItems: document.itineraryItems.map((item) => ({ ...item, note: '' })),
     meals: document.meals.map((meal) => ({ ...meal, note: '' })),
     activities: document.activities.map((activity) => ({ ...activity, note: '' })),
