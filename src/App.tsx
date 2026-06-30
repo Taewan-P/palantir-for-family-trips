@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ComponentType, ReactNode } from 'react'
+import type { ComponentType, Dispatch, ReactNode, SetStateAction } from 'react'
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
 import {
   ArrowRight,
@@ -187,6 +187,11 @@ type YosemiteRouteDefaults = {
 type SearchResult = TripEntity & { searchText: string }
 type WeatherState = { status: 'idle' | 'loading' | 'ready' | 'error'; targets: WeatherBundleMap; updatedAt: string | null; error: string | null }
 type GoogleMapsLike = typeof google
+type AppProps = {
+  serviceTripId?: string
+  initialServiceDocument?: TripDocument
+  readOnly?: boolean
+}
 type IntelActionProps = { icon: IconComponent; label: string; onClick: () => void; tone?: string }
 type InfoRowProps = { icon?: IconComponent; label: string; value?: ReactNode; muted?: boolean }
 type ActivityResearchCardProps = { eyebrow: string; title: string; bullets: string[] }
@@ -4087,13 +4092,17 @@ function withRefreshedFamilies(nextDoc: TripDocument): TripDocument {
   }
 }
 
-function App() {
-  const [doc, setDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument(), {
+function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppProps) {
+  const [persistedDoc, setPersistedDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument(), {
     deserialize: parsePersistedTripDocument,
   })
+  const [serviceDoc, setServiceDoc] = useState<TripDocument>(() => initialServiceDocument || getInitialTripDocument())
   const [viewerProfile, setViewerProfile] = usePersistedTripState<ViewerProfile>(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
+  const usesServiceShell = Boolean(serviceTripId || initialServiceDocument)
+  const doc = usesServiceShell ? serviceDoc : persistedDoc
+  const setDoc: Dispatch<SetStateAction<TripDocument>> = usesServiceShell ? setServiceDoc : setPersistedDoc
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
   const locationIntelHydrationRef = useRef(new Set<string>())
   const startupTimelineSyncRef = useRef(false)
@@ -4111,6 +4120,12 @@ function App() {
   const selectedEntity = getEntityBySelection(displayDoc, selection)
   const selectedLocation = getLocationForEntity(displayDoc, selectedEntity)
   const selectedRoute = getRouteForEntity(displayDoc, selectedEntity)
+
+  useEffect(() => {
+    if (initialServiceDocument) {
+      setServiceDoc(initialServiceDocument)
+    }
+  }, [initialServiceDocument])
 
   useEffect(() => {
     clearOldTripStorage()
@@ -4143,6 +4158,8 @@ function App() {
   }, [setDoc])
 
   useEffect(() => {
+    if (readOnly) return
+
     const jiangRoute = doc.routes.find((route) => route.id === 'route-la-north-star')
     const jiangFamily = doc.families.find((family) => family.id === 'north-star')
     const yosemiteLocation = doc.locations.find((location) => location.id === 'yosemite')
@@ -4267,9 +4284,10 @@ function App() {
         routes: nextRoutes,
       }
     })
-  }, [doc.families, doc.locations, doc.routes, setDoc])
+  }, [doc.families, doc.locations, doc.routes, readOnly, setDoc])
 
   useEffect(() => {
+    if (readOnly) return
     if (seededPlanRefreshRef.current) return
 
     const initialDoc = getInitialTripDocument()
@@ -4366,7 +4384,7 @@ function App() {
         itineraryItems: nextItineraryItems,
       }
     })
-  }, [doc.activities, doc.families, doc.itineraryItems, doc.locations, doc.meals, doc.routes, doc.tasks, setDoc])
+  }, [doc.activities, doc.families, doc.itineraryItems, doc.locations, doc.meals, doc.routes, doc.tasks, readOnly, setDoc])
   const searchResults = useMemo(
     () => getSearchResults(displayDoc, displayDoc.ui.searchQuery),
     [displayDoc],
@@ -4419,6 +4437,7 @@ function App() {
   }, [setDoc])
 
   const hydrateLocationDetails = useCallback((locationId: string, patch: Partial<LocationEntity>) => {
+    if (readOnly) return
     if (!locationId || !patch) return
 
     setDoc((current) => {
@@ -4446,9 +4465,10 @@ function App() {
         routes: synchronizeRoutePaths(current.routes, locations),
       }
     })
-  }, [setDoc])
+  }, [readOnly, setDoc])
 
   const hydrateRouteDetails = useCallback((routeId: string, patch: Partial<RouteEntity>) => {
+    if (readOnly) return
     if (!routeId || !patch) return
 
     setDoc((current) => {
@@ -4475,9 +4495,10 @@ function App() {
         routes,
       }
     })
-  }, [setDoc])
+  }, [readOnly, setDoc])
 
   const updateLocationFields = useCallback((locationId: string, patch: Partial<LocationEntity>) => {
+    if (readOnly) return
     setDoc((current) => {
       const locations = current.locations.map((location) =>
         location.id === locationId ? stampFamilyMetadata({ ...location, ...patch }, currentFamilyId) : location,
@@ -4489,9 +4510,10 @@ function App() {
         routes: synchronizeRoutePaths(current.routes, locations),
       }
     })
-  }, [currentFamilyId, setDoc])
+  }, [currentFamilyId, readOnly, setDoc])
 
   useEffect(() => {
+    if (readOnly) return
     if (!liveExternalData) return
     if (!GOOGLE_MAPS_API_KEY) return
 
@@ -4693,7 +4715,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [doc.locations, hydrateLocationDetails, liveExternalData])
+  }, [doc.locations, hydrateLocationDetails, liveExternalData, readOnly])
 
   useEffect(() => {
     if (!liveExternalData) {
@@ -4751,6 +4773,8 @@ function App() {
   }, [doc.locations, liveExternalData])
 
   const updatePageNote = (pageId: string, value: string) => {
+    if (readOnly) return
+
     setDoc((current) => ({
       ...current,
       pageNotes: { ...current.pageNotes, [pageId]: value },
@@ -4767,6 +4791,8 @@ function App() {
   }
 
   const updateEntityNote = (type: TripEntityType, id: string, value: string) => {
+    if (readOnly) return
+
     setDoc((current) => {
       const withNote = <T extends TripEntity>(item: T): T => ({
         ...stampFamilyMetadata(item, currentFamilyId),
@@ -4799,6 +4825,8 @@ function App() {
   }
 
   const toggleTask = (taskId: string) => {
+    if (readOnly) return
+
     setDoc((current) => {
       const nextDoc = {
         ...current,
@@ -4813,6 +4841,8 @@ function App() {
   }
 
   const addTask = (entityType: TripEntityType, entityId: string, title: string) => {
+    if (readOnly) return
+
     setDoc((current) => {
       const entity = getEntityById(current, entityType, entityId)
       if (!entity || !title.trim()) return current
@@ -4870,6 +4900,7 @@ function App() {
   }
 
   const addActivity = ({ title, dayId, window, description }: ActivityDraft) => {
+    if (readOnly) return
     if (!title?.trim()) return
 
     const fallbackWindow = `${getDayMeta(dayId)?.shortLabel?.toUpperCase() || dayId?.toUpperCase() || 'DAY'} / flexible`
@@ -4922,6 +4953,8 @@ function App() {
   }
 
   const toggleMealStatus = (mealId: string) => {
+    if (readOnly) return
+
     setDoc((current) => ({
       ...current,
       meals: current.meals.map((meal) =>
@@ -4933,6 +4966,8 @@ function App() {
   }
 
   const toggleExpenseSettled = (expenseId: string) => {
+    if (readOnly) return
+
     setDoc((current) => ({
       ...current,
       expenses: current.expenses.map((expense) =>
@@ -4944,6 +4979,8 @@ function App() {
   }
 
   const updateExpenseFields = (expenseId: string, patch: Partial<ExpenseEntity>) => {
+    if (readOnly) return
+
     setDoc((current) => ({
       ...current,
       expenses: current.expenses.map((expense) => {
@@ -4959,6 +4996,8 @@ function App() {
   }
 
   const setExpenseAllocationMode = (expenseId: string, allocationMode: ExpenseEntity['allocationMode']) => {
+    if (readOnly) return
+
     setDoc((current) => ({
       ...current,
       expenses: current.expenses.map((expense) => {
@@ -4987,6 +5026,8 @@ function App() {
   }
 
   const updateExpenseAllocation = (expenseId: string, familyId: string, amount: number) => {
+    if (readOnly) return
+
     setDoc((current) => ({
       ...current,
       expenses: current.expenses.map((expense) =>
@@ -5006,6 +5047,8 @@ function App() {
   }
 
   const resetExpenseAllocationsToEqual = (expenseId: string) => {
+    if (readOnly) return
+
     setDoc((current) => ({
       ...current,
       expenses: current.expenses.map((expense) =>
@@ -5022,6 +5065,8 @@ function App() {
   }
 
   const addExpense = () => {
+    if (readOnly) return
+
     setDoc((current) => {
       const familyLabel = getFamilyLabel(current.families, currentFamilyId || '')
       const newExpense = stampFamilyMetadata<ExpenseEntity>({
