@@ -45,4 +45,29 @@ describe('worker api', () => {
     expect(response.status).toBe(400)
     expect(response.headers.get('set-cookie')).toContain('trip_oauth_state=;')
   })
+
+  it('forwards trip live requests to the trip Durable Object', async () => {
+    const calls: string[] = []
+    const response = new Response('forwarded', { status: 426 })
+    const env = {
+      TRIP_ROOM: {
+        idFromName(name: string) {
+          calls.push(`id:${name}`)
+          return 'room-id'
+        },
+        get(id: string) {
+          calls.push(`get:${id}`)
+          return {
+            fetch(request: Request) {
+              calls.push(new URL(request.url).pathname)
+              return response
+            },
+          }
+        },
+      },
+    }
+
+    await expect(worker.fetch(new Request('http://localhost/api/trips/trip_1/live'), env as never, {} as never)).resolves.toBe(response)
+    expect(calls).toEqual(['id:trip_1', 'get:room-id', '/api/trips/trip_1/live'])
+  })
 })

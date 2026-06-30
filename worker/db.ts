@@ -272,6 +272,11 @@ export function hydrateTripSnapshot(document: TripDocument, eventRows: readonly 
 }
 
 export async function loadHydratedTripSnapshot(db: D1Database, tripId: string): Promise<TripDocument | null> {
+  const hydrated = await loadHydratedTripSnapshotWithVersion(db, tripId)
+  return hydrated?.document ?? null
+}
+
+export async function loadHydratedTripSnapshotWithVersion(db: D1Database, tripId: string): Promise<{ document: TripDocument; version: number } | null> {
   const snapshot = await db.prepare(`
     SELECT version, document_json FROM trip_snapshots WHERE trip_id = ? ORDER BY version DESC LIMIT 1
   `).bind(tripId).first<{ version: number; document_json: string }>()
@@ -284,7 +289,11 @@ export async function loadHydratedTripSnapshot(db: D1Database, tripId: string): 
     ORDER BY version ASC
   `).bind(tripId, snapshot.version).all<TripEventRow>()
 
-  return hydrateTripSnapshot(JSON.parse(snapshot.document_json) as TripDocument, eventRows.results)
+  const events = eventRows.results.map(decodeTripEventRow)
+  return {
+    document: replayTripEvents(JSON.parse(snapshot.document_json) as TripDocument, events),
+    version: events.at(-1)?.version ?? snapshot.version,
+  }
 }
 
 export async function insertSnapshot(db: D1Database, input: {
@@ -322,6 +331,18 @@ export async function insertTripEvent(db: D1Database, event: AuthoredTripEvent) 
     encodeTripEventPayload(event.payload),
     event.createdAt,
   ).run()
+}
+
+export async function updateTripCurrentVersion(db: D1Database, tripId: string, version: number, updatedAt: string): Promise<void> {
+  await db.prepare(`
+    UPDATE trips SET current_version = ?, updated_at = ? WHERE id = ?
+  `).bind(version, updatedAt, tripId).run()
+}
+
+export async function updateTripLatestSnapshot(db: D1Database, tripId: string, snapshotId: string): Promise<void> {
+  await db.prepare(`
+    UPDATE trips SET latest_snapshot_id = ? WHERE id = ?
+  `).bind(snapshotId, tripId).run()
 }
 
 function parsePayload(row: TripEventRow): JsonObject {

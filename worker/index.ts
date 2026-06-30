@@ -123,6 +123,11 @@ const worker = {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     try {
       const path = routePath(request)
+      const liveTripId = routeMatch(path, /^\/api\/trips\/([^/]+)\/live$/)
+      if (liveTripId) {
+        const id = env.TRIP_ROOM.idFromName(liveTripId)
+        return env.TRIP_ROOM.get(id).fetch(request)
+      }
 
       if (request.method === 'GET' && path === '/api/auth/google/start') {
         const state = crypto.randomUUID()
