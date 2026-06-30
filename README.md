@@ -67,6 +67,16 @@ VITE_GOOGLE_MAP_ID=your_optional_google_map_id
 
 Without a key, the app still renders its UI but the live Google map layer will not fully initialize.
 
+## Cloudflare Service
+
+See [docs/deploy-cloudflare.md](docs/deploy-cloudflare.md) for local Worker, D1, Pages, and deployment steps.
+
+- Google login
+- D1-backed trips
+- Durable Object real-time editing
+- Copyable invite links
+- Sanitized public share links
+
 ## Data / Privacy
 
 The trip data in this repo is intentionally sanitized for public sharing.
