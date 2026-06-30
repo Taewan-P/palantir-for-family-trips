@@ -41,14 +41,23 @@ export function useTripRoom(tripId: string): TripRoomState {
 
   useEffect(() => {
     const socket = new WebSocket(tripRoomUrl(tripId))
+    const isCurrentSocket = () => socketRef.current === socket
 
     socketRef.current = socket
     setStatus('connecting')
 
-    socket.addEventListener('open', () => setStatus('open'))
-    socket.addEventListener('close', () => setStatus('closed'))
-    socket.addEventListener('error', () => setStatus('error'))
+    socket.addEventListener('open', () => {
+      if (isCurrentSocket()) setStatus('open')
+    })
+    socket.addEventListener('close', () => {
+      if (isCurrentSocket()) setStatus('closed')
+    })
+    socket.addEventListener('error', () => {
+      if (isCurrentSocket()) setStatus('error')
+    })
     socket.addEventListener('message', (event: MessageEvent) => {
+      if (!isCurrentSocket()) return
+
       const message = parseTripRoomMessage(event.data)
 
       if (!message) {

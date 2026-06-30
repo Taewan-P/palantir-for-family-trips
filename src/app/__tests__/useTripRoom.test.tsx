@@ -106,11 +106,50 @@ describe('useTripRoom', () => {
     }).not.toThrow()
     expect(latestState?.status).toBe('error')
   })
+
+  it('ignores stale events from a previous trip socket', () => {
+    act(() => root?.render(<Probe tripId="trip_1" />))
+    const previousSocket = sockets[0]
+    const previousDocument = tripDocument('trip_1')
+
+    act(() => previousSocket.dispatch('open', new Event('open')))
+    act(() =>
+      previousSocket.dispatch(
+        'message',
+        new MessageEvent('message', { data: JSON.stringify({ type: 'snapshot', document: previousDocument, version: 1 }) }),
+      ),
+    )
+    expect(latestState?.document?.id).toBe('trip_1')
+
+    act(() => root?.render(<Probe tripId="trip_2" />))
+    const currentSocket = sockets[1]
+    const currentDocument = tripDocument('trip_2')
+
+    act(() => currentSocket.dispatch('open', new Event('open')))
+    act(() =>
+      currentSocket.dispatch(
+        'message',
+        new MessageEvent('message', { data: JSON.stringify({ type: 'snapshot', document: currentDocument, version: 2 }) }),
+      ),
+    )
+
+    act(() => previousSocket.dispatch('close', new Event('close')))
+    act(() =>
+      previousSocket.dispatch(
+        'message',
+        new MessageEvent('message', { data: JSON.stringify({ type: 'snapshot', document: previousDocument, version: 99 }) }),
+      ),
+    )
+
+    expect(latestState?.status).toBe('open')
+    expect(latestState?.document?.id).toBe('trip_2')
+    expect(latestState?.version).toBe(2)
+  })
 })
 
-function tripDocument(): TripDocument {
+function tripDocument(id = 'trip_123'): TripDocument {
   return {
-    id: 'trip_123',
+    id,
     title: 'Trip',
     selectedPage: 'overview',
     selection: { type: 'family', id: 'family_1' },

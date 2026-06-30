@@ -14,14 +14,24 @@ export function matchRoute(pathname: string): RouteMatch {
   }
 
   if (segments.length === 2 && segments[0] === 'share') {
-    return { name: 'share', token: decodeURIComponent(segments[1]) }
+    const token = decodeRouteSegment(segments[1])
+    return token === null ? { name: 'trips' } : { name: 'share', token }
   }
 
   if (segments.length === 2 && segments[0] === 'trips') {
-    return { name: 'trip', tripId: decodeURIComponent(segments[1]) }
+    const tripId = decodeRouteSegment(segments[1])
+    return tripId === null ? { name: 'trips' } : { name: 'trip', tripId }
   }
 
   return { name: 'trips' }
+}
+
+function decodeRouteSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return null
+  }
 }
 
 export function navigate(path: string): void {
