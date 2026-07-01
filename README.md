@@ -46,10 +46,13 @@ The repo is intentionally overbuilt for a small real-life use case. That is the 
 ```bash
 npm install
 cp .env.example .env
+npx wrangler d1 migrations apply family-trip-command-center --local
 npm run dev
 ```
 
 Open `http://127.0.0.1:5173` or whatever Vite prints.
+
+For login and API routes, also create `.dev.vars` with `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `SESSION_SECRET`, then run `npm run dev:worker` in another terminal. The local Google redirect URI is `http://127.0.0.1:8787/api/auth/google/callback`.
 
 ## Environment
 

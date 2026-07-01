@@ -40,6 +40,14 @@ export type TripRole = 'owner' | 'editor'
 
 const OAUTH_STATE_COOKIE_NAME = 'trip_oauth_state'
 const OAUTH_STATE_TTL_MINUTES = 10
+const GOOGLE_AUTH_CONFIG_KEYS = [
+  'APP_ORIGIN',
+  'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET',
+  'GOOGLE_REDIRECT_URI',
+  'SESSION_COOKIE_NAME',
+  'SESSION_SECRET',
+] as const
 
 export function canWriteTrip(role: TripRole | null): boolean {
   return role === 'owner' || role === 'editor'
@@ -75,6 +83,12 @@ function appUrl(env: Env, path: string): string {
 
 function cookieOptions(request: Request): { secure: boolean } {
   return { secure: new URL(request.url).protocol === 'https:' }
+}
+
+function googleAuthConfigError(env: Env): Response | null {
+  const missing = GOOGLE_AUTH_CONFIG_KEYS.filter((key) => !env[key]?.trim())
+  if (missing.length === 0) return null
+  return jsonError(500, 'internal_error', `Missing Worker auth configuration: ${missing.join(', ')}`)
 }
 
 function slugify(title: string, tripId: string): string {
@@ -134,6 +148,9 @@ const worker = {
       }
 
       if (request.method === 'GET' && path === '/api/auth/google/start') {
+        const configError = googleAuthConfigError(env)
+        if (configError) return configError
+
         const state = crypto.randomUUID()
         const stateHash = await hashToken(state, env.SESSION_SECRET)
         return redirect(buildGoogleAuthUrl({
@@ -146,6 +163,9 @@ const worker = {
       }
 
     if (request.method === 'GET' && path === '/api/auth/google/callback') {
+      const configError = googleAuthConfigError(env)
+      if (configError) return configError
+
       const clearStateHeader = { 'set-cookie': clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, cookieOptions(request)) }
       const state = new URL(request.url).searchParams.get('state')
       const stateCookie = parseCookie(request.headers.get('cookie'), OAUTH_STATE_COOKIE_NAME)

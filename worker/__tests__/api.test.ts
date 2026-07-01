@@ -1,6 +1,15 @@
 import worker from '../index'
 import { hashToken } from '../auth'
 
+const authEnv = {
+  GOOGLE_CLIENT_ID: 'client-id',
+  GOOGLE_CLIENT_SECRET: 'client-secret',
+  GOOGLE_REDIRECT_URI: 'http://localhost/api/auth/google/callback',
+  APP_ORIGIN: 'http://localhost:5173',
+  SESSION_COOKIE_NAME: 'trip_session',
+  SESSION_SECRET: 'session-secret',
+}
+
 describe('worker api', () => {
   it('returns 404 for unknown routes', async () => {
     const response = await worker.fetch(new Request('http://localhost/api/nope'), {} as never, {} as never)
@@ -8,14 +17,7 @@ describe('worker api', () => {
   })
 
   it('redirects Google auth start', async () => {
-    const env = {
-      GOOGLE_CLIENT_ID: 'client-id',
-      GOOGLE_REDIRECT_URI: 'http://localhost/api/auth/google/callback',
-      APP_ORIGIN: 'http://localhost:5173',
-      SESSION_COOKIE_NAME: 'trip_session',
-      SESSION_SECRET: 'session-secret',
-    }
-    const response = await worker.fetch(new Request('http://localhost/api/auth/google/start'), env as never, {} as never)
+    const response = await worker.fetch(new Request('http://localhost/api/auth/google/start'), authEnv as never, {} as never)
     expect(response.status).toBe(302)
     const location = new URL(response.headers.get('location') ?? '')
     expect(location.origin).toBe('https://accounts.google.com')
@@ -24,10 +26,29 @@ describe('worker api', () => {
     expect(response.headers.get('set-cookie')).not.toContain('Secure')
   })
 
+  it('reports missing Google auth configuration', async () => {
+    const response = await worker.fetch(
+      new Request('http://localhost/api/auth/google/start'),
+      {
+        GOOGLE_REDIRECT_URI: 'http://localhost/api/auth/google/callback',
+        APP_ORIGIN: 'http://localhost:5173',
+        SESSION_COOKIE_NAME: 'trip_session',
+      } as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(500)
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        message: 'Missing Worker auth configuration: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET',
+      },
+    })
+  })
+
   it('rejects Google auth callback without state', async () => {
     const response = await worker.fetch(
       new Request('http://localhost/api/auth/google/callback?code=code'),
-      {} as never,
+      authEnv as never,
       {} as never,
     )
     expect(response.status).toBe(400)
@@ -40,7 +61,7 @@ describe('worker api', () => {
       new Request('http://localhost/api/auth/google/callback?code=code&state=returned-state', {
         headers: { cookie },
       }),
-      { SESSION_SECRET: 'session-secret' } as never,
+      authEnv as never,
       {} as never,
     )
     expect(response.status).toBe(400)
