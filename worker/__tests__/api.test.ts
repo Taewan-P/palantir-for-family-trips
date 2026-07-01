@@ -5,7 +5,6 @@ import { createTripFromTemplate } from '../../src/shared/trip-template'
 const authEnv = {
   GOOGLE_CLIENT_ID: 'client-id',
   GOOGLE_CLIENT_SECRET: 'client-secret',
-  GOOGLE_REDIRECT_URI: 'http://localhost/api/auth/google/callback',
   APP_ORIGIN: 'http://localhost:5173',
   SESSION_COOKIE_NAME: 'trip_session',
   SESSION_SECRET: 'session-secret',
@@ -87,6 +86,7 @@ describe('worker api', () => {
     expect(response.status).toBe(302)
     const location = new URL(response.headers.get('location') ?? '')
     expect(location.origin).toBe('https://accounts.google.com')
+    expect(location.searchParams.get('redirect_uri')).toBe('http://localhost/api/auth/google/callback')
     expect(location.searchParams.get('state')).toBeTruthy()
     expect(response.headers.get('set-cookie')).toContain('trip_oauth_state=')
     expect(response.headers.get('set-cookie')).not.toContain('Secure')
@@ -96,7 +96,6 @@ describe('worker api', () => {
     const response = await worker.fetch(
       new Request('http://localhost/api/auth/google/start'),
       {
-        GOOGLE_REDIRECT_URI: 'http://localhost/api/auth/google/callback',
         APP_ORIGIN: 'http://localhost:5173',
         SESSION_COOKIE_NAME: 'trip_session',
       } as never,

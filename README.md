@@ -50,9 +50,9 @@ npx wrangler d1 migrations apply family-trip-command-center --local
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173` or whatever Vite prints.
+Open whatever Vite prints, usually `http://localhost:5173`.
 
-For login and API routes, also create `.dev.vars` with `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `SESSION_SECRET`, then run `npm run dev:worker` in another terminal. The local Google redirect URI is `http://127.0.0.1:8787/api/auth/google/callback`.
+For login and API routes, also create `.dev.vars` with `APP_ORIGIN=http://localhost:5173`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `SESSION_SECRET`, then run `npm run dev:worker` in another terminal. Add `http://localhost:8787/api/auth/google/callback` to your Google OAuth client redirect URIs.
 
 ## Environment
 

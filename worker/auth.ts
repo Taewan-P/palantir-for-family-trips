@@ -60,12 +60,12 @@ export function clearOauthStateCookie(name: string, options?: CookieOptions): st
   return `${name}=; Path=/api/auth/google/callback; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
 }
 
-export async function exchangeGoogleCode(env: Env, code: string): Promise<string> {
+export async function exchangeGoogleCode(env: Env, code: string, redirectUri: string): Promise<string> {
   const body = new URLSearchParams({
     code,
     client_id: env.GOOGLE_CLIENT_ID,
     client_secret: env.GOOGLE_CLIENT_SECRET,
-    redirect_uri: env.GOOGLE_REDIRECT_URI,
+    redirect_uri: redirectUri,
     grant_type: 'authorization_code',
   })
 

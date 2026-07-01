@@ -17,6 +17,4 @@ tag = "v1"
 new_sqlite_classes = ["TripRoom"]
 
 [vars]
-APP_ORIGIN = "http://127.0.0.1:5173"
-GOOGLE_REDIRECT_URI = "http://127.0.0.1:8787/api/auth/google/callback"
 SESSION_COOKIE_NAME = "trip_session"

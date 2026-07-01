@@ -23,6 +23,7 @@ npm run dev:worker
 For local auth/share-link smoke tests, create an ignored `.dev.vars` file:
 
 ```bash
+APP_ORIGIN=http://localhost:5173
 GOOGLE_CLIENT_ID=local-dev-client
 GOOGLE_CLIENT_SECRET=local-dev-secret
 SESSION_SECRET=local-dev-secret
@@ -34,13 +35,16 @@ Apply D1 migrations locally:
 npx wrangler d1 migrations apply family-trip-command-center --local
 ```
 
-## Required Secrets
+## Required Worker Variables
 
 ```bash
+wrangler secret put APP_ORIGIN
 wrangler secret put GOOGLE_CLIENT_ID
 wrangler secret put GOOGLE_CLIENT_SECRET
 wrangler secret put SESSION_SECRET
 ```
+
+Set `APP_ORIGIN` to your deployed Pages origin, for example `https://family-trips.example.com`.
 
 ## Checks
 

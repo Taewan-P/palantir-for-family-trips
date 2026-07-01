@@ -44,7 +44,6 @@ const GOOGLE_AUTH_CONFIG_KEYS = [
   'APP_ORIGIN',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
-  'GOOGLE_REDIRECT_URI',
   'SESSION_COOKIE_NAME',
   'SESSION_SECRET',
 ] as const
@@ -89,6 +88,10 @@ function googleAuthConfigError(env: Env): Response | null {
   const missing = GOOGLE_AUTH_CONFIG_KEYS.filter((key) => !env[key]?.trim())
   if (missing.length === 0) return null
   return jsonError(500, 'internal_error', `Missing Worker auth configuration: ${missing.join(', ')}`)
+}
+
+function googleRedirectUri(request: Request): string {
+  return new URL('/api/auth/google/callback', request.url).toString()
 }
 
 function slugify(title: string, tripId: string): string {
@@ -155,7 +158,7 @@ const worker = {
         const stateHash = await hashToken(state, env.SESSION_SECRET)
         return redirect(buildGoogleAuthUrl({
           clientId: env.GOOGLE_CLIENT_ID,
-          redirectUri: env.GOOGLE_REDIRECT_URI,
+          redirectUri: googleRedirectUri(request),
           state,
         }), {
           'set-cookie': oauthStateCookie(OAUTH_STATE_COOKIE_NAME, stateHash, minutesFromNow(OAUTH_STATE_TTL_MINUTES), cookieOptions(request)),
@@ -184,7 +187,7 @@ const worker = {
 
       const signedInAt = nowIso()
       const expiresAt = daysFromNow(30)
-      const idToken = await exchangeGoogleCode(env, code)
+      const idToken = await exchangeGoogleCode(env, code, googleRedirectUri(request))
       const googleProfile = await verifyGoogleIdToken(env, idToken)
       const user = await upsertGoogleUser(env.DB, {
         id: createId('user'),

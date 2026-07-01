@@ -1,7 +1,7 @@
 import { LogIn } from 'lucide-react'
 
-export function authStartHref(apiBase: string | undefined, isDev: boolean): string {
-  const base = apiBase || (isDev ? 'http://127.0.0.1:8787' : '')
+export function authStartHref(apiBase: string | undefined, isDev: boolean, hostname = globalThis.location?.hostname): string {
+  const base = apiBase || (isDev ? `http://${hostname}:8787` : '')
   return `${base}/api/auth/google/start`
 }
 
