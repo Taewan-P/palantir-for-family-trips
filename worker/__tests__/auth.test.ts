@@ -34,4 +34,10 @@ describe('auth helpers', () => {
     expect(cookie).toContain('Secure')
     expect(cookie).toContain('SameSite=Lax')
   })
+
+  it('can omit Secure for local HTTP cookies', () => {
+    const expiresAt = new Date('2026-07-02T00:00:00.000Z')
+    expect(sessionCookie('trip_session', 'raw-token', expiresAt, { secure: false })).not.toContain('Secure')
+    expect(oauthStateCookie('trip_oauth_state', 'hashed-state', expiresAt, { secure: false })).not.toContain('Secure')
+  })
 })

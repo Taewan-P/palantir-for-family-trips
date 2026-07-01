@@ -36,20 +36,28 @@ export async function hashToken(token: string, secret: string): Promise<string> 
   return Array.from(new Uint8Array(signature)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-export function sessionCookie(name: string, token: string, expiresAt: Date): string {
-  return `${name}=${encodeURIComponent(token)}; Path=/; Expires=${expiresAt.toUTCString()}; HttpOnly; Secure; SameSite=Lax`
+type CookieOptions = {
+  secure?: boolean
 }
 
-export function clearSessionCookie(name: string): string {
-  return `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax`
+function secureCookieAttribute(options?: CookieOptions): string {
+  return options?.secure === false ? '' : '; Secure'
 }
 
-export function oauthStateCookie(name: string, stateHash: string, expiresAt: Date): string {
-  return `${name}=${encodeURIComponent(stateHash)}; Path=/api/auth/google/callback; Expires=${expiresAt.toUTCString()}; HttpOnly; Secure; SameSite=Lax`
+export function sessionCookie(name: string, token: string, expiresAt: Date, options?: CookieOptions): string {
+  return `${name}=${encodeURIComponent(token)}; Path=/; Expires=${expiresAt.toUTCString()}; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
 }
 
-export function clearOauthStateCookie(name: string): string {
-  return `${name}=; Path=/api/auth/google/callback; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax`
+export function clearSessionCookie(name: string, options?: CookieOptions): string {
+  return `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
+}
+
+export function oauthStateCookie(name: string, stateHash: string, expiresAt: Date, options?: CookieOptions): string {
+  return `${name}=${encodeURIComponent(stateHash)}; Path=/api/auth/google/callback; Expires=${expiresAt.toUTCString()}; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
+}
+
+export function clearOauthStateCookie(name: string, options?: CookieOptions): string {
+  return `${name}=; Path=/api/auth/google/callback; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
 }
 
 export async function exchangeGoogleCode(env: Env, code: string): Promise<string> {

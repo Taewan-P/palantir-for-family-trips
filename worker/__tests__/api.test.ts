@@ -21,6 +21,7 @@ describe('worker api', () => {
     expect(location.origin).toBe('https://accounts.google.com')
     expect(location.searchParams.get('state')).toBeTruthy()
     expect(response.headers.get('set-cookie')).toContain('trip_oauth_state=')
+    expect(response.headers.get('set-cookie')).not.toContain('Secure')
   })
 
   it('rejects Google auth callback without state', async () => {

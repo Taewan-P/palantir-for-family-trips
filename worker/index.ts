@@ -73,6 +73,10 @@ function appUrl(env: Env, path: string): string {
   return `${env.APP_ORIGIN.replace(/\/$/, '')}${path}`
 }
 
+function cookieOptions(request: Request): { secure: boolean } {
+  return { secure: new URL(request.url).protocol === 'https:' }
+}
+
 function slugify(title: string, tripId: string): string {
   const slug = title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
   return `${slug || 'trip'}-${tripId.slice(-8)}`
@@ -137,12 +141,12 @@ const worker = {
           redirectUri: env.GOOGLE_REDIRECT_URI,
           state,
         }), {
-          'set-cookie': oauthStateCookie(OAUTH_STATE_COOKIE_NAME, stateHash, minutesFromNow(OAUTH_STATE_TTL_MINUTES)),
+          'set-cookie': oauthStateCookie(OAUTH_STATE_COOKIE_NAME, stateHash, minutesFromNow(OAUTH_STATE_TTL_MINUTES), cookieOptions(request)),
         })
       }
 
     if (request.method === 'GET' && path === '/api/auth/google/callback') {
-      const clearStateHeader = { 'set-cookie': clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME) }
+      const clearStateHeader = { 'set-cookie': clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, cookieOptions(request)) }
       const state = new URL(request.url).searchParams.get('state')
       const stateCookie = parseCookie(request.headers.get('cookie'), OAUTH_STATE_COOKIE_NAME)
       if (!state || !stateCookie) {
@@ -180,14 +184,14 @@ const worker = {
       })
 
       const headers = new Headers()
-      headers.append('set-cookie', sessionCookie(env.SESSION_COOKIE_NAME, token, expiresAt))
-      headers.append('set-cookie', clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME))
+      headers.append('set-cookie', sessionCookie(env.SESSION_COOKIE_NAME, token, expiresAt, cookieOptions(request)))
+      headers.append('set-cookie', clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, cookieOptions(request)))
       return redirect(appUrl(env, '/trips'), headers)
     }
 
     if (request.method === 'POST' && path === '/api/auth/logout') {
       return jsonOk({ loggedOut: true }, {
-        headers: { 'set-cookie': clearSessionCookie(env.SESSION_COOKIE_NAME) },
+        headers: { 'set-cookie': clearSessionCookie(env.SESSION_COOKIE_NAME, cookieOptions(request)) },
       })
     }
 
