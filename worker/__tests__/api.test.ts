@@ -75,6 +75,20 @@ const userRow = {
   avatar_url: null,
 }
 
+function guidedTripPayload() {
+  return {
+    title: 'Japan Summer 2026',
+    startDate: '2026-07-10',
+    endDate: '2026-07-12',
+    destinationName: 'Tokyo',
+    basecampAddress: '1 Chome Marunouchi, Tokyo',
+    families: [
+      { displayName: 'Park Household', origin: 'Seoul', adults: 2, kids: 1 },
+      { displayName: 'Kim Household', origin: 'Busan', adults: 1, kids: 2 },
+    ],
+  }
+}
+
 describe('worker api', () => {
   it('returns 404 for unknown routes', async () => {
     const response = await worker.fetch(new Request('http://localhost/api/nope'), {} as never, {} as never)
@@ -90,6 +104,58 @@ describe('worker api', () => {
     expect(location.searchParams.get('state')).toBeTruthy()
     expect(response.headers.get('set-cookie')).toContain('trip_oauth_state=')
     expect(response.headers.get('set-cookie')).not.toContain('Secure')
+  })
+
+  it('uses forwarded host headers for proxied Google auth redirects', async () => {
+    const response = await worker.fetch(
+      new Request('http://127.0.0.1:8787/api/auth/google/start', {
+        headers: {
+          'x-forwarded-host': 'localhost:5173',
+          'x-forwarded-proto': 'http',
+        },
+      }),
+      authEnv as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(302)
+    const location = new URL(response.headers.get('location') ?? '')
+    expect(location.searchParams.get('redirect_uri')).toBe('http://localhost:5173/api/auth/google/callback')
+  })
+
+  it('uses the deployed custom domain for production Google auth redirects', async () => {
+    const response = await worker.fetch(
+      new Request('https://travelops.chungjungsoo.dev/api/auth/google/start'),
+      { ...authEnv, APP_ORIGIN: 'https://travelops.chungjungsoo.dev' } as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(302)
+    const location = new URL(response.headers.get('location') ?? '')
+    expect(location.searchParams.get('redirect_uri')).toBe('https://travelops.chungjungsoo.dev/api/auth/google/callback')
+    expect(response.headers.get('set-cookie')).toContain('Secure')
+  })
+
+  it('stores a sanitized post-login path during Google auth start', async () => {
+    const response = await worker.fetch(
+      new Request('http://localhost/api/auth/google/start?next=/invites/invite_token'),
+      authEnv as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(302)
+    expect(response.headers.get('set-cookie')).toContain('trip_oauth_next=%2Finvites%2Finvite_token')
+  })
+
+  it('falls back to trips for unsafe post-login paths', async () => {
+    const response = await worker.fetch(
+      new Request('http://localhost/api/auth/google/start?next=https://evil.example/steal'),
+      authEnv as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(302)
+    expect(response.headers.get('set-cookie')).toContain('trip_oauth_next=%2Ftrips')
   })
 
   it('reports missing Google auth configuration', async () => {
@@ -145,6 +211,8 @@ describe('worker api', () => {
     ['GET', '/api/me'],
     ['GET', '/api/trips'],
     ['POST', '/api/trips'],
+    ['GET', '/api/trips/trip_1'],
+    ['DELETE', '/api/trips/trip_1'],
     ['POST', '/api/trips/trip_1/invites'],
     ['POST', '/api/invites/invite_token/accept'],
     ['POST', '/api/trips/trip_1/share-link'],
@@ -193,20 +261,129 @@ describe('worker api', () => {
     })
   })
 
-  it('creates a trip for the signed-in user', async () => {
-    const response = await worker.fetch(jsonPost('/api/trips', { title: 'Tahoe' }), envWithDb(dbWithResponses([{ first: userRow }])) as never, {} as never)
+  it('creates a guided trip for the signed-in user', async () => {
+    const calls: DbCall[] = []
+    const payload = guidedTripPayload()
+    const response = await worker.fetch(jsonPost('/api/trips', payload), envWithDb(dbWithResponses([{ first: userRow }], calls)) as never, {} as never)
 
     expect(response.status).toBe(201)
+    const body = await response.json() as { data: { trip: { id: string; title: string; role: 'owner'; currentVersion: number } } }
+    expect(body.data).toEqual({
+      trip: {
+        id: body.data.trip.id,
+        title: 'Japan Summer 2026',
+        role: 'owner',
+        currentVersion: 0,
+      },
+    })
+    expect(body.data.trip.id).toMatch(/^trip_/)
+
+    const tripInsert = calls.find((call) => call.sql.includes('INSERT INTO trips'))
+    expect(tripInsert?.args[0]).toBe(body.data.trip.id)
+    expect(tripInsert?.args[1]).toBe('Japan Summer 2026')
+    expect(tripInsert?.args[3]).toBe('user_1')
+
+    const membershipInsert = calls.find((call) => call.sql.includes('INSERT INTO memberships'))
+    expect(membershipInsert?.args.slice(0, 3)).toEqual([body.data.trip.id, 'user_1', 'owner'])
+
+    const snapshotInsert = calls.find((call) => call.sql.includes('INSERT INTO trip_snapshots'))
+    expect(snapshotInsert?.args[1]).toBe(body.data.trip.id)
+    expect(snapshotInsert?.args[2]).toBe(0)
+    expect(snapshotInsert?.args[4]).toBe('user_1')
+    expect(typeof snapshotInsert?.args[3]).toBe('string')
+    const snapshot = JSON.parse(snapshotInsert?.args[3] as string) as {
+      id?: string
+      title: string
+      templateKind: string
+      days: { date: string }[]
+      families: { title: string }[]
+      routes: unknown[]
+      itineraryItems: unknown[]
+      meals: unknown[]
+      activities: unknown[]
+      expenses: unknown[]
+      tasks: unknown[]
+    }
+    expect(snapshot.id).toBe(body.data.trip.id)
+    expect(snapshot.title).toBe('Japan Summer 2026')
+    expect(snapshot.templateKind).toBe('guided')
+    expect(snapshot.days.map((day) => day.date)).toEqual(['2026-07-10', '2026-07-11', '2026-07-12'])
+    expect(snapshot.families.map((family) => family.title)).toEqual(['Park Household', 'Kim Household'])
+    expect(snapshot.routes).toEqual([])
+    expect(snapshot.itineraryItems).toEqual([])
+    expect(snapshot.meals).toEqual([])
+    expect(snapshot.activities).toEqual([])
+    expect(snapshot.expenses).toEqual([])
+    expect(snapshot.tasks).toEqual([])
+    expect(JSON.stringify(snapshot)).not.toContain('Parkers')
+    expect(JSON.stringify(snapshot)).not.toContain('Jiangs')
+    expect(JSON.stringify(snapshot)).not.toContain('Riveras')
+    expect(JSON.stringify(snapshot)).not.toContain('Duckfat')
+    expect(JSON.stringify(snapshot)).not.toContain('Portland Head Light')
+  })
+
+  it.each([
+    { label: 'missing title', payload: { ...guidedTripPayload(), title: '   ' }, message: 'Trip title is required' },
+    { label: 'invalid date order', payload: { ...guidedTripPayload(), startDate: '2026-07-12', endDate: '2026-07-10' }, message: 'End date must be on or after start date' },
+    { label: 'missing families', payload: { ...guidedTripPayload(), families: undefined } },
+    { label: 'negative adults', payload: { ...guidedTripPayload(), families: [{ displayName: 'Park Household', adults: -1, kids: 1 }] } },
+    { label: 'negative kids', payload: { ...guidedTripPayload(), families: [{ displayName: 'Park Household', adults: 1, kids: -1 }] } },
+    { label: 'more than 31 days', payload: { ...guidedTripPayload(), startDate: '2026-07-01', endDate: '2026-08-01' } },
+  ])('rejects guided trip creation with $label', async ({ payload, message }) => {
+    const response = await worker.fetch(jsonPost('/api/trips', payload), envWithDb(dbWithResponses([{ first: userRow }])) as never, {} as never)
+
+    expect(response.status).toBe(400)
+    const body = await response.json()
+    expect(body).toMatchObject({ error: { code: 'bad_request' } })
+    if (message) expect(body).toMatchObject({ error: { message } })
+  })
+
+  it('returns a member trip document by id', async () => {
+    const response = await worker.fetch(signedRequest('/api/trips/trip_1'), envWithDb(dbWithResponses([
+      { first: userRow },
+      { first: { role: 'editor' } },
+      { first: { version: 0, document_json: JSON.stringify(createTripFromTemplate({ id: 'trip_1', title: 'Member Trip' })) } },
+      { all: [] },
+      { all: [{ user_id: 'user_1', email: 'editor@example.com', name: 'Editor User', avatar_url: null, role: 'editor', created_at: '2026-07-01T00:00:00.000Z' }] },
+    ])) as never, {} as never)
+
+    expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({
-      data: { trip: { title: 'Tahoe', role: 'owner', currentVersion: 0 } },
+      data: {
+        trip: { id: 'trip_1', title: 'Member Trip' },
+        role: 'editor',
+        version: 0,
+        members: [{ userId: 'user_1', email: 'editor@example.com', name: 'Editor User', role: 'editor' }],
+      },
     })
   })
 
-  it('rejects trip creation without a title', async () => {
-    const response = await worker.fetch(jsonPost('/api/trips', { title: '   ' }), envWithDb(dbWithResponses([{ first: userRow }])) as never, {} as never)
+  it('rejects authenticated non-members when loading a trip document', async () => {
+    const response = await worker.fetch(signedRequest('/api/trips/trip_1'), envWithDb(dbWithResponses([
+      { first: userRow },
+      { first: { role: null } },
+    ])) as never, {} as never)
 
-    expect(response.status).toBe(400)
-    await expect(response.json()).resolves.toMatchObject({ error: { message: 'Trip title is required' } })
+    expect(response.status).toBe(403)
+  })
+
+  it('archives trips for owners', async () => {
+    const response = await worker.fetch(signedRequest('/api/trips/trip_1', { method: 'DELETE' }), envWithDb(dbWithResponses([
+      { first: userRow },
+      { first: { role: 'owner' } },
+    ])) as never, {} as never)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ data: { archived: true } })
+  })
+
+  it('rejects trip archiving for editors', async () => {
+    const response = await worker.fetch(signedRequest('/api/trips/trip_1', { method: 'DELETE' }), envWithDb(dbWithResponses([
+      { first: userRow },
+      { first: { role: 'editor' } },
+    ])) as never, {} as never)
+
+    expect(response.status).toBe(403)
   })
 
   it('creates an invite for trip owners', async () => {
@@ -261,9 +438,13 @@ describe('worker api', () => {
     ])) as never, {} as never)
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toMatchObject({
+    const body = await response.json() as { data: { readOnly: boolean; trip: { id: string; title: string; stayItems: { id: string; summary?: string }[] } } }
+    expect(body).toMatchObject({
       data: { readOnly: true, trip: { id: 'trip_1', title: 'Shared Trip' } },
     })
+    expect(body.data.trip.stayItems.find((item) => item.id === 'stay-gate-access')?.summary)
+      .toBe('Arrival logistics are intentionally generalized in the public version.')
+    expect(JSON.stringify(body)).not.toContain('guest passes')
   })
 
   it('forwards trip live requests to the trip Durable Object', async () => {

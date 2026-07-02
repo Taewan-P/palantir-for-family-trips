@@ -12,10 +12,18 @@ import type {
   StayItemEntity,
   TaskEntity,
   TripCollectionName,
+  TripDay,
   TripDocument,
   TripEntity,
   TripEntityType,
 } from './shared/trip-types'
+
+export type TripDayShell = Pick<TripDay, 'id' | 'title' | 'shortLabel'> &
+  Partial<Pick<TripDay, 'date' | 'code'>> & {
+    weather: string
+    temperature: string
+    caution: string
+  }
 
 type LegacyState = Record<string, unknown>
 type BrowserStorageHost = {
@@ -56,6 +64,15 @@ function getEntityLocationId(entity: TripEntity): string | null {
 
 function getEntityRouteId(entity: TripEntity): string | null {
   return (entity as EntityWithOptionalRoute).routeId || null
+}
+
+function toTripDayShell(day: TripDay | (typeof DAYS)[number]): TripDayShell {
+  return {
+    weather: 'Forecast pending',
+    temperature: '--',
+    caution: 'Low',
+    ...day,
+  }
 }
 
 function cloneCoordinates(coordinates: Coordinates): Coordinates {
@@ -320,6 +337,19 @@ function isTripUiState(value: unknown): value is TripDocument['ui'] {
     && typeof value.map.focusDayId === 'string'
 }
 
+function isTripTemplateKind(value: unknown): value is NonNullable<TripDocument['templateKind']> {
+  return value === 'seeded' || value === 'guided'
+}
+
+function isTripDay(value: unknown): value is TripDay {
+  return isLegacyState(value)
+    && typeof value.id === 'string'
+    && typeof value.date === 'string'
+    && typeof value.title === 'string'
+    && typeof value.shortLabel === 'string'
+    && typeof value.code === 'string'
+}
+
 function hasTripDocumentSnapshotEnvelope(value: unknown): value is TripDocumentSnapshotEnvelope {
   return isLegacyState(value)
     && (value.id === undefined || typeof value.id === 'string')
@@ -340,35 +370,40 @@ function hasTripDocumentSnapshotEnvelope(value: unknown): value is TripDocumentS
     && Array.isArray(value.tasks)
 }
 
-function validOrSeeded<T>(items: T[], seeded: T[]): T[] {
-  return items.length > 0 ? items : seeded
+function validOrSeeded<T>(items: T[], seeded: T[], allowEmpty = false): T[] {
+  return allowEmpty || items.length > 0 ? items : seeded
 }
 
 function normalizeTripDocumentSnapshot(value: unknown): TripDocument | null {
   if (!hasTripDocumentSnapshotEnvelope(value)) return null
 
   const seeded = createInitialTripDocument()
+  const templateKind = isTripTemplateKind(value.templateKind) ? value.templateKind : undefined
+  const isGuided = templateKind === 'guided'
+  const days = Array.isArray(value.days) ? value.days.filter(isTripDay) : undefined
   const normalized: TripDocument = {
     ...seeded,
     ...(typeof value.id === 'string' ? { id: value.id } : {}),
     ...(typeof value.title === 'string' ? { title: value.title } : {}),
+    ...(templateKind ? { templateKind } : {}),
+    ...(isGuided && days ? { days } : {}),
     selectedPage: value.selectedPage,
     selection: value.selection,
     pageNotes: value.pageNotes,
     pageNoteMeta: value.pageNoteMeta,
     ui: value.ui,
-    families: validOrSeeded(value.families.filter(isFamilyEntity), seeded.families),
-    locations: validOrSeeded(value.locations.filter(isLocationEntity), seeded.locations),
-    routes: validOrSeeded(value.routes.filter(isRouteEntity), seeded.routes),
-    itineraryItems: validOrSeeded(value.itineraryItems.filter(isItineraryItemEntity), seeded.itineraryItems),
-    meals: validOrSeeded(value.meals.filter(isMealEntity), seeded.meals),
-    activities: validOrSeeded(value.activities.filter(isActivityEntity), seeded.activities),
-    stayItems: validOrSeeded(value.stayItems.filter(isStayItemEntity), seeded.stayItems),
-    expenses: validOrSeeded(value.expenses.filter(isExpenseEntity), seeded.expenses),
-    tasks: validOrSeeded(value.tasks.filter(isTaskEntity), seeded.tasks),
+    families: validOrSeeded(value.families.filter(isFamilyEntity), seeded.families, isGuided),
+    locations: validOrSeeded(value.locations.filter(isLocationEntity), seeded.locations, isGuided),
+    routes: validOrSeeded(value.routes.filter(isRouteEntity), seeded.routes, isGuided),
+    itineraryItems: validOrSeeded(value.itineraryItems.filter(isItineraryItemEntity), seeded.itineraryItems, isGuided),
+    meals: validOrSeeded(value.meals.filter(isMealEntity), seeded.meals, isGuided),
+    activities: validOrSeeded(value.activities.filter(isActivityEntity), seeded.activities, isGuided),
+    stayItems: validOrSeeded(value.stayItems.filter(isStayItemEntity), seeded.stayItems, isGuided),
+    expenses: validOrSeeded(value.expenses.filter(isExpenseEntity), seeded.expenses, isGuided),
+    tasks: validOrSeeded(value.tasks.filter(isTaskEntity), seeded.tasks, isGuided),
   }
 
-  return refreshSeededDoc(normalized)
+  return isGuided ? normalized : refreshSeededDoc(normalized)
 }
 
 export const COLLECTION_BY_TYPE: Record<TripEntityType, TripCollectionName> = {
@@ -640,16 +675,28 @@ export function getEntityTitle(entity: (Partial<TripEntity> & { label?: string; 
   return entity.title || entity.name || entity.label || entity.meal || entity.id
 }
 
+export function getTripDays(document: Pick<TripDocument, 'days'> | null | undefined): TripDayShell[] {
+  return (document?.days?.length ? document.days : DAYS).map(toTripDayShell)
+}
+
+export function getTripDayMeta(
+  document: Pick<TripDocument, 'days'> | null | undefined,
+  dayId: string,
+): TripDayShell | undefined {
+  return getTripDays(document).find((day) => day.id === dayId)
+}
+
 export function getDayMeta(dayId: string | undefined) {
   return DAYS.find((day) => day.id === dayId) || null
 }
 
-export function getSlotLabel(slotIndex: number) {
+export function getSlotLabel(slotIndex: number, document?: Pick<TripDocument, 'days'> | null) {
+  const days = getTripDays(document)
   const safeSlotIndex = Number.isFinite(slotIndex) ? Math.max(slotIndex, 0) : 0
   const dayIndex = Math.floor(safeSlotIndex / TIME_SLOTS.length)
   const slotIndexWithinDay = Math.floor(safeSlotIndex % TIME_SLOTS.length)
   const slot = TIME_SLOTS[slotIndexWithinDay]
-  const day = DAYS[dayIndex]
+  const day = days[dayIndex]
   if (!day) return `${slot}:00`
 
   const fractionalSlot = safeSlotIndex - Math.floor(safeSlotIndex)
@@ -2896,7 +2943,7 @@ export function getTimelineContext(doc: TripDocument, overrideCursorSlot = doc.u
 
   return {
     cursorSlot,
-    cursorLabel: getSlotLabel(cursorSlot),
+    cursorLabel: getSlotLabel(cursorSlot, doc),
     liveEntities,
     nextEntities,
     prepSoon,

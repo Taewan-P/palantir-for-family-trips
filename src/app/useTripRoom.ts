@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { applyTripEvent } from '../shared/trip-reducer'
+import { normalizeMemberTripCopy } from '../shared/trip-template'
 import type { TripDocument, TripEvent } from '../shared/trip-types'
 
 type TripRoomStatus = 'connecting' | 'open' | 'closed' | 'error'
@@ -113,7 +114,7 @@ export function useTripRoom(tripId: string | null | undefined): TripRoomState {
       if (message.type === 'snapshot') {
         inFlightCommandRef.current = null
         versionRef.current = message.version
-        setDocument(message.document)
+        setDocument(normalizeMemberTripCopy(message.document))
         setVersion(message.version)
         flushCommandQueue()
         return
@@ -136,7 +137,7 @@ export function useTripRoom(tripId: string | null | undefined): TripRoomState {
       if (rejectedCommand) {
         pendingCommandsRef.current.unshift(rejectedCommand)
       }
-      setDocument(message.document)
+      setDocument(normalizeMemberTripCopy(message.document))
       setVersion(message.version)
       flushCommandQueue()
     })

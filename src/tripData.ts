@@ -12,9 +12,9 @@ export const TRIP_META = {
     location: PUBLIC_BASECAMP_LOCATION,
     checkIn: 'Check-in after 4:00 PM',
     checkOut: 'Check-out before 11:00 AM',
-    gateNote: 'Community access details are intentionally withheld in the sanitized demo.',
-    parkingNote: 'Parking guidance is intentionally simplified in the sanitized demo.',
-    directionsNote: 'Use the Pine Mountain Lake waypoint for planning. Exact arrival instructions are intentionally withheld.',
+    gateNote: 'Confirm community access, guest passes, and the arrival handoff before departure.',
+    parkingNote: 'Confirm vehicle count, parking capacity, and Friday local movement before arrival.',
+    directionsNote: 'Use the Pine Mountain Lake waypoint for approach planning; add exact host directions when confirmed.',
     lockNote: null,
     wifiNetwork: null,
     wifiPassword: null,
@@ -22,7 +22,7 @@ export const TRIP_META = {
     coHostName: null,
     guestSummary: null,
     confirmationCode: null,
-    vehicleFee: 'Community access details withheld',
+    vehicleFee: 'Confirm community vehicle fees and guest-pass requirements',
   },
 }
 

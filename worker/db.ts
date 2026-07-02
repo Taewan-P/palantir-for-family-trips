@@ -1,5 +1,6 @@
 import { isJsonObject, type JsonObject, type JsonValue } from '../src/shared/json'
 import { replayTripEvents } from '../src/shared/trip-reducer'
+import { normalizeMemberTripCopy } from '../src/shared/trip-template'
 import type { TripDocument, TripEntityType, TripEvent, TripUiState } from '../src/shared/trip-types'
 
 export type AppUserRow = {
@@ -24,6 +25,15 @@ export type TripAccess = {
   role: 'owner' | 'editor' | null
 }
 
+export type TripMemberRow = {
+  user_id: string
+  email: string
+  name: string
+  avatar_url: string | null
+  role: 'owner' | 'editor'
+  created_at: string
+}
+
 const TRIP_ENTITY_TYPES = new Set<TripEntityType>([
   'family',
   'location',
@@ -45,6 +55,10 @@ export type TripEventRow = {
   type: string
   payload_json: string
   created_at: string
+}
+
+function parseTripDocumentJson(raw: string): TripDocument {
+  return normalizeMemberTripCopy(JSON.parse(raw) as TripDocument)
 }
 
 export type AuthoredTripEvent = TripEvent & { actorUserId: string }
@@ -131,7 +145,7 @@ export async function getTripAccess(db: D1Database, tripId: string, userId: stri
     SELECT memberships.role
     FROM trips
     LEFT JOIN memberships ON memberships.trip_id = trips.id AND memberships.user_id = ?
-    WHERE trips.id = ?
+    WHERE trips.id = ? AND trips.archived_at IS NULL
   `).bind(userId, tripId).first<{ role: 'owner' | 'editor' | null }>()
 
   return row ? { exists: true, role: row.role } : { exists: false, role: null }
@@ -193,6 +207,18 @@ export async function listVisibleTrips(db: D1Database, userId: string): Promise<
   return result.results
 }
 
+export async function listTripMembers(db: D1Database, tripId: string): Promise<TripMemberRow[]> {
+  const result = await db.prepare(`
+    SELECT memberships.user_id, users.email, users.name, users.avatar_url, memberships.role, memberships.created_at
+    FROM memberships
+    INNER JOIN users ON users.id = memberships.user_id
+    WHERE memberships.trip_id = ?
+    ORDER BY memberships.created_at ASC
+  `).bind(tripId).all<TripMemberRow>()
+
+  return result.results
+}
+
 export async function createTrip(db: D1Database, input: {
   id: string
   title: string
@@ -204,6 +230,12 @@ export async function createTrip(db: D1Database, input: {
     INSERT INTO trips (id, title, slug, owner_user_id, current_version, created_at, updated_at)
     VALUES (?, ?, ?, ?, 0, ?, ?)
   `).bind(input.id, input.title, input.slug, input.ownerUserId, input.now, input.now).run()
+}
+
+export async function archiveTrip(db: D1Database, tripId: string, now: string): Promise<void> {
+  await db.prepare(`
+    UPDATE trips SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL
+  `).bind(now, now, tripId).run()
 }
 
 export async function createMembership(db: D1Database, input: {
@@ -234,9 +266,10 @@ export async function createInvite(db: D1Database, input: {
 
 export async function findActiveInvite(db: D1Database, tokenHash: string, now: string) {
   return db.prepare(`
-    SELECT id, trip_id, role
+    SELECT invites.id, invites.trip_id, invites.role
     FROM invites
-    WHERE token_hash = ? AND expires_at > ? AND accepted_at IS NULL
+    INNER JOIN trips ON trips.id = invites.trip_id AND trips.archived_at IS NULL
+    WHERE invites.token_hash = ? AND invites.expires_at > ? AND invites.accepted_at IS NULL
   `).bind(tokenHash, now).first<{ id: string; trip_id: string; role: 'editor' }>()
 }
 
@@ -249,6 +282,10 @@ export async function claimActiveInvite(db: D1Database, input: {
     UPDATE invites
     SET accepted_by_user_id = ?, accepted_at = ?
     WHERE token_hash = ? AND expires_at > ? AND accepted_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM trips
+        WHERE trips.id = invites.trip_id AND trips.archived_at IS NULL
+      )
     RETURNING id, trip_id, role
   `).bind(input.userId, input.now, input.tokenHash, input.now).first<{ id: string; trip_id: string; role: 'editor' }>()
 }
@@ -280,7 +317,10 @@ export async function rotateShareLink(db: D1Database, input: {
 
 export async function findActiveShareLink(db: D1Database, tokenHash: string) {
   return db.prepare(`
-    SELECT trip_id FROM share_links WHERE token_hash = ? AND enabled = 1 AND policy = 'sanitized'
+    SELECT share_links.trip_id
+    FROM share_links
+    INNER JOIN trips ON trips.id = share_links.trip_id AND trips.archived_at IS NULL
+    WHERE share_links.token_hash = ? AND share_links.enabled = 1 AND share_links.policy = 'sanitized'
   `).bind(tokenHash).first<{ trip_id: string }>()
 }
 
@@ -289,7 +329,7 @@ export async function loadLatestTripSnapshot(db: D1Database, tripId: string): Pr
     SELECT document_json FROM trip_snapshots WHERE trip_id = ? ORDER BY version DESC LIMIT 1
   `).bind(tripId).first<{ document_json: string }>()
   if (!row) return null
-  return JSON.parse(row.document_json) as TripDocument
+  return parseTripDocumentJson(row.document_json)
 }
 
 export function hydrateTripSnapshot(document: TripDocument, eventRows: readonly TripEventRow[]): TripDocument {
@@ -316,7 +356,7 @@ export async function loadHydratedTripSnapshotWithVersion(db: D1Database, tripId
 
   const events = eventRows.results.map(decodeTripEventRow)
   return {
-    document: replayTripEvents(JSON.parse(snapshot.document_json) as TripDocument, events),
+    document: replayTripEvents(parseTripDocumentJson(snapshot.document_json), events),
     version: events.at(-1)?.version ?? snapshot.version,
   }
 }

@@ -100,6 +100,34 @@ describe('TripRoom command handling', () => {
     expect(sent).toEqual([{ type: 'event.rejected', reason: 'malformed_command' }])
     expect(db.batch).not.toHaveBeenCalled()
   })
+
+  it('rechecks trip access before accepting a live edit command', async () => {
+    const db = {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({
+          first: vi.fn(async () => ({ role: null })),
+        })),
+      })),
+      batch: vi.fn(async () => {
+        throw new Error('forbidden command reached persistence')
+      }),
+    }
+    const room = new TripRoom({} as DurableObjectState, { DB: db } as never)
+    const sent: unknown[] = []
+    const socket = {
+      send: vi.fn((message: string) => sent.push(JSON.parse(message))),
+    } as unknown as WebSocket
+
+    ;(room as unknown as { document: TripDocument; version: number }).document = baseDoc()
+    ;(room as unknown as { document: TripDocument; version: number }).version = 2
+
+    await (room as unknown as {
+      handleMessage(socket: WebSocket, tripId: string, actorUserId: string, data: unknown): Promise<void>
+    }).handleMessage(socket, 'trip_1', 'user_1', JSON.stringify(updateTaskCommand()))
+
+    expect(sent).toEqual([{ type: 'event.rejected', reason: 'forbidden' }])
+    expect(db.batch).not.toHaveBeenCalled()
+  })
 })
 
 function updateTaskCommand(): TripCommand {

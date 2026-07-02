@@ -5,6 +5,7 @@ export type RouteMatch =
   | { name: 'trips' }
   | { name: 'trip'; tripId: string }
   | { name: 'share'; token: string }
+  | { name: 'invite'; token: string }
 
 export function matchRoute(pathname: string): RouteMatch {
   const segments = pathname.split('/').filter(Boolean)
@@ -16,6 +17,11 @@ export function matchRoute(pathname: string): RouteMatch {
   if (segments.length === 2 && segments[0] === 'share') {
     const token = decodeRouteSegment(segments[1])
     return token === null ? { name: 'trips' } : { name: 'share', token }
+  }
+
+  if (segments.length === 2 && segments[0] === 'invites') {
+    const token = decodeRouteSegment(segments[1])
+    return token === null ? { name: 'trips' } : { name: 'invite', token }
   }
 
   if (segments.length === 2 && segments[0] === 'trips') {

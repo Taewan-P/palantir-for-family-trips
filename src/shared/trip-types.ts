@@ -21,6 +21,32 @@ export type Coordinates = JsonObject & {
   lng: number
 }
 
+export type TripTemplateKind = 'seeded' | 'guided'
+
+export type TripDay = {
+  id: string
+  date: string
+  title: string
+  shortLabel: string
+  code: string
+}
+
+export type GuidedTripFamilyInput = {
+  displayName: string
+  origin?: string
+  adults: number
+  kids: number
+}
+
+export type CreateGuidedTripRequest = {
+  title: string
+  startDate: string
+  endDate: string
+  destinationName: string
+  basecampAddress?: string
+  families: GuidedTripFamilyInput[]
+}
+
 export type BaseEntity = {
   id: string
   type: TripEntityType
@@ -71,6 +97,8 @@ export type BaseEntity = {
 export type FamilyEntity = BaseEntity & {
   type: 'family'
   title: string
+  assignedUserId?: string | null
+  assignedUserEmail?: string | null
   origin?: string
   shortOrigin?: string
   originAddress?: string
@@ -251,6 +279,8 @@ export type TripUiStateUpdate = {
 export type TripDocument = {
   id?: string
   title?: string
+  templateKind?: TripTemplateKind
+  days?: TripDay[]
   selectedPage: string
   selection: EntitySelection
   pageNotes: Record<string, string>

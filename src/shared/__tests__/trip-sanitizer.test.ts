@@ -48,10 +48,14 @@ describe('sanitizeTripForShare', () => {
     expect(sanitized.pageNotes).toEqual({})
     expect(sanitized.ui.searchQuery).toBe('')
     expect(sanitized.locations[0]?.address).toBe('Private lodging details hidden')
-    expect(sanitized.locations[0]?.accessNote).toBeNull()
-    expect(sanitized.locations[0]?.wifiPassword).toBeNull()
     expect(sanitized.locations[0]?.note).toBe('')
     expect(sanitized.locations[0]?.coordinates).toBeUndefined()
+    expect(sanitized.locations[0]?.accessNote).toBeUndefined()
+    expect(sanitized.locations[0]?.wifiNetwork).toBeUndefined()
+    expect(sanitized.locations[0]?.wifiPassword).toBeUndefined()
+    expect(sanitized.locations[0]?.lockNote).toBeUndefined()
+    expect(sanitized.locations[0]?.parkingNote).toBeUndefined()
+    expect(sanitized.locations[0]?.directionsNote).toBeUndefined()
     expect(sanitized.locations[0]?.confirmationCode).toBeUndefined()
     expect(sanitized.locations[0]?.hostName).toBeUndefined()
     expect(sanitized.locations[0]?.externalUrl).toBeUndefined()
@@ -143,5 +147,43 @@ describe('sanitizeTripForShare', () => {
     expect(sanitized.routes[0]?.note).toBe('')
     expect(sanitized.routes[0]?.originCoordinates).toBeUndefined()
     expect(sanitized.routes[0]?.path).toBeUndefined()
+  })
+
+  it('generalizes stay item summaries before sharing', () => {
+    const doc = {
+      id: 'trip_1',
+      title: 'Private Trip',
+      selectedPage: 'stay',
+      selection: { type: 'stayItem', id: 'stay-gate-access' },
+      pageNotes: {},
+      pageNoteMeta: {},
+      ui: {
+        searchQuery: '',
+        timeline: { mode: 'scenario', cursorSlot: 0 },
+        map: { showRoutes: true, showFacilities: true, showTraffic: false, focusFamilyId: 'all', focusDayId: 'all' },
+      },
+      families: [],
+      locations: [],
+      routes: [],
+      itineraryItems: [],
+      meals: [],
+      activities: [],
+      stayItems: [{
+        id: 'stay-gate-access',
+        type: 'stayItem',
+        title: 'Gate and access protocol',
+        category: 'access',
+        summary: 'Confirm community access, guest passes, and the arrival handoff before departure.',
+        note: 'Private access note',
+      }],
+      expenses: [],
+      tasks: [],
+    } satisfies TripDocument
+
+    const sanitized = sanitizeTripForShare(doc)
+
+    expect(sanitized.stayItems[0]?.summary).toBe('Arrival logistics are intentionally generalized in the public version.')
+    expect(sanitized.stayItems[0]?.summary).not.toContain('guest passes')
+    expect(sanitized.stayItems[0]?.note).toBe('')
   })
 })

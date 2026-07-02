@@ -5,7 +5,8 @@ import { apiGet } from './api-client'
 import { TripWorkspace } from './TripWorkspace'
 
 type ShareResponse = {
-  document: TripDocument
+  trip: TripDocument
+  readOnly: true
 }
 
 export function SharePage({ token }: { token: string }) {
@@ -18,7 +19,7 @@ export function SharePage({ token }: { token: string }) {
     apiGet<ShareResponse>(`/api/share/${encodeURIComponent(token)}`).then((result) => {
       if (cancelled) return
       if (result.ok) {
-        setDocument(result.data.document)
+        setDocument(result.data.trip)
         setError(null)
       } else {
         setError(result.error.message)

@@ -37,6 +37,8 @@ The repo is intentionally overbuilt for a small real-life use case. That is the 
 
 - React 19
 - Vite
+- TypeScript
+- Cloudflare Pages, Workers, Durable Objects, and D1
 - Google Maps JavaScript API
 - Lucide icons
 - Framer Motion
@@ -52,7 +54,7 @@ npm run dev
 
 Open whatever Vite prints, usually `http://localhost:5173`.
 
-For login and API routes, also create `.dev.vars` with `APP_ORIGIN=http://localhost:5173`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `SESSION_SECRET`, then run `npm run dev:worker` in another terminal. Add `http://localhost:8787/api/auth/google/callback` to your Google OAuth client redirect URIs.
+For login and API routes, also create `.dev.vars` with `APP_ORIGIN=http://localhost:5173`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `SESSION_SECRET`, then run `npm run dev:worker` in another terminal. Add `http://localhost:5173/api/auth/google/callback` to your Google OAuth client redirect URIs.
 
 ## Environment
 
@@ -74,6 +76,8 @@ Without a key, the app still renders its UI but the live Google map layer will n
 
 See [docs/deploy-cloudflare.md](docs/deploy-cloudflare.md) for local Worker, D1, Pages, and deployment steps.
 
+Production is configured for `https://travelops.chungjungsoo.dev`. Pages serves the React app from project `travelops`, and the Worker is routed on `https://travelops.chungjungsoo.dev/api/*`. The Pages preview URL is `https://travelops.pages.dev`, but login/API calls require the custom domain attachment.
+
 - Google login
 - D1-backed trips
 - Durable Object real-time editing
@@ -92,7 +96,7 @@ If you publish this with your own Google Maps key, usage is billed to your Googl
 
 ## Repo Notes
 
-- State is stored locally in the browser.
+- Trips are persisted through the Cloudflare Worker/D1 service; local browser state is only a fallback for the standalone dashboard.
 - The project is optimized for desktop and large-screen dashboard vibes.
 - The UI intentionally leans dense, dramatic, and slightly over-the-top.
 
@@ -100,10 +104,10 @@ If you publish this with your own Google Maps key, usage is billed to your Googl
 
 Good places to start:
 
-- `src/App.jsx` for the main shell, timeline, and overlays
-- `src/CommandMap.jsx` for route rendering, playback, and map behavior
-- `src/tripModel.js` for the seeded trip document and helper logic
+- `src/App.tsx` for the main shell, timeline, and overlays
+- `src/CommandMap.tsx` for route rendering, playback, and map behavior
+- `src/tripModel.ts` and `src/shared/trip-template.ts` for the seeded trip document and service template
 
 ## Status
 
-Built for fun. Surprisingly usable. Not pretending to be enterprise software.
+Built for fun, now wired as a Cloudflare-backed trip service.

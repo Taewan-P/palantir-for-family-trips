@@ -15,7 +15,6 @@ import {
   LayoutGrid,
   Map as MapIcon,
   MapPin,
-  MessageSquare,
   Pause,
   Phone,
   Play,
@@ -23,7 +22,6 @@ import {
   RotateCcw,
   Route,
   Search,
-  Settings,
   Star,
   Sun,
   Users,
@@ -36,15 +34,18 @@ import palantirLogo from './assets/palantir-logo.svg'
 import CommandMap from './CommandMap'
 import InspectorRail from './InspectorRail'
 import { TripSettingsPanel } from './app/TripSettingsPanel'
-import { useTripRoom } from './app/useTripRoom'
+import type { TripMember } from './app/TripWorkspace'
+import { useTripRoom, type TripRoomState } from './app/useTripRoom'
 import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
 import { createId } from './shared/ids'
+import { normalizeMemberTripCopy } from './shared/trip-template'
 import { usePersistedTripState } from './usePersistedTripState'
 import { DAYS, NAV_ITEMS, TIME_SLOTS, TRIP_META } from './tripData'
 import {
   ENTITY_PAGE,
   ensureSelectionForPage,
-  getDayMeta,
+  getTripDayMeta,
+  getTripDays,
   getEntityById,
   getEntityBySelection,
   getEntitySummary,
@@ -71,6 +72,7 @@ import {
   synchronizeRoutePaths,
   updateEntityInCollection,
 } from './tripModel'
+import type { TripDayShell } from './tripModel'
 import * as tripModelModule from './tripModel'
 import { COLLECTION_BY_ENTITY_TYPE } from './shared/trip-types'
 import type {
@@ -95,8 +97,8 @@ import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeat
 import type { MapWeather, MapWeatherTarget, TripDayWeather, WeatherBundleMap } from './weather'
 
 type ClassValue = Parameters<typeof clsx>[number]
-type Day = (typeof DAYS)[number]
-type DayId = Day['id']
+type Day = TripDayShell
+type DayId = string
 type ToneKey = keyof typeof STATUS_STYLES
 type TimelineColorKey = keyof typeof TIMELINE_COLORS
 type OpenEntityHandler = (type: TripEntityType, id: string) => void
@@ -191,9 +193,12 @@ type YosemiteRouteDefaults = {
 }
 type SearchResult = TripEntity & { searchText: string }
 type WeatherState = { status: 'idle' | 'loading' | 'ready' | 'error'; targets: WeatherBundleMap; updatedAt: string | null; error: string | null }
+type SyncStatusView = { label: string; className: string }
 type GoogleMapsLike = typeof google
 type AppProps = {
   serviceTripId?: string
+  tripRole?: 'owner' | 'editor'
+  serviceTripMembers?: TripMember[]
   initialServiceDocument?: TripDocument
   readOnly?: boolean
 }
@@ -217,14 +222,21 @@ type TransitFamilyPlan = {
 }
 type CommonPageProps = {
   doc: TripDocument
+  tripDays: Day[]
   selection: EntitySelection
   currentFamily?: FamilyEntity | null
   currentFamilyId?: string | null
+  readOnly: boolean
   onSelectEntity: OpenEntityHandler
   onOpenEntity: OpenEntityHandler
   onUpdatePageNote: (pageId: string, value: string) => void
   onConvertPageNote: (pageId: string) => void
   onAddActivity: (draft: ActivityDraft) => void
+  onCreateEntity: (entityType: TripEntityType, options?: CreateEntityOptions) => void
+}
+type CreateEntityOptions = {
+  patch?: Partial<TripEntity>
+  selectedPage?: PageId
 }
 type ItineraryPageProps = CommonPageProps & {
   onSetCursor: (cursorSlot: number) => void
@@ -265,6 +277,25 @@ function buildCommand<Type extends TripEvent['type']>(
 function toEntityUpdatePatch<Type extends TripEntityType>(patch: Partial<EntityByType[Type]>): EntityUpdatePatch<Type> {
   const { id: _id, type: _type, ...safePatch } = patch
   return safePatch as EntityUpdatePatch<Type>
+}
+
+const ROUTE_PATH_PATCH_KEYS = ['destinationLocationId', 'stopLocationIds', 'originCoordinates', 'familyId']
+const LOCATION_PATH_PATCH_KEYS = ['coordinates', 'address']
+
+function hasPatchKey(patch: object, keys: string[]): boolean {
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(patch, key))
+}
+
+function clearRoutePathCache(route: RouteEntity): RouteEntity {
+  return {
+    ...route,
+    path: undefined,
+    simulationMilestones: undefined,
+  }
+}
+
+function routeUsesLocationId(route: RouteEntity, locationId: string): boolean {
+  return route.destinationLocationId === locationId || Boolean(route.stopLocationIds?.includes(locationId))
 }
 
 function createDefaultEntity(entityType: TripEntityType): TripEntity {
@@ -390,7 +421,7 @@ function createDefaultEntity(entityType: TripEntityType): TripEntity {
     const entity: ExpenseEntity = {
       id: createId('expense'),
       type: 'expense',
-      title: 'New shared expense',
+      title: 'New expense',
       payer: 'Unassigned',
       amount: 0,
       split: EXPENSE_SPLIT_LABELS.equal,
@@ -891,8 +922,8 @@ function getFamilyExpenseBurden(expenses: ExpenseEntity[], families: FamilyEntit
   }))
 }
 
-function clampTimelineCursor(slot: number) {
-  const maxCursor = DAYS.length * TIME_SLOTS.length - 0.001
+function clampTimelineCursor(slot: number, dayCount = DAYS.length) {
+  const maxCursor = dayCount * TIME_SLOTS.length - 0.001
   return Math.min(Math.max(slot, 0), maxCursor)
 }
 
@@ -905,7 +936,7 @@ function getDayVisibleCursorRange(dayIndex: number) {
 }
 
 function projectCursorToVisibleTimelineRatio(cursorSlot: number, dayCount = DAYS.length) {
-  const normalizedCursor = clampTimelineCursor(cursorSlot)
+  const normalizedCursor = clampTimelineCursor(cursorSlot, dayCount)
   const dayIndex = Math.min(Math.max(Math.floor(normalizedCursor / TIME_SLOTS.length), 0), dayCount - 1)
   const dayOffset = normalizedCursor - dayIndex * TIME_SLOTS.length
   const clampedDayOffset = Math.min(Math.max(dayOffset, VISIBLE_TIMELINE_SLOT_START), VISIBLE_TIMELINE_SLOT_END)
@@ -920,20 +951,20 @@ function projectVisibleTimelineRatioToCursor(ratio: number, dayCount = DAYS.leng
   const visibleCursor = clampedRatio * totalVisibleSlots
   const dayIndex = Math.min(Math.max(Math.floor(visibleCursor / VISIBLE_TIMELINE_SLOT_SPAN), 0), dayCount - 1)
   const dayVisibleOffset = visibleCursor - dayIndex * VISIBLE_TIMELINE_SLOT_SPAN
-  return clampTimelineCursor(dayIndex * TIME_SLOTS.length + VISIBLE_TIMELINE_SLOT_START + dayVisibleOffset)
+  return clampTimelineCursor(dayIndex * TIME_SLOTS.length + VISIBLE_TIMELINE_SLOT_START + dayVisibleOffset, dayCount)
 }
 
-function getCursorHourInDay(cursorSlot: number) {
-  const normalizedCursor = clampTimelineCursor(cursorSlot)
+function getCursorHourInDay(cursorSlot: number, dayCount = DAYS.length) {
+  const normalizedCursor = clampTimelineCursor(cursorSlot, dayCount)
   const dayOffset = normalizedCursor - Math.floor(normalizedCursor / TIME_SLOTS.length) * TIME_SLOTS.length
   return dayOffset * TIMELINE_HOURS_PER_SLOT
 }
 
-function getMissionLaunchCursor(dayIndex: number) {
-  return clampTimelineCursor(dayIndex * TIME_SLOTS.length + MISSION_LAUNCH_HOUR / TIMELINE_HOURS_PER_SLOT)
+function getMissionLaunchCursor(dayIndex: number, dayCount = DAYS.length) {
+  return clampTimelineCursor(dayIndex * TIME_SLOTS.length + MISSION_LAUNCH_HOUR / TIMELINE_HOURS_PER_SLOT, dayCount)
 }
 
-function getSuggestedPlaybackStartCursor(doc: TripDocument, cursorSlot: number, operationCheckpoints: TimelineGate[] = []) {
+function getSuggestedPlaybackStartCursor(doc: TripDocument, cursorSlot: number, operationCheckpoints: TimelineGate[] = [], dayCount = DAYS.length) {
   const windows = (doc.routes || [])
     .map((route) => getRouteSimulationWindow(doc, route))
     .filter((window) => Number.isFinite(window.start) && Number.isFinite(window.end))
@@ -944,7 +975,7 @@ function getSuggestedPlaybackStartCursor(doc: TripDocument, cursorSlot: number, 
   const routeLeadIn = 0.08
   const checkpointLeadIn = 0.03
 
-  const normalizedCursor = clampTimelineCursor(cursorSlot)
+  const normalizedCursor = clampTimelineCursor(cursorSlot, dayCount)
   if (!windows.length && !checkpoints.length) return normalizedCursor
 
   const activeWindow = windows.find((window) => normalizedCursor >= window.start && normalizedCursor <= window.end)
@@ -954,32 +985,34 @@ function getSuggestedPlaybackStartCursor(doc: TripDocument, cursorSlot: number, 
   const nextCheckpoint = checkpoints.find((checkpoint) => checkpoint.startSlot > normalizedCursor)
 
   if (nextCheckpoint && (!nextWindow || nextCheckpoint.startSlot <= nextWindow.start)) {
-    return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0))
+    return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0), dayCount)
   }
 
   if (nextWindow) {
-    return clampTimelineCursor(Math.max(nextWindow.start - routeLeadIn, 0))
+    return clampTimelineCursor(Math.max(nextWindow.start - routeLeadIn, 0), dayCount)
   }
 
   if (nextCheckpoint) {
-    return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0))
+    return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0), dayCount)
   }
 
   if (windows.length) {
-    return clampTimelineCursor(Math.max(windows[0].start - routeLeadIn, 0))
+    return clampTimelineCursor(Math.max(windows[0].start - routeLeadIn, 0), dayCount)
   }
 
   return normalizedCursor
 }
 
-function getCurrentTripCursor(now = new Date()) {
+function getCurrentTripCursor(document?: Pick<TripDocument, 'days'> | null, now = new Date()) {
+  if (document?.days?.length) return 0
+
   const currentYear = now.getFullYear()
   const tripStart = new Date(currentYear, 3, 9, 0, 0, 0, 0)
   const tripEnd = new Date(currentYear, 3, 13, 0, 0, 0, 0)
   const tripDurationHours = (tripEnd.getTime() - tripStart.getTime()) / (1000 * 60 * 60)
   const hoursIntoTrip = (now.getTime() - tripStart.getTime()) / (1000 * 60 * 60)
   const clampedHours = Math.min(Math.max(hoursIntoTrip, 0), tripDurationHours)
-  return clampTimelineCursor(clampedHours / TIMELINE_HOURS_PER_SLOT)
+  return clampTimelineCursor(clampedHours / TIMELINE_HOURS_PER_SLOT, getTripDays(document).length)
 }
 
 function getCompactTravelLabel(item: ItineraryItemEntity) {
@@ -997,9 +1030,9 @@ function getCompactTravelLabel(item: ItineraryItemEntity) {
   return fallback.replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase() || 'DRV'
 }
 
-function getCursorDay(cursorSlot: number): Day {
-  const dayIndex = Math.min(Math.floor(cursorSlot / TIME_SLOTS.length), DAYS.length - 1)
-  return DAYS[Math.max(dayIndex, 0)] || DAYS[0]
+function getCursorDay(cursorSlot: number, days = getTripDays(null)): Day {
+  const dayIndex = Math.min(Math.floor(cursorSlot / TIME_SLOTS.length), days.length - 1)
+  return days[Math.max(dayIndex, 0)] || getTripDays(null)[0]
 }
 
 function formatNameList(labels: string[]) {
@@ -1074,12 +1107,12 @@ function getRelatedTravelItemsForGate(doc: TripDocument, gate: TimelineGate): It
   return sameDayTravelItems.filter((item) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
 }
 
-function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null) {
+function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null, days = getTripDays(doc)) {
   if (!gate?.items?.length) return null
 
   const primaryItem = gate.items[0]
   const dayId = (primaryItem.dayId || gate.dayId || 'thu') as DayId
-  const dayMeta = getDayMeta(dayId) || getCursorDay(gate.startSlot)
+  const dayMeta = getTripDayMeta(doc, dayId) || getCursorDay(gate.startSlot, days)
   const theme = MISSION_LAUNCH_THEME[dayId] || MISSION_LAUNCH_THEME.fri
   const briefing = DAY_BRIEFING_COPY[dayId] || DAY_BRIEFING_COPY.thu
   const linkedEntities = dedupeById(
@@ -1112,11 +1145,11 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
       .filter(Boolean),
   )
   const unitCount = families.length || Math.max(relatedRoutes.length, 1)
-  const launchLabel = stripDayPrefix(getSlotLabel(gate.startSlot))
+  const launchLabel = stripDayPrefix(getSlotLabel(gate.startSlot, doc))
   const etaSlot = relatedTravelItems.length
     ? Math.max(...relatedTravelItems.map((item) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
     : gate.startSlot + getItineraryItemEffectiveSpan(doc, primaryItem)
-  const etaLabel = stripDayPrefix(getSlotLabel(etaSlot))
+  const etaLabel = stripDayPrefix(getSlotLabel(etaSlot, doc))
   const participantLabel =
     !families.length
       ? gate.dayLabel || 'All units'
@@ -1151,8 +1184,8 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null)
   }
 }
 
-function buildOperationCheckpoints(doc: TripDocument): TimelineGate[] {
-  return DAYS.map((day, dayIndex): TimelineGate | null => {
+function buildOperationCheckpoints(doc: TripDocument, days = getTripDays(doc)): TimelineGate[] {
+  return days.map((day, dayIndex): TimelineGate | null => {
     const mainOp = doc.itineraryItems
       .filter((item) => item.rowId === 'activities' && item.dayId === day.id)
       .sort((left, right) => left.startSlot - right.startSlot)[0]
@@ -1162,7 +1195,7 @@ function buildOperationCheckpoints(doc: TripDocument): TimelineGate[] {
     return {
       id: `op:main-op:${day.id}:${mainOp.id}`,
       dayId: day.id,
-      startSlot: Math.max(mainOp.startSlot, getMissionLaunchCursor(dayIndex)),
+      startSlot: Math.max(mainOp.startSlot, getMissionLaunchCursor(dayIndex, days.length)),
       title: mainOp.title,
       subtitle: 'Primary operation',
       dayLabel: day.title,
@@ -1189,8 +1222,8 @@ function getPlaybackHighlightLocation(doc: TripDocument, context: TimelineContex
   return null
 }
 
-function buildDailyBriefing(doc: TripDocument, context: TimelineContext): DailyBriefing {
-  const day = getCursorDay(context.cursorSlot)
+function buildDailyBriefing(doc: TripDocument, context: TimelineContext, days = getTripDays(doc)): DailyBriefing {
+  const day = getCursorDay(context.cursorSlot, days)
   const base = DAY_BRIEFING_COPY[day.id as DayId] || DAY_BRIEFING_COPY.thu
   const meals = doc.meals.filter((meal) => meal.dayId === day.id).slice(0, 3)
   const activities = doc.activities.filter((activity) => activity.dayId === day.id).slice(0, 3)
@@ -1246,13 +1279,17 @@ function SectionTitle({ eyebrow, title, meta }: { eyebrow?: string; title: strin
   )
 }
 
-function NotesBox({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
+function NotesBox({ value, onChange, placeholder, readOnly = false }: { value: string; onChange: (value: string) => void; placeholder?: string; readOnly?: boolean }) {
   return (
     <textarea
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
-      className="min-h-24 w-full resize-none border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
+      readOnly={readOnly}
+      className={cn(
+        'min-h-24 w-full resize-none border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]',
+        readOnly ? 'cursor-default opacity-80 focus:border-[#30363D]' : '',
+      )}
     />
   )
 }
@@ -1273,20 +1310,39 @@ function SelectableCard({ selected, onClick, children, className = '' }: { selec
   )
 }
 
-function PageNotesCard({ title, value, onChange, onConvert, placeholder }: { title: string; value: string; onChange: (value: string) => void; onConvert: () => void; placeholder?: string }) {
+function PageNotesCard({ title, value, onChange, onConvert, placeholder, readOnly }: { title: string; value: string; onChange: (value: string) => void; onConvert: () => void; placeholder?: string; readOnly: boolean }) {
   return (
     <div className="border border-[#30363D] bg-[#161b22] p-4">
       <div className="mb-2 flex items-center justify-between">
         <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#8B949E]">{title}</div>
         <button
           type="button"
+          disabled={readOnly}
           onClick={onConvert}
-          className="text-[9px] font-black uppercase tracking-wider text-[#58A6FF]"
+          className="text-[9px] font-black uppercase tracking-wider text-[#58A6FF] disabled:text-[#8B949E] disabled:opacity-50"
         >
           note to task
         </button>
       </div>
-      <NotesBox value={value} onChange={onChange} placeholder={placeholder} />
+      <NotesBox value={value} onChange={onChange} placeholder={placeholder} readOnly={readOnly} />
+    </div>
+  )
+}
+
+function EmptyStateAction({ label, actionLabel, onClick, disabled }: { label: string; actionLabel: string; onClick: () => void; disabled: boolean }) {
+  return (
+    <div className="border border-dashed border-[#30363D] bg-[#0d1117]/70 px-3 py-2 text-[11px] text-[#8B949E]">
+      <div className="flex items-center justify-between gap-3">
+        <span>{label}</span>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={disabled}
+          className="shrink-0 border border-[#30363D] bg-[#161b22] px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {actionLabel}
+        </button>
+      </div>
     </div>
   )
 }
@@ -1301,6 +1357,8 @@ function AppShell({
   families,
   activeFamily,
   onSetActiveFamily,
+  readOnly,
+  syncStatus,
   children,
 }: {
   doc: TripDocument
@@ -1312,10 +1370,13 @@ function AppShell({
   families: FamilyEntity[]
   activeFamily: FamilyEntity | null
   onSetActiveFamily: (familyId: string) => void
+  readOnly: boolean
+  syncStatus: SyncStatusView
   children: ReactNode
 }) {
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-[#0d1117] font-sans text-[#C9D1D9] antialiased">
+    <div className="h-screen w-screen overflow-auto bg-[#0d1117] font-sans text-[#C9D1D9] antialiased">
+      <div className="relative flex h-full min-w-[1180px] overflow-hidden">
       <div className="flex w-16 flex-col border-r border-[#30363D] bg-[#0d1117]">
         <div className="flex h-14 items-center justify-center border-b border-[#30363D] text-[#58A6FF]">
           <img
@@ -1354,20 +1415,6 @@ function AppShell({
           >
             <Download size={20} strokeWidth={1.6} />
           </button>
-          <button
-            type="button"
-            className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
-            title="Messages"
-          >
-            <MessageSquare size={20} strokeWidth={1.6} />
-          </button>
-          <button
-            type="button"
-            className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
-            title="Settings"
-          >
-            <Settings size={20} strokeWidth={1.6} />
-          </button>
         </div>
       </div>
 
@@ -1379,35 +1426,46 @@ function AppShell({
             </div>
             <div className="h-5 w-px bg-[#30363D]" />
             <div className="text-[10px] font-bold uppercase tracking-widest text-[#8B949E]">
-              {TRIP_META.commandName}
+              {doc.title || TRIP_META.commandName}
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
-                Working as
+            {readOnly ? (
+              <div className="rounded-[2px] border border-[#30363D] bg-[#0d1117] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#8B949E]">
+                read-only share
               </div>
-              <div className="flex items-center gap-1.5">
-                {families.map((family) => (
-                  <button
-                    key={family.id}
-                    type="button"
-                    onClick={() => onSetActiveFamily(family.id)}
-                    className={cn(
-                      'border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.14em]',
-                      activeFamily?.id === family.id
-                        ? 'border-[#58A6FF]/50 bg-[#58A6FF]/12 text-[#C9D1D9]'
-                        : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
-                    )}
-                  >
-                    {family.title}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="rounded-[2px] border border-[#30363D] bg-[#0d1117] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#58A6FF]">
-              autosave live
-            </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2">
+                  <div className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
+                    Working as
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {families.map((family) => (
+                      <button
+                        key={family.id}
+                        type="button"
+                        onClick={() => onSetActiveFamily(family.id)}
+                        className={cn(
+                          'border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.14em]',
+                          activeFamily?.id === family.id
+                            ? 'border-[#58A6FF]/50 bg-[#58A6FF]/12 text-[#C9D1D9]'
+                            : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
+                        )}
+                      >
+                        {family.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className={cn(
+                  'rounded-[2px] border border-[#30363D] bg-[#0d1117] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest',
+                  syncStatus.className,
+                )}>
+                  {syncStatus.label}
+                </div>
+              </>
+            )}
             <div className="relative">
               <Search
                 size={14}
@@ -1448,7 +1506,7 @@ function AppShell({
         </div>
       </div>
 
-      {!activeFamily ? (
+      {!readOnly && !activeFamily ? (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#0b0f14]/86 backdrop-blur-sm">
           <div className="w-[420px] border border-[#30363D] bg-[#161b22] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
             <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#58A6FF]">
@@ -1483,6 +1541,7 @@ function AppShell({
           </div>
         </div>
       ) : null}
+      </div>
     </div>
   )
 }
@@ -1518,11 +1577,11 @@ function FamilyList({ doc, selection, onSelectEntity }: { doc: TripDocument; sel
   )
 }
 
-function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor }: { doc: TripDocument; cursorSlot?: number; onSetCursor: (cursorSlot: number) => void }) {
-  const clampedCursor = clampTimelineCursor(cursorSlot)
-  const cursorDayIndex = Math.min(Math.max(Math.floor(clampedCursor / TIME_SLOTS.length), 0), DAYS.length - 1)
-  const selectedDay = DAYS[cursorDayIndex]
-  const cursorHour = getCursorHourInDay(clampedCursor)
+function ScenarioControls({ doc, days, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor }: { doc: TripDocument; days: Day[]; cursorSlot?: number; onSetCursor: (cursorSlot: number) => void }) {
+  const clampedCursor = clampTimelineCursor(cursorSlot, days.length)
+  const cursorDayIndex = Math.min(Math.max(Math.floor(clampedCursor / TIME_SLOTS.length), 0), days.length - 1)
+  const selectedDay = days[cursorDayIndex] || days[0]
+  const cursorHour = getCursorHourInDay(clampedCursor, days.length)
   const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour, hour) => (
     Math.abs(hour - cursorHour) < Math.abs(bestHour - cursorHour) ? hour : bestHour
   ), MISSION_TIME_PRESETS[0])
@@ -1540,18 +1599,18 @@ function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetC
           </div>
         </div>
         <div className="rounded-[2px] border border-[#30363D] bg-[#0d1117] px-2 py-1 text-[9px] font-black uppercase tracking-wider text-[#8B949E]">
-          {selectedDay.shortLabel} {selectedSlotValue}
+          {selectedDay?.shortLabel} {selectedSlotValue}
         </div>
       </div>
       <div className="mb-3 flex flex-wrap gap-2">
-        {DAYS.map((day, dayIndex) => (
+        {days.map((day, dayIndex) => (
           <button
             key={day.id}
             type="button"
             onClick={() => onSetCursor(dayIndex * TIME_SLOTS.length + selectedHour / TIMELINE_HOURS_PER_SLOT)}
             className={cn(
               'border px-2.5 py-1 text-[9px] font-black uppercase tracking-wider',
-              day.id === selectedDay.id
+              day.id === selectedDay?.id
                 ? 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#58A6FF]'
                 : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
             )}
@@ -2101,7 +2160,7 @@ function TimelineBoard({
 }) {
   const days: TripDayWeather[] = weatherDays?.length
     ? weatherDays
-    : DAYS.map((day) => ({
+    : getTripDays(doc).map((day) => ({
       ...day,
       weatherIconKey: 'cloud',
       weatherLocation: day.title,
@@ -2129,9 +2188,9 @@ function TimelineBoard({
   }))
   const timelineHeight = rowLayouts.reduce((sum, row) => sum + row.height, 0)
   const familyLaneMap = new Map(doc.families.map((family, index) => [family.id, index]))
-  const actualTimelineRatio = projectCursorToVisibleTimelineRatio(getCurrentTripCursor(liveNow), days.length)
+  const actualTimelineRatio = projectCursorToVisibleTimelineRatio(getCurrentTripCursor(doc, liveNow), days.length)
   const actualNowLabel = `${liveNow.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })} ${liveNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
-  const hoverCursorLabel = hoverCursorSlot == null ? null : getSlotLabel(hoverCursorSlot)
+  const hoverCursorLabel = hoverCursorSlot == null ? null : getSlotLabel(hoverCursorSlot, doc)
   const cursorRatio = projectCursorToVisibleTimelineRatio(cursorSlot, days.length)
 
   useEffect(() => {
@@ -2427,7 +2486,7 @@ function TimelineBoard({
               <div className="flex h-full">
                 {Array.from({ length: visibleHoursPerDay }).map((_, hourOffset) => {
                   const hour = VISIBLE_TIMELINE_START_HOUR + hourOffset
-                  const hourCursor = clampTimelineCursor(dayIndex * TIME_SLOTS.length + hour / TIMELINE_HOURS_PER_SLOT)
+                  const hourCursor = clampTimelineCursor(dayIndex * TIME_SLOTS.length + hour / TIMELINE_HOURS_PER_SLOT, days.length)
                   const showLabel = (hour - VISIBLE_TIMELINE_START_HOUR) % 3 === 0
                   const isActive = Math.abs(cursorSlot - hourCursor) < (1 / TIMELINE_HOURS_PER_SLOT) / 2
 
@@ -2776,14 +2835,18 @@ function TransitStopCard({ stop, onSelectEntity }: TransitStopCardProps) {
 function ItineraryPage({
   doc,
   selection,
+  currentFamilyId,
+  readOnly,
   onSelectEntity,
   onOpenEntity,
+  onCreateEntity,
   onSetCursor,
   onUpdateMapUi,
   onHydrateRouteDetails,
   onUpdatePageNote,
   onConvertPageNote,
   weatherDays,
+  tripDays,
   mapWeather,
   mapWeatherTargets,
 }: ItineraryPageProps) {
@@ -2803,9 +2866,15 @@ function ItineraryPage({
   const operationGateRef = useRef<TimelineGate | null>(null)
   const triggeredOperationCheckpointIdsRef = useRef(new Set<string>())
   const effectiveCursorSlot = playbackCursorSlot ?? doc.ui.timeline.cursorSlot
+  const mapUi = useMemo(() => {
+    if (doc.ui.map.focusDayId === 'all' || tripDays.some((day) => day.id === doc.ui.map.focusDayId)) {
+      return doc.ui.map
+    }
+    return { ...doc.ui.map, focusDayId: 'all' }
+  }, [doc.ui.map, tripDays])
   const context = useMemo(() => getTimelineContext(doc, effectiveCursorSlot), [doc, effectiveCursorSlot])
-  const dailyBriefing = useMemo(() => buildDailyBriefing(doc, context), [doc, context])
-  const operationCheckpoints = useMemo(() => buildOperationCheckpoints(doc), [doc])
+  const dailyBriefing = useMemo(() => buildDailyBriefing(doc, context, tripDays), [doc, context, tripDays])
+  const operationCheckpoints = useMemo(() => buildOperationCheckpoints(doc, tripDays), [doc, tripDays])
   const playbackHighlightLocationId = useMemo(
     () => (isPlaybackPlaying ? getPlaybackHighlightLocation(doc, context) : null),
     [context, doc, isPlaybackPlaying],
@@ -2905,16 +2974,16 @@ function ItineraryPage({
   }, [])
 
   const armOperationCheckpointsFromCursor = useCallback((cursorSlot: number) => {
-    const normalizedCursor = clampTimelineCursor(cursorSlot)
+    const normalizedCursor = clampTimelineCursor(cursorSlot, tripDays.length)
     triggeredOperationCheckpointIdsRef.current = new Set(
       operationCheckpoints
         .filter((checkpoint) => checkpoint.startSlot <= normalizedCursor + 0.001)
         .map((checkpoint) => checkpoint.id),
     )
-  }, [operationCheckpoints])
+  }, [operationCheckpoints, tripDays.length])
 
   const triggerOperationGate = useCallback((checkpoint: TimelineGate) => {
-    const holdCursor = clampTimelineCursor(checkpoint.startSlot)
+    const holdCursor = clampTimelineCursor(checkpoint.startSlot, tripDays.length)
     playbackCursorRef.current = holdCursor
     setPlaybackCursorSlot(holdCursor)
     setOperationGate({
@@ -2922,17 +2991,17 @@ function ItineraryPage({
       autoAdvanceMs: checkpoint.autoAdvanceMs || 3000,
     })
     setOperationGateRemainingMs(checkpoint.autoAdvanceMs || 3000)
-  }, [])
+  }, [tripDays.length])
 
   const abortOperationGate = useCallback(() => {
-    const committedCursor = clampTimelineCursor(playbackCursorRef.current)
+    const committedCursor = clampTimelineCursor(playbackCursorRef.current, tripDays.length)
     operationGateRef.current = null
     setIsPlaybackPlaying(false)
     setPlaybackCursorSlot(null)
     setOperationGate(null)
     setOperationGateRemainingMs(0)
     onSetCursor(committedCursor)
-  }, [onSetCursor])
+  }, [onSetCursor, tripDays.length])
 
   useEffect(() => {
     if (!operationGate) return undefined
@@ -2975,7 +3044,7 @@ function ItineraryPage({
     if (!isPlaybackPlaying) return undefined
 
     let frameId: number | null = null
-    const maxCursor = clampTimelineCursor(DAYS.length * TIME_SLOTS.length)
+    const maxCursor = clampTimelineCursor(tripDays.length * TIME_SLOTS.length, tripDays.length)
     playbackRunRef.current = {
       anchorCursor: playbackCursorRef.current,
       anchorTimestamp: null,
@@ -3004,6 +3073,7 @@ function ItineraryPage({
       const currentCursor = playbackCursorRef.current
       const nextCursor = clampTimelineCursor(
         currentCursor + deltaSeconds * PLAYBACK_SLOT_UNITS_PER_SECOND * playbackSpeed,
+        tripDays.length,
       )
       const crossedCheckpoint = findCrossedOperationCheckpoint(
         operationCheckpoints,
@@ -3037,11 +3107,11 @@ function ItineraryPage({
     return () => {
       if (frameId) window.cancelAnimationFrame(frameId)
     }
-  }, [isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed, triggerOperationGate])
+  }, [isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed, triggerOperationGate, tripDays.length])
 
   const handleTimelineCursorChange = useCallback(
     (slot: number) => {
-      const nextCursor = clampTimelineCursor(slot)
+      const nextCursor = clampTimelineCursor(slot, tripDays.length)
       setOperationGate(null)
       setOperationGateRemainingMs(0)
       operationGateRef.current = null
@@ -3054,12 +3124,12 @@ function ItineraryPage({
         }
         playbackCursorRef.current = nextCursor
         setPlaybackCursorSlot(nextCursor)
-      return
+        return
       }
       setPlaybackCursorSlot(null)
       onSetCursor(nextCursor)
     },
-    [armOperationCheckpointsFromCursor, clearMissionFeed, isPlaybackPlaying, onSetCursor],
+    [armOperationCheckpointsFromCursor, clearMissionFeed, isPlaybackPlaying, onSetCursor, tripDays.length],
   )
 
   const handleTogglePlayback = useCallback(() => {
@@ -3070,7 +3140,7 @@ function ItineraryPage({
     })
 
     if (isPlaybackPlaying) {
-      const committedCursor = clampTimelineCursor(playbackCursorRef.current)
+      const committedCursor = clampTimelineCursor(playbackCursorRef.current, tripDays.length)
       setIsPlaybackPlaying(false)
       setPlaybackCursorSlot(null)
       operationGateRef.current = null
@@ -3081,7 +3151,7 @@ function ItineraryPage({
       return
     }
 
-    const startingCursor = getSuggestedPlaybackStartCursor(doc, doc.ui.timeline.cursorSlot, operationCheckpoints)
+    const startingCursor = getSuggestedPlaybackStartCursor(doc, doc.ui.timeline.cursorSlot, operationCheckpoints, tripDays.length)
     armOperationCheckpointsFromCursor(startingCursor)
     clearMissionFeed()
     playbackRunRef.current = {
@@ -3092,7 +3162,7 @@ function ItineraryPage({
     setPlaybackCursorSlot(startingCursor)
     setIsPlaybackPlaying(true)
     console.info('[TripCommand] Playback started', { startingCursor, playbackSpeed })
-  }, [armOperationCheckpointsFromCursor, clearMissionFeed, doc, doc.ui.timeline.cursorSlot, isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed])
+  }, [armOperationCheckpointsFromCursor, clearMissionFeed, doc, doc.ui.timeline.cursorSlot, isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed, tripDays.length])
 
   const handleRestartPlayback = useCallback(() => {
     const restartCursor = 0
@@ -3121,6 +3191,8 @@ function ItineraryPage({
     })
     setBriefingOpen(true)
   }, [dailyBriefing?.day?.id, effectiveCursorSlot])
+  const firstDayId = tripDays[0]?.id || 'all'
+  const activeFamilyId = currentFamilyId || doc.families[0]?.id || null
 
   return (
     <>
@@ -3133,8 +3205,24 @@ function ItineraryPage({
               <FamilyList doc={doc} selection={selection} onSelectEntity={onSelectEntity} />
             </div>
             <div>
-              <ScenarioControls doc={doc} cursorSlot={effectiveCursorSlot} onSetCursor={handleTimelineCursorChange} />
+              <ScenarioControls doc={doc} days={tripDays} cursorSlot={effectiveCursorSlot} onSetCursor={handleTimelineCursorChange} />
             </div>
+            {!doc.itineraryItems.length ? (
+              <EmptyStateAction
+                label="No itinerary items"
+                actionLabel="Add itinerary item"
+                disabled={readOnly}
+                onClick={() => onCreateEntity('itineraryItem', { patch: { dayId: firstDayId } })}
+              />
+            ) : null}
+            {!doc.routes.length ? (
+              <EmptyStateAction
+                label="No routes planned"
+                actionLabel="Add route"
+                disabled={readOnly}
+                onClick={() => onCreateEntity('route', { patch: { familyId: activeFamilyId || undefined } })}
+              />
+            ) : null}
             <div>
               <PageNotesCard
                 title="Planner note"
@@ -3142,6 +3230,7 @@ function ItineraryPage({
                 onChange={(value) => onUpdatePageNote('itinerary', value)}
                 onConvert={() => onConvertPageNote('itinerary')}
                 placeholder="Add a planning note..."
+                readOnly={readOnly}
               />
             </div>
           </div>
@@ -3156,8 +3245,9 @@ function ItineraryPage({
               itineraryItems={doc.itineraryItems}
               meals={doc.meals}
               activities={doc.activities}
+              days={tripDays}
               cursorSlot={effectiveCursorSlot}
-              mapUi={doc.ui.map}
+              mapUi={mapUi}
               mapWeather={mapWeather}
               mapWeatherTargets={mapWeatherTargets}
               selectedLocationId={getLocationForEntity(doc, getEntityBySelection(doc, selection))?.id || null}
@@ -3214,13 +3304,13 @@ function ItineraryPage({
   )
 }
 
-function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: CommonPageProps) {
+function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, readOnly }: CommonPageProps) {
   const airbnb = getTypedEntityById(doc, 'location', 'pine-airbnb')
   if (!airbnb) return null
 
   const showExternalListing = Boolean(airbnb?.externalUrl)
   const showManual = Boolean(airbnb?.manualUrl)
-  const isSanitizedStay = !showExternalListing && !showManual
+  const isSanitizedStay = readOnly
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[minmax(380px,440px)_1fr] overflow-hidden">
@@ -3408,13 +3498,14 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
           onChange={(value) => onUpdatePageNote('stay', value)}
           onConvert={() => onConvertPageNote('stay')}
           placeholder="Record gate instructions, sleeping concerns, quiet hours, or house logistics..."
+          readOnly={readOnly}
         />
       </div>
     </div>
   )
 }
 
-function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }: MealsPageProps) {
+function MealsPage({ doc, tripDays, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote, onCreateEntity, readOnly }: MealsPageProps) {
   const selectedMeal = selection.type === 'meal'
     ? getTypedEntityById(doc, 'meal', selection.id) || doc.meals[0]
     : doc.meals[0]
@@ -3439,6 +3530,14 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Meal Logistics" title="Shared feeding plan" meta="Ownership + prep + kid friendliness" />
         <div className="space-y-3">
+          {!doc.meals.length ? (
+            <EmptyStateAction
+              label="No meals planned"
+              actionLabel="Add meal"
+              disabled={readOnly}
+              onClick={() => onCreateEntity('meal', { patch: { dayId: tripDays[0]?.id || 'all' } })}
+            />
+          ) : null}
           {doc.meals.map((meal) => (
             <div
               key={meal.id}
@@ -3456,7 +3555,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                 className="grid min-w-0 grid-cols-[86px_1fr_120px] gap-3 text-left"
               >
                 <div>
-                  <div className="font-bold text-[#8B949E]">{getDayMeta(meal.dayId)?.shortLabel || meal.dayId}</div>
+                  <div className="font-bold text-[#8B949E]">{getTripDayMeta(doc, meal.dayId || '')?.shortLabel || meal.dayId}</div>
                   <div className="mt-1 text-[12px] font-black text-[#C9D1D9]">{meal.timeLabel}</div>
                 </div>
                 <div className="min-w-0">
@@ -3502,7 +3601,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                     {selectedMeal.title}
                   </h2>
                   <div className="mt-2 text-[11px] text-[#8B949E]">
-                    {getDayMeta(selectedMeal.dayId)?.title} at {selectedMeal.timeLabel} · {selectedMeal.reservationType}
+                    {getTripDayMeta(doc, selectedMeal.dayId || '')?.title} at {selectedMeal.timeLabel} · {selectedMeal.reservationType}
                   </div>
                 </div>
                 <StatusPill tone={selectedMeal.status}>{selectedMeal.status}</StatusPill>
@@ -3618,6 +3717,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                 onChange={(value) => onUpdatePageNote('meals', value)}
                 onConvert={() => onConvertPageNote('meals')}
                 placeholder="Capture grocery strategy, allergy notes, kid fallback meals, or timing calls for restaurant stops..."
+                readOnly={readOnly}
               />
             </div>
           </>
@@ -3627,7 +3727,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
   )
 }
 
-function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }: CommonPageProps) {
+function ActivitiesPage({ doc, tripDays, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity, onCreateEntity, readOnly }: CommonPageProps) {
   const selectedActivity = useMemo(
     () => (selection.type === 'activity' ? doc.activities.find((activity) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
     [doc.activities, selection],
@@ -3681,15 +3781,27 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
     [selectedTransitFamilyId, transitFamilies],
   )
   const [draftTitle, setDraftTitle] = useState('')
-  const [draftDayId, setDraftDayId] = useState<DayId>('fri')
-  const [draftWindow, setDraftWindow] = useState('Fri / flexible')
+  const [draftDayId, setDraftDayId] = useState<DayId>(() => tripDays[0]?.id || 'all')
+  const [draftWindow, setDraftWindow] = useState(`${tripDays[0]?.shortLabel || 'Day'} / flexible`)
   const [draftDescription, setDraftDescription] = useState('')
+  useEffect(() => {
+    if (!tripDays.length || tripDays.some((day) => day.id === draftDayId)) return
+    setDraftDayId(tripDays[0]!.id)
+  }, [draftDayId, tripDays])
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(560px,1fr)] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
         <SectionTitle eyebrow="Activity Board" title="Day missions" meta={`${doc.activities.length} tracked`} />
         <div className="space-y-4">
+          {!doc.activities.length ? (
+            <EmptyStateAction
+              label="No activities planned"
+              actionLabel="Add activity"
+              disabled={readOnly}
+              onClick={() => onCreateEntity('activity', { patch: { dayId: tripDays[0]?.id || 'all' } })}
+            />
+          ) : null}
           {doc.activities.map((activity) => (
             <SelectableCard
               key={activity.id}
@@ -3718,6 +3830,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               value={draftTitle}
               onChange={(event) => setDraftTitle(event.target.value)}
               placeholder="Activity title"
+              readOnly={readOnly}
               className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
             <div className="grid grid-cols-[110px_1fr] gap-2">
@@ -3726,7 +3839,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                 onChange={(event) => setDraftDayId(event.target.value as DayId)}
                 className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               >
-                {DAYS.map((day) => (
+                {tripDays.map((day) => (
                   <option key={day.id} value={day.id}>
                     {day.shortLabel.toUpperCase()}
                   </option>
@@ -3736,6 +3849,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                 value={draftWindow}
                 onChange={(event) => setDraftWindow(event.target.value)}
                 placeholder="Window label"
+                readOnly={readOnly}
                 className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
               />
             </div>
@@ -3743,9 +3857,11 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               value={draftDescription}
               onChange={setDraftDescription}
               placeholder="Short description or planning purpose..."
+              readOnly={readOnly}
             />
             <button
               type="button"
+              disabled={readOnly}
               onClick={() => {
                 if (!draftTitle.trim()) return
                 onAddActivity({
@@ -3757,7 +3873,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                 setDraftTitle('')
                 setDraftDescription('')
               }}
-              className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
+              className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF] disabled:opacity-50"
             >
               Add activity
             </button>
@@ -3778,7 +3894,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                     {selectedActivity.title}
                   </h2>
                   <div className="mt-2 text-[11px] text-[#8B949E]">
-                    {getDayMeta(selectedActivity.dayId)?.title || selectedActivity.dayId} · {selectedActivity.window}
+                    {getTripDayMeta(doc, selectedActivity.dayId || '')?.title || selectedActivity.dayId} · {selectedActivity.window}
                   </div>
                 </div>
                 <StatusPill tone={selectedActivity.status}>{selectedActivity.status}</StatusPill>
@@ -3808,7 +3924,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                   <InfoRow icon={ArrowRight} label="Core plan" value={selectedActivity.description} />
                   <InfoRow icon={MapPin} label="Anchor location" value={selectedLocation?.title || 'No anchor location set'} />
                   <InfoRow icon={Search} label="Research read" value={research?.headline || selectedActivity.note || 'Build the mission details for this day.'} muted />
-                  <InfoRow icon={Settings} label="Fallback" value={selectedActivity.backup} muted />
+                  <InfoRow icon={RotateCcw} label="Fallback" value={selectedActivity.backup} muted />
                 </div>
               </div>
             </div>
@@ -3892,6 +4008,7 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
                 onChange={(value) => onUpdatePageNote('activities', value)}
                 onConvert={() => onConvertPageNote('activities')}
                 placeholder="Capture alternate plans, micro-itineraries, weather triggers, or new activity ideas..."
+                readOnly={readOnly}
               />
             </div>
           </>
@@ -3905,6 +4022,7 @@ function ExpensesPage({
   doc,
   selection,
   currentFamily,
+  readOnly,
   onSelectEntity,
   onAddExpense,
   onToggleExpenseSettled,
@@ -3998,7 +4116,8 @@ function ExpensesPage({
           <button
             type="button"
             onClick={onAddExpense}
-            className="border border-[#58A6FF]/40 bg-[#58A6FF]/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#C9D1D9]"
+            disabled={readOnly}
+            className="border border-[#58A6FF]/40 bg-[#58A6FF]/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#C9D1D9] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Add expense
           </button>
@@ -4020,6 +4139,16 @@ function ExpensesPage({
         </div>
 
         <div className="border border-[#30363D] bg-[#0d1117]">
+          {!doc.expenses.length ? (
+            <div className="p-3">
+              <EmptyStateAction
+                label="No expenses tracked"
+                actionLabel="Add expense"
+                disabled={readOnly}
+                onClick={onAddExpense}
+              />
+            </div>
+          ) : null}
           {doc.expenses.map((expense) => (
             <div
               key={expense.id}
@@ -4295,13 +4424,26 @@ function ExpensesPage({
           onChange={(value) => onUpdatePageNote('expenses', value)}
           onConvert={() => onConvertPageNote('expenses')}
           placeholder="Capture split assumptions, cash items, or things to settle after the trip..."
+          readOnly={readOnly}
         />
       </div>
     </div>
   )
 }
 
-function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }: CommonPageProps) {
+function FamiliesPage({
+  doc,
+  selection,
+  currentFamilyId,
+  onSelectEntity,
+  onUpdatePageNote,
+  onConvertPageNote,
+  onCreateEntity,
+  readOnly,
+}: CommonPageProps) {
+  const selectedFamilyId = selection.type === 'family' ? selection.id : null
+  const defaultTaskFamilyId = selectedFamilyId || currentFamilyId || doc.families[0]?.id || null
+
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
@@ -4314,12 +4456,26 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
             onChange={(value) => onUpdatePageNote('families', value)}
             onConvert={() => onConvertPageNote('families')}
             placeholder="Capture cross-family coordination details..."
+            readOnly={readOnly}
           />
         </div>
       </div>
 
       <div className="overflow-y-auto bg-[#0d1117] p-6">
         <SectionTitle eyebrow="Readiness" title="Family task posture" />
+        {!doc.tasks.length ? (
+          <div className="mb-4">
+              <EmptyStateAction
+                label="No tasks created"
+                actionLabel="Add task"
+                disabled={readOnly}
+                onClick={() => onCreateEntity('task', {
+                  selectedPage: 'families',
+                  patch: { ownerFamilyId: defaultTaskFamilyId },
+                })}
+              />
+          </div>
+        ) : null}
         <div className="grid gap-4">
           {doc.families.map((family) => {
             const tasks = getTasksByFamily(doc, family.id)
@@ -4373,22 +4529,48 @@ function withRefreshedFamilies(nextDoc: TripDocument): TripDocument {
   }
 }
 
-function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppProps) {
+function syncStatusView(status: TripRoomState['status'], hasServiceTrip: boolean): SyncStatusView {
+  if (!hasServiceTrip) return { label: 'local autosave', className: 'text-[#8B949E]' }
+  if (status === 'open') return { label: 'autosave live', className: 'text-[#58A6FF]' }
+  if (status === 'connecting') return { label: 'sync connecting', className: 'text-[#D29922]' }
+  if (status === 'error') return { label: 'sync error', className: 'text-[#F85149]' }
+  return { label: 'sync offline', className: 'text-[#D29922]' }
+}
+
+function App({ serviceTripId, tripRole = 'owner', serviceTripMembers = [], initialServiceDocument, readOnly = false }: AppProps) {
   const [persistedDoc, setPersistedDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument(), {
     deserialize: parsePersistedTripDocument,
   })
-  const [serviceDoc, setServiceDoc] = useState<TripDocument>(() => initialServiceDocument || getInitialTripDocument())
+  const [serviceDoc, setServiceDoc] = useState<TripDocument>(() =>
+    initialServiceDocument && !readOnly ? normalizeMemberTripCopy(initialServiceDocument) : initialServiceDocument || getInitialTripDocument(),
+  )
   const [viewerProfile, setViewerProfile] = usePersistedTripState<ViewerProfile>(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
-  const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
   const {
     document: roomDocument,
     sendCommand: sendRoomCommand,
-    status: roomStatus,
     version: roomVersion,
+    status: roomStatus,
   } = useTripRoom(serviceTripId ?? null)
   const usesServiceShell = Boolean(serviceTripId || initialServiceDocument)
-  const activeServiceDoc = roomDocument || serviceDoc
+  const syncStatus = syncStatusView(roomStatus, Boolean(serviceTripId))
+  const visibilityMode = readOnly ? 'public' : usesServiceShell ? 'member' : PUBLISH_CONFIG.visibilityMode
+  const activeServiceSourceDoc = roomDocument || serviceDoc
+  const activeServiceDoc = useMemo(() => {
+    const base = readOnly ? activeServiceSourceDoc : normalizeMemberTripCopy(activeServiceSourceDoc)
+    if (!usesServiceShell) return base
+
+    const withLocalSelection = {
+      ...base,
+      selectedPage: serviceDoc.selectedPage,
+      selection: serviceDoc.selection,
+    }
+
+    return {
+      ...withLocalSelection,
+      selection: ensureSelectionForPage(withLocalSelection, withLocalSelection.selectedPage),
+    }
+  }, [activeServiceSourceDoc, readOnly, serviceDoc.selectedPage, serviceDoc.selection, usesServiceShell])
   const doc = usesServiceShell
     ? {
         ...activeServiceDoc,
@@ -4398,6 +4580,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
     : persistedDoc
   const setDoc: Dispatch<SetStateAction<TripDocument>> = usesServiceShell ? setServiceDoc : setPersistedDoc
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
+  const tripDays = useMemo(() => getTripDays(doc), [doc.days])
   const locationIntelHydrationRef = useRef(new Set<string>())
   const startupTimelineSyncRef = useRef(false)
   const seededPlanRefreshRef = useRef(false)
@@ -4417,9 +4600,9 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
 
   useEffect(() => {
     if (initialServiceDocument) {
-      setServiceDoc(initialServiceDocument)
+      setServiceDoc(readOnly ? initialServiceDocument : normalizeMemberTripCopy(initialServiceDocument))
     }
-  }, [initialServiceDocument])
+  }, [initialServiceDocument, readOnly])
 
   useEffect(() => {
     clearOldTripStorage()
@@ -4434,14 +4617,9 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
     payload: TripEventPayload<Type>,
   ) => {
     if (!serviceTripId || readOnly) return false
-
-    if (!roomDocument || roomStatus !== 'open') {
-      return true
-    }
-
     sendRoomCommand(buildCommand(type, roomVersion, payload))
     return true
-  }, [readOnly, roomDocument, roomStatus, roomVersion, sendRoomCommand, serviceTripId])
+  }, [readOnly, roomVersion, sendRoomCommand, serviceTripId])
 
   const sendEntityCreateCommand = useCallback(<Type extends TripEntityType>(
     entityType: Type,
@@ -4465,14 +4643,13 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
     if (startupTimelineSyncRef.current) return
     startupTimelineSyncRef.current = true
 
-    const nowCursor = getCurrentTripCursor()
     setDoc((current) => ({
       ...current,
       ui: {
         ...current.ui,
         timeline: {
           ...current.ui.timeline,
-          cursorSlot: nowCursor,
+          cursorSlot: getCurrentTripCursor(current),
         },
         map: {
           ...current.ui.map,
@@ -4485,6 +4662,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
 
   useEffect(() => {
     if (readOnly) return
+    if (doc.templateKind === 'guided') return
 
     const jiangRoute = doc.routes.find((route) => route.id === 'route-la-north-star')
     const jiangFamily = doc.families.find((family) => family.id === 'north-star')
@@ -4610,10 +4788,11 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         routes: nextRoutes,
       }
     })
-  }, [doc.families, doc.locations, doc.routes, readOnly, setDoc])
+  }, [doc.families, doc.locations, doc.routes, doc.templateKind, readOnly, setDoc])
 
   useEffect(() => {
     if (readOnly) return
+    if (doc.templateKind === 'guided') return
     if (seededPlanRefreshRef.current) return
 
     const initialDoc = getInitialTripDocument()
@@ -4710,22 +4889,28 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         itineraryItems: nextItineraryItems,
       }
     })
-  }, [doc.activities, doc.families, doc.itineraryItems, doc.locations, doc.meals, doc.routes, doc.tasks, readOnly, setDoc])
+  }, [doc.activities, doc.families, doc.itineraryItems, doc.locations, doc.meals, doc.routes, doc.tasks, doc.templateKind, readOnly, setDoc])
   const searchResults = useMemo(
     () => getSearchResults(displayDoc, displayDoc.ui.searchQuery),
     [displayDoc],
   )
   const timelineWeatherDays = useMemo(
-    () => DAYS.map((day) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
-    [weatherState.targets],
+    () => tripDays.map((day) => ({ ...day, ...getTripDayWeather(weatherState.targets, day) })),
+    [tripDays, weatherState.targets],
+  )
+  const mapFocusDayId = useMemo(
+    () => doc.ui.map.focusDayId === 'all' || tripDays.some((day) => day.id === doc.ui.map.focusDayId)
+      ? doc.ui.map.focusDayId
+      : 'all',
+    [doc.ui.map.focusDayId, tripDays],
   )
   const mapWeather = useMemo(
-    () => getMapWeather(weatherState.targets, doc.ui.map.focusDayId),
-    [doc.ui.map.focusDayId, weatherState.targets],
+    () => getMapWeather(weatherState.targets, mapFocusDayId),
+    [mapFocusDayId, weatherState.targets],
   )
   const mapWeatherTargets = useMemo(
-    () => getMapWeatherTargets(weatherState.targets, doc.ui.map.focusDayId),
-    [doc.ui.map.focusDayId, weatherState.targets],
+    () => getMapWeatherTargets(weatherState.targets, mapFocusDayId),
+    [mapFocusDayId, weatherState.targets],
   )
 
   const setSelectedPage = useCallback((pageId: PageId) => {
@@ -4841,6 +5026,43 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         locations,
         routes: synchronizeRoutePaths(current.routes, locations),
       }
+    })
+  }, [currentFamilyId, readOnly, sendEntityUpdateCommand, setDoc])
+
+  const patchEntity = useCallback(<Type extends TripEntityType>(
+    type: Type,
+    id: string,
+    patch: Partial<EntityByType[Type]>,
+  ) => {
+    if (sendEntityUpdateCommand(type, id, patch)) return
+    if (readOnly) return
+
+    setDoc((current) => {
+      const collectionName = COLLECTION_BY_ENTITY_TYPE[type]
+      const collection = current[collectionName] as EntityByType[Type][]
+      const routePathChanged = type === 'route' && hasPatchKey(patch, ROUTE_PATH_PATCH_KEYS)
+      const routeSourceMayNeedRecompute = type === 'route' && hasPatchKey(patch, ['familyId']) && !hasPatchKey(patch, ['originCoordinates'])
+      const locationPathChanged = type === 'location' && hasPatchKey(patch, LOCATION_PATH_PATCH_KEYS)
+      const nextCollection = updateEntityInCollection(collection, id, (item) =>
+        stampFamilyMetadata({
+          ...item,
+          ...patch,
+          ...(routePathChanged ? { path: undefined, simulationMilestones: undefined } : {}),
+        } as EntityByType[Type], currentFamilyId),
+      )
+      const nextDoc = {
+        ...current,
+        [collectionName]: nextCollection,
+      } as TripDocument
+
+      if (locationPathChanged) {
+        nextDoc.routes = nextDoc.routes.map((route) => (routeUsesLocationId(route, id) ? clearRoutePathCache(route) : route))
+      }
+      if ((routePathChanged && !routeSourceMayNeedRecompute) || (locationPathChanged && hasPatchKey(patch, ['coordinates']))) {
+        nextDoc.routes = synchronizeRoutePaths(nextDoc.routes, nextDoc.locations)
+      }
+
+      return withRefreshedFamilies(nextDoc)
     })
   }, [currentFamilyId, readOnly, sendEntityUpdateCommand, setDoc])
 
@@ -5123,6 +5345,12 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
     }))
   }
 
+  const renameTrip = (title: string) => {
+    if (sendTripCommand('trip.meta.update', { title })) return
+    if (readOnly) return
+    setDoc((current) => ({ ...current, title }))
+  }
+
   const updateEntityNote = (type: TripEntityType, id: string, value: string) => {
     if (sendEntityUpdateCommand(type, id, { note: value })) return
     if (readOnly) return
@@ -5243,12 +5471,13 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   const addActivity = ({ title, dayId, window, description }: ActivityDraft) => {
     if (!title?.trim()) return
 
-    const fallbackWindow = `${getDayMeta(dayId)?.shortLabel?.toUpperCase() || dayId?.toUpperCase() || 'DAY'} / flexible`
+    const fallbackDayId = dayId || tripDays[0]?.id || 'fri'
+    const fallbackWindow = `${getTripDayMeta(doc, fallbackDayId)?.shortLabel?.toUpperCase() || fallbackDayId.toUpperCase() || 'DAY'} / flexible`
     const newActivity = stampFamilyMetadata<ActivityEntity>({
       id: createId('activity'),
       type: 'activity',
       title: title.trim(),
-      dayId: dayId || 'fri',
+      dayId: fallbackDayId,
       window: window?.trim() || fallbackWindow,
       status: 'Pending',
       riskLevel: 'Low',
@@ -5475,7 +5704,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
     const newExpense = stampFamilyMetadata<ExpenseEntity>({
       id: createId('expense'),
       type: 'expense',
-      title: 'New shared expense',
+      title: 'New expense',
       payer: currentFamilyId ? familyLabel : 'Unassigned',
       amount: 0,
       split: EXPENSE_SPLIT_LABELS.equal,
@@ -5506,11 +5735,14 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
     })
   }
 
-  const createEntity = useCallback((entityType: TripEntityType) => {
+  const createEntity = useCallback((entityType: TripEntityType, options: CreateEntityOptions = {}) => {
     if (readOnly) return
 
-    const entity = createDefaultEntity(entityType)
-    const selectedPage = pageForEntityType(entity.type)
+    const entity = {
+      ...createDefaultEntity(entityType),
+      ...options.patch,
+    } as TripEntity
+    const selectedPage = options.selectedPage || pageForEntityType(entity.type)
 
     if (sendTripCommand('entity.create', { entityType: entity.type, entity } as TripEventPayload<'entity.create'>)) {
       setServiceDoc((current) => ({
@@ -5575,7 +5807,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
   }
 
   const setTimelineCursor = useCallback((cursorSlot: number) => {
-    const nextCursorSlot = clampTimelineCursor(cursorSlot)
+    const nextCursorSlot = clampTimelineCursor(cursorSlot, tripDays.length)
     if (sendTripCommand('uiState.update', { timeline: { cursorSlot: nextCursorSlot } })) return
 
     setDoc((current) => ({
@@ -5585,7 +5817,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         timeline: { ...current.ui.timeline, cursorSlot: nextCursorSlot },
       },
     }))
-  }, [sendTripCommand, setDoc])
+  }, [sendTripCommand, setDoc, tripDays.length])
 
   const updateSearchQuery = (searchQuery: string) => {
     if (sendTripCommand('uiState.update', { searchQuery })) return
@@ -5608,14 +5840,17 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
 
   const pageProps: CommonPageProps = {
     doc: displayDoc,
+    tripDays,
     selection,
     currentFamily,
     currentFamilyId,
+    readOnly,
     onSelectEntity: selectEntity,
     onOpenEntity: openEntity,
     onUpdatePageNote: updatePageNote,
     onConvertPageNote: convertPageNoteToTask,
     onAddActivity: addActivity,
+    onCreateEntity: createEntity,
   }
 
   let content: ReactNode = null
@@ -5663,6 +5898,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
             pageId={displayDoc.selectedPage}
             selection={selection}
             activeFamilyId={currentFamilyId}
+            members={serviceTripMembers}
+            days={tripDays}
             readOnly={readOnly}
             showCrudPanel={Boolean(serviceTripId)}
             onSelectEntity={selectEntity}
@@ -5672,6 +5909,7 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
             onUpdateLocationFields={updateLocationFields}
             onToggleTask={toggleTask}
             onUpdateEntityNote={updateEntityNote}
+            onPatchEntity={patchEntity}
             onAddTask={addTask}
             onConvertNoteToTask={convertNoteToTask}
             onToggleMealStatus={toggleMealStatus}
@@ -5680,7 +5918,14 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
         </div>
         {serviceTripId ? (
           <div className="border-l border-t border-[#30363D] bg-[#0d1117] p-3">
-            <TripSettingsPanel tripId={serviceTripId} readOnly={readOnly} />
+            <TripSettingsPanel
+              tripId={serviceTripId}
+              title={displayDoc.title || TRIP_META.commandName}
+              role={tripRole}
+              members={serviceTripMembers}
+              readOnly={readOnly}
+              onRename={renameTrip}
+            />
           </div>
         ) : null}
       </div>
@@ -5698,6 +5943,8 @@ function App({ serviceTripId, initialServiceDocument, readOnly = false }: AppPro
       families={displayDoc.families}
       activeFamily={currentFamily}
       onSetActiveFamily={setActiveFamilyProfile}
+      readOnly={readOnly}
+      syncStatus={syncStatus}
     >
       {mainWithInspector}
     </AppShell>

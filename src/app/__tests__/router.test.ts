@@ -11,10 +11,16 @@ describe('matchRoute', () => {
     expect(matchRoute('/share/token_123')).toEqual({ name: 'share', token: 'token_123' })
   })
 
+  it('matches invite routes', () => {
+    expect(matchRoute('/invites/token_123')).toEqual({ name: 'invite', token: 'token_123' })
+  })
+
   it('falls back instead of throwing on malformed encoded routes', () => {
     expect(() => matchRoute('/trips/%')).not.toThrow()
     expect(() => matchRoute('/share/%E0%A4%A')).not.toThrow()
+    expect(() => matchRoute('/invites/%E0%A4%A')).not.toThrow()
     expect(matchRoute('/trips/%')).toEqual({ name: 'trips' })
     expect(matchRoute('/share/%E0%A4%A')).toEqual({ name: 'trips' })
+    expect(matchRoute('/invites/%E0%A4%A')).toEqual({ name: 'trips' })
   })
 })

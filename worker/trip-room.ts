@@ -1,13 +1,14 @@
 import { createId } from '../src/shared/ids'
 import { isJsonObject } from '../src/shared/json'
 import { applyTripEvent } from '../src/shared/trip-reducer'
+import { normalizeMemberTripCopy } from '../src/shared/trip-template'
 import type { TripDocument, TripEvent } from '../src/shared/trip-types'
 import { hashToken } from './auth'
 import {
   commitTripEvent,
   decodeTripEventPayload,
-  findMembership,
   findSessionUser,
+  getTripAccess,
   loadHydratedTripSnapshotWithVersion,
 } from './db'
 import type { Env } from './env'
@@ -77,8 +78,9 @@ export class TripRoom implements DurableObject {
     const user = await this.authenticate(request)
     if (!user) return new Response('Unauthorized', { status: 401 })
 
-    const membership = await findMembership(this.env.DB, tripId, user.id)
-    if (!membership) return new Response('Forbidden', { status: 403 })
+    const access = await getTripAccess(this.env.DB, tripId, user.id)
+    if (!access.exists) return new Response('Trip not found', { status: 404 })
+    if (!access.role) return new Response('Forbidden', { status: 403 })
 
     const hydrated = await this.load(tripId)
     if (!hydrated) return new Response('Trip snapshot not found', { status: 404 })
@@ -102,10 +104,13 @@ export class TripRoom implements DurableObject {
   }
 
   private async load(tripId: string): Promise<boolean> {
-    if (this.document) return true
+    if (this.document) {
+      this.document = normalizeMemberTripCopy(this.document)
+      return true
+    }
     const hydrated = await loadHydratedTripSnapshotWithVersion(this.env.DB, tripId)
     if (!hydrated) return false
-    this.document = hydrated.document
+    this.document = normalizeMemberTripCopy(hydrated.document)
     this.version = hydrated.version
     this.acceptedSinceSnapshot = this.version % SNAPSHOT_INTERVAL
     return true
@@ -120,6 +125,12 @@ export class TripRoom implements DurableObject {
     const command = parseTripCommand(data)
     if (!command) {
       this.send(socket, { type: 'event.rejected', reason: 'malformed_command' })
+      return
+    }
+
+    const access = await getTripAccess(this.env.DB, tripId, actorUserId)
+    if (!access.exists || !canWriteTrip(access.role)) {
+      this.send(socket, { type: 'event.rejected', reason: 'forbidden' })
       return
     }
 
@@ -228,4 +239,8 @@ function isTripEventType(type: string): type is TripEvent['type'] {
     || type === 'pageNote.update'
     || type === 'uiState.update'
     || type === 'trip.meta.update'
+}
+
+function canWriteTrip(role: 'owner' | 'editor' | null): boolean {
+  return role === 'owner' || role === 'editor'
 }

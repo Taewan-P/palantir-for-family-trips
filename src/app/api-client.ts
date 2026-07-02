@@ -25,3 +25,12 @@ export async function apiPost<T>(path: string, body?: JsonValue): Promise<Client
 
   return (await response.json()) as ClientApiResult<T>
 }
+
+export async function apiDelete<T>(path: string): Promise<ClientApiResult<T>> {
+  const response = await fetch(apiUrl(path), {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+
+  return (await response.json()) as ClientApiResult<T>
+}

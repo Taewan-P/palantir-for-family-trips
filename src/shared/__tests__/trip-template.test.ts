@@ -1,5 +1,5 @@
 import { parsePersistedTripDocument, projectTripDocument } from '../../tripModel'
-import { createTripFromTemplate } from '../trip-template'
+import { createGuidedTripDocument, createTripFromTemplate, normalizeMemberTripCopy } from '../trip-template'
 import type { JsonObject, JsonValue } from '../json'
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
@@ -14,15 +14,190 @@ function getPhotoArray(value: JsonValue | undefined): JsonValue[] | null {
   return Array.isArray(value) ? value : null
 }
 
+describe('createGuidedTripDocument', () => {
+  it('creates a blank trip document from guided setup input', () => {
+    const doc = createGuidedTripDocument({
+      title: 'Japan Summer 2026',
+      startDate: '2026-07-10',
+      endDate: '2026-07-12',
+      destinationName: 'Tokyo',
+      basecampAddress: '1 Chome Marunouchi, Tokyo',
+      families: [
+        { displayName: 'Park Household', origin: 'Seoul', adults: 2, kids: 1 },
+        { displayName: 'Kim Household', origin: 'Busan', adults: 1, kids: 2 },
+      ],
+    })
+
+    expect(doc.title).toBe('Japan Summer 2026')
+    expect(doc.templateKind).toBe('guided')
+    expect(doc.selectedPage).toBe('families')
+    expect(doc.selection).toEqual({ type: 'family', id: 'family_1' })
+    expect(doc.days).toHaveLength(3)
+    expect(doc.days?.map((day) => day.date)).toEqual([
+      '2026-07-10',
+      '2026-07-11',
+      '2026-07-12',
+    ])
+    expect(doc.families.map((family) => family.title)).toEqual([
+      'Park Household',
+      'Kim Household',
+    ])
+    expect(doc.families[0]).toMatchObject({
+      assignedUserId: null,
+      assignedUserEmail: null,
+      headcount: '2 adults, 1 kid',
+      origin: 'Seoul',
+    })
+    expect(doc.families[1]).toMatchObject({
+      assignedUserId: null,
+      assignedUserEmail: null,
+      headcount: '1 adult, 2 kids',
+      origin: 'Busan',
+    })
+    expect(doc.locations).toEqual([{
+      id: 'location_destination',
+      type: 'location',
+      title: 'Tokyo',
+      category: 'destination',
+    }])
+    expect(doc.stayItems).toEqual([{
+      id: 'stay_basecamp',
+      type: 'stayItem',
+      title: 'Tokyo Basecamp',
+      category: 'basecamp',
+      address: '1 Chome Marunouchi, Tokyo',
+      locationId: 'location_destination',
+    }])
+    expect(doc.routes).toEqual([])
+    expect(doc.itineraryItems).toEqual([])
+    expect(doc.meals).toEqual([])
+    expect(doc.activities).toEqual([])
+    expect(doc.expenses).toEqual([])
+    expect(doc.tasks).toEqual([])
+  })
+
+  it('does not include seeded names or copied demo content', () => {
+    const serialized = JSON.stringify(
+      createGuidedTripDocument({
+        title: 'Real Trip',
+        startDate: '2026-08-01',
+        endDate: '2026-08-01',
+        destinationName: 'Osaka',
+        families: [{ displayName: 'Lee Family', adults: 2, kids: 0 }],
+      }),
+    )
+
+    expect(serialized).not.toContain('Parkers')
+    expect(serialized).not.toContain('Jiangs')
+    expect(serialized).not.toContain('Riveras')
+    expect(serialized).not.toContain('Duckfat')
+    expect(serialized).not.toContain('Portland Head Light')
+  })
+
+  it('throws when destination is blank', () => {
+    expect(() =>
+      createGuidedTripDocument({
+        title: 'Real Trip',
+        startDate: '2026-08-01',
+        endDate: '2026-08-01',
+        destinationName: '   ',
+        families: [{ displayName: 'Lee Family', adults: 2, kids: 0 }],
+      }),
+    ).toThrow('Destination name is required')
+  })
+
+  it('throws when family headcount values are invalid', () => {
+    for (const counts of [
+      { adults: -1, kids: 1 },
+      { adults: 1.5, kids: 1 },
+      { adults: Number.POSITIVE_INFINITY, kids: 1 },
+      { adults: 1, kids: Number.NaN },
+    ]) {
+      expect(() =>
+        createGuidedTripDocument({
+          title: 'Real Trip',
+          startDate: '2026-08-01',
+          endDate: '2026-08-01',
+          destinationName: 'Osaka',
+          families: [{ displayName: 'Lee Family', ...counts }],
+        }),
+      ).toThrow('Family headcount must use finite non-negative integers')
+    }
+  })
+
+  it('throws when family headcount is zero', () => {
+    expect(() =>
+      createGuidedTripDocument({
+        title: 'Real Trip',
+        startDate: '2026-08-01',
+        endDate: '2026-08-01',
+        destinationName: 'Osaka',
+        families: [{ displayName: 'Lee Family', adults: 0, kids: 0 }],
+      }),
+    ).toThrow('Family headcount must include at least one person')
+  })
+
+  it('reloads persisted guided trips without seeded fallback data', () => {
+    const persisted = createGuidedTripDocument({
+      title: 'Real Trip',
+      startDate: '2026-08-01',
+      endDate: '2026-08-02',
+      destinationName: 'Osaka',
+      families: [{ displayName: 'Lee Family', adults: 2, kids: 0 }],
+    })
+
+    const parsed = parsePersistedTripDocument(JSON.stringify(persisted))
+
+    expect(parsed.templateKind).toBe('guided')
+    expect(parsed.days).toEqual(persisted.days)
+    expect(parsed.families).toEqual(persisted.families)
+    expect(parsed.routes).toEqual([])
+    expect(parsed.itineraryItems).toEqual([])
+    expect(parsed.meals).toEqual([])
+    expect(parsed.activities).toEqual([])
+    expect(parsed.expenses).toEqual([])
+    expect(parsed.tasks).toEqual([])
+  })
+})
+
 describe('createTripFromTemplate', () => {
   it('creates a fresh document with the requested id and title', () => {
     const trip = createTripFromTemplate({ id: 'trip_abc', title: 'Tahoe Weekend' })
 
     expect(trip.id).toBe('trip_abc')
     expect(trip.title).toBe('Tahoe Weekend')
+    expect(trip.templateKind).toBe('seeded')
     expect(trip.families.length).toBeGreaterThan(0)
     expect(trip.activities.length).toBeGreaterThan(0)
     expect(trip.ui.searchQuery).toBe('')
+  })
+
+  it('does not seed member trips with public-share redaction copy', () => {
+    const trip = createTripFromTemplate({ id: 'trip_member', title: 'Member Trip' })
+    const text = JSON.stringify(trip).toLowerCase()
+
+    expect(text).not.toContain('sanitized demo')
+    expect(text).not.toContain('public version')
+    expect(text).not.toContain('public trip unit')
+    expect(text).not.toContain('intentionally withheld')
+    expect(text).not.toContain('intentionally generalized')
+    expect(text).not.toContain('intentionally simplified')
+    expect(text).not.toContain('intentionally redacted')
+  })
+
+  it('repairs legacy member snapshots without dropping custom entities', () => {
+    const trip = createTripFromTemplate({ id: 'trip_legacy', title: 'Legacy Trip' })
+    trip.locations[0]!.accessNote = 'Arrival and access details are intentionally redacted in the public version.'
+    trip.stayItems[0]!.summary = 'Basecamp operations run through the public Groveland-area staging house.'
+    trip.families[0]!.note = 'Public trip unit used for same-day Bay Area arrival coverage.'
+    trip.meals.push({ id: 'custom-meal', type: 'meal', title: 'Custom meal', dayId: 'thu' })
+
+    const normalized = normalizeMemberTripCopy(trip)
+    const text = JSON.stringify(normalized).toLowerCase()
+
+    expect(text).not.toContain('public version')
+    expect(text).not.toContain('public trip unit')
+    expect(normalized.meals.some((meal) => meal.id === 'custom-meal')).toBe(true)
   })
 
   it('does not share mutable nested seed data between generated trips', () => {

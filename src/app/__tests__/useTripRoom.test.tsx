@@ -107,6 +107,29 @@ describe('useTripRoom', () => {
     expect(latestState?.status).toBe('error')
   })
 
+  it('repairs legacy public-share copy from member room snapshots', () => {
+    act(() => root?.render(<Probe tripId="trip_123" />))
+    const document = tripDocument()
+    document.locations.push({
+      id: 'pine-airbnb',
+      type: 'location',
+      title: 'Pine Mountain Lake Basecamp',
+      category: 'stay',
+      accessNote: 'Arrival and access details are intentionally redacted in the public version.',
+    })
+
+    act(() =>
+      sockets[0].dispatch(
+        'message',
+        new MessageEvent('message', { data: JSON.stringify({ type: 'snapshot', document, version: 1 }) }),
+      ),
+    )
+
+    expect(latestState?.document?.locations[0]?.accessNote).toBe(
+      'Confirm community access, guest passes, and the arrival handoff before departure.',
+    )
+  })
+
   it('ignores stale events from a previous trip socket', () => {
     act(() => root?.render(<Probe tripId="trip_1" />))
     const previousSocket = sockets[0]

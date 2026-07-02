@@ -1,3 +1,4 @@
+import { projectTripDocument } from '../tripModel'
 import type { FamilyEntity, LocationEntity, RouteEntity, TripDocument } from './trip-types'
 
 function sanitizeFamily(family: FamilyEntity): FamilyEntity {
@@ -26,12 +27,6 @@ function sanitizeLocation(location: LocationEntity): LocationEntity {
     ...(lastEditedAt === undefined ? {} : { lastEditedAt }),
     ...(status === undefined ? {} : { status }),
     address: 'Private lodging details hidden',
-    accessNote: null,
-    directionsNote: null,
-    parkingNote: null,
-    lockNote: null,
-    wifiNetwork: null,
-    wifiPassword: null,
     note: '',
   }
 }
@@ -42,22 +37,24 @@ function sanitizeRoute(route: RouteEntity): RouteEntity {
 }
 
 export function sanitizeTripForShare(document: TripDocument): TripDocument {
+  const projected = projectTripDocument(document, 'public')
+
   return {
-    ...document,
+    ...projected,
     pageNotes: {},
     pageNoteMeta: {},
     ui: {
-      ...document.ui,
+      ...projected.ui,
       searchQuery: '',
     },
-    families: document.families.map(sanitizeFamily),
-    locations: document.locations.map(sanitizeLocation),
-    routes: document.routes.map(sanitizeRoute),
-    itineraryItems: document.itineraryItems.map((item) => ({ ...item, note: '' })),
-    meals: document.meals.map((meal) => ({ ...meal, note: '' })),
-    activities: document.activities.map((activity) => ({ ...activity, note: '' })),
-    stayItems: document.stayItems.map((item) => ({ ...item, note: '' })),
-    expenses: document.expenses.map((expense) => ({ ...expense, note: '', allocations: {} })),
-    tasks: document.tasks.map((task) => ({ ...task, note: '' })),
+    families: projected.families.map(sanitizeFamily),
+    locations: projected.locations.map(sanitizeLocation),
+    routes: projected.routes.map(sanitizeRoute),
+    itineraryItems: projected.itineraryItems.map((item) => ({ ...item, note: '' })),
+    meals: projected.meals.map((meal) => ({ ...meal, note: '' })),
+    activities: projected.activities.map((activity) => ({ ...activity, note: '' })),
+    stayItems: projected.stayItems.map((item) => ({ ...item, note: '' })),
+    expenses: projected.expenses.map((expense) => ({ ...expense, note: '', allocations: {} })),
+    tasks: projected.tasks.map((task) => ({ ...task, note: '' })),
   }
 }

@@ -95,6 +95,77 @@ describe('applyTripEvent', () => {
     expect(applyTripEvent(doc, event).tasks[0]?.status).toBe('done')
   })
 
+  it('clears stale route path when a route destination changes', () => {
+    const doc = baseDoc()
+    const origin = { lat: 0, lng: 0 }
+    const oldDestination = { lat: 1, lng: 1 }
+    doc.locations = [
+      { id: 'loc_old', type: 'location', title: 'Old', category: 'stop', coordinates: oldDestination },
+      { id: 'loc_new', type: 'location', title: 'New', category: 'stop', coordinates: { lat: 2, lng: 2 } },
+    ]
+    doc.routes = [{
+      id: 'route_1',
+      type: 'route',
+      title: 'Family route',
+      originCoordinates: origin,
+      destinationLocationId: 'loc_old',
+      path: [origin, oldDestination],
+      simulationMilestones: [{ t: 0, progress: 0 }],
+    }]
+
+    const event: TripEvent = {
+      id: 'event_route_1',
+      tripId: 'trip_1',
+      version: 2,
+      previousVersion: 1,
+      actorUserId: 'user_1',
+      createdAt: '2026-07-01T00:01:00.000Z',
+      type: 'entity.update',
+      payload: { entityType: 'route', id: 'route_1', patch: { destinationLocationId: 'loc_new' } },
+    }
+
+    const route = applyTripEvent(doc, event).routes[0]
+
+    expect(route?.destinationLocationId).toBe('loc_new')
+    expect(route?.path).toBeUndefined()
+    expect(route?.simulationMilestones).toBeUndefined()
+  })
+
+  it('clears stale route path when an attached location coordinate changes', () => {
+    const doc = baseDoc()
+    const origin = { lat: 0, lng: 0 }
+    const oldDestination = { lat: 1, lng: 1 }
+    doc.locations = [
+      { id: 'loc_dest', type: 'location', title: 'Destination', category: 'stop', coordinates: oldDestination },
+    ]
+    doc.routes = [{
+      id: 'route_1',
+      type: 'route',
+      title: 'Family route',
+      originCoordinates: origin,
+      destinationLocationId: 'loc_dest',
+      path: [origin, oldDestination],
+      simulationMilestones: [{ t: 0, progress: 0 }],
+    }]
+
+    const event: TripEvent = {
+      id: 'event_location_1',
+      tripId: 'trip_1',
+      version: 2,
+      previousVersion: 1,
+      actorUserId: 'user_1',
+      createdAt: '2026-07-01T00:01:00.000Z',
+      type: 'entity.update',
+      payload: { entityType: 'location', id: 'loc_dest', patch: { coordinates: { lat: 3, lng: 3 } } },
+    }
+
+    const next = applyTripEvent(doc, event)
+
+    expect(next.locations[0]?.coordinates).toEqual({ lat: 3, lng: 3 })
+    expect(next.routes[0]?.path).toBeUndefined()
+    expect(next.routes[0]?.simulationMilestones).toBeUndefined()
+  })
+
   it('deletes an entity from the matching collection', () => {
     const doc = baseDoc()
     doc.expenses = [{

@@ -1,4 +1,4 @@
-import { claimActiveInvite, commitTripEvent, decodeTripEventRow, encodeTripEventPayload, getTripAccess, loadHydratedTripSnapshot, rotateShareLink } from '../db'
+import { claimActiveInvite, commitTripEvent, decodeTripEventRow, encodeTripEventPayload, findActiveInvite, findActiveShareLink, getTripAccess, loadHydratedTripSnapshot, rotateShareLink } from '../db'
 import { replayTripEvents } from '../../src/shared/trip-reducer'
 import type { TripDocument } from '../../src/shared/trip-types'
 
@@ -37,6 +37,30 @@ describe('db event codecs', () => {
       userId: 'user_1',
       now: '2026-07-01T00:00:00.000Z',
     })).resolves.toBeNull()
+  })
+
+  it('ignores invite tokens for archived trips', async () => {
+    const sql: string[] = []
+    const db = dbRecordingSql(sql)
+
+    await findActiveInvite(db, 'token_hash', '2026-07-01T00:00:00.000Z')
+    await claimActiveInvite(db, {
+      tokenHash: 'token_hash',
+      userId: 'user_1',
+      now: '2026-07-01T00:00:00.000Z',
+    })
+
+    expect(sql[0]).toContain('INNER JOIN trips ON trips.id = invites.trip_id AND trips.archived_at IS NULL')
+    expect(sql[1]).toContain('WHERE trips.id = invites.trip_id AND trips.archived_at IS NULL')
+  })
+
+  it('ignores share tokens for archived trips', async () => {
+    const sql: string[] = []
+    const db = dbRecordingSql(sql)
+
+    await findActiveShareLink(db, 'token_hash')
+
+    expect(sql[0]).toContain('INNER JOIN trips ON trips.id = share_links.trip_id AND trips.archived_at IS NULL')
   })
 
   it('rotates sanitized share links in one D1 batch', async () => {
@@ -365,6 +389,21 @@ function dbWithBatch(calls: unknown[][], batched: unknown[]): D1Database {
     async batch(statements: unknown[]) {
       batched.push(...statements)
       return []
+    },
+  } as unknown as D1Database
+}
+
+function dbRecordingSql(sql: string[]): D1Database {
+  return {
+    prepare(statement: string) {
+      sql.push(statement)
+      return {
+        bind() {
+          return {
+            first: async () => null,
+          }
+        },
+      }
     },
   } as unknown as D1Database
 }

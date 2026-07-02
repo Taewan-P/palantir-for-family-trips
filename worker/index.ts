@@ -1,9 +1,11 @@
 import { createId, createToken, timingSafeEqualString } from '../src/shared/ids'
 import type { JsonValue } from '../src/shared/json'
-import { createTripFromTemplate } from '../src/shared/trip-template'
 import { sanitizeTripForShare } from '../src/shared/trip-sanitizer'
-import { buildGoogleAuthUrl, clearOauthStateCookie, clearSessionCookie, exchangeGoogleCode, hashToken, oauthStateCookie, sessionCookie, verifyGoogleIdToken } from './auth'
+import { createGuidedTripDocument } from '../src/shared/trip-template'
+import type { CreateGuidedTripRequest } from '../src/shared/trip-types'
+import { buildGoogleAuthUrl, clearOauthNextCookie, clearOauthStateCookie, clearSessionCookie, exchangeGoogleCode, hashToken, oauthNextCookie, oauthStateCookie, sessionCookie, verifyGoogleIdToken } from './auth'
 import {
+  archiveTrip,
   claimActiveInvite,
   createInvite,
   createMembership,
@@ -16,8 +18,10 @@ import {
   findSessionUser,
   getTripAccess,
   insertSnapshot,
+  listTripMembers,
   listVisibleTrips,
   loadHydratedTripSnapshot,
+  loadHydratedTripSnapshotWithVersion,
   rotateShareLink,
   upsertGoogleUser,
 } from './db'
@@ -39,7 +43,9 @@ type SignedInUser = {
 export type TripRole = 'owner' | 'editor'
 
 const OAUTH_STATE_COOKIE_NAME = 'trip_oauth_state'
+const OAUTH_NEXT_COOKIE_NAME = 'trip_oauth_next'
 const OAUTH_STATE_TTL_MINUTES = 10
+const DAY_MS = 24 * 60 * 60 * 1000
 const GOOGLE_AUTH_CONFIG_KEYS = [
   'APP_ORIGIN',
   'GOOGLE_CLIENT_ID',
@@ -91,7 +97,29 @@ function googleAuthConfigError(env: Env): Response | null {
 }
 
 function googleRedirectUri(request: Request): string {
+  const url = new URL(request.url)
+  const forwardedHost = request.headers.get('x-forwarded-host')
+  const forwardedProto = request.headers.get('x-forwarded-proto')
+  if (forwardedHost) {
+    const protocol = forwardedProto || url.protocol.replace(/:$/, '')
+    return `${protocol}://${forwardedHost}/api/auth/google/callback`
+  }
   return new URL('/api/auth/google/callback', request.url).toString()
+}
+
+function normalizedNextPath(nextPath: string | null): string {
+  if (!nextPath || !nextPath.startsWith('/') || nextPath.startsWith('//') || nextPath.includes('\\')) {
+    return '/trips'
+  }
+  return nextPath
+}
+
+function clearGoogleOauthCookies(request: Request): Headers {
+  const headers = new Headers()
+  const options = cookieOptions(request)
+  headers.append('set-cookie', clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, options))
+  headers.append('set-cookie', clearOauthNextCookie(OAUTH_NEXT_COOKIE_NAME, options))
+  return headers
 }
 
 function slugify(title: string, tripId: string): string {
@@ -118,17 +146,106 @@ async function requireUser(request: Request, env: Env): Promise<SignedInUser | R
   }
 }
 
-async function readTripTitle(request: Request): Promise<string | null> {
+function badRequest(message: string): Response {
+  return jsonError(400, 'bad_request', message)
+}
+
+function readRequiredText(value: unknown, label: string, maxLength: number): string | Response {
+  if (typeof value !== 'string') return badRequest(`${label} is required`)
+  const trimmed = value.trim()
+  if (!trimmed) return badRequest(`${label} is required`)
+  if (trimmed.length > maxLength) return badRequest(`${label} must be ${maxLength} characters or fewer`)
+  return trimmed
+}
+
+function readOptionalText(value: unknown, label: string, maxLength: number): string | Response | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') return badRequest(`${label} must be a string`)
+  const trimmed = value.trim()
+  if (trimmed.length > maxLength) return badRequest(`${label} must be ${maxLength} characters or fewer`)
+  return trimmed || undefined
+}
+
+function formatDate(date: Date): string {
+  const year = String(date.getUTCFullYear()).padStart(4, '0')
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(date.getUTCDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function readCalendarDate(value: unknown, label: string): Date | Response {
+  if (typeof value !== 'string') return badRequest(`${label} must use YYYY-MM-DD`)
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return badRequest(`${label} must use YYYY-MM-DD`)
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(Date.UTC(0, month - 1, day))
+  date.setUTCFullYear(year)
+  if (formatDate(date) !== value) return badRequest(`${label} must be a valid calendar date`)
+  return date
+}
+
+function readHeadcount(value: unknown, label: string): number | Response {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 20) {
+    return badRequest(`${label} must be an integer between 0 and 20`)
+  }
+  return value
+}
+
+async function readGuidedTripRequest(request: Request): Promise<CreateGuidedTripRequest | Response> {
   let body: unknown
   try {
     body = await request.json()
   } catch {
-    return null
+    return badRequest('Request body must be valid JSON')
   }
 
-  if (!jsonRequestObject(body) || typeof body.title !== 'string') return null
-  const title = body.title.trim()
-  return title.length > 0 ? title : null
+  if (!jsonRequestObject(body)) return badRequest('Request body must be a JSON object')
+
+  const title = readRequiredText(body.title, 'Trip title', 120)
+  if (title instanceof Response) return title
+  const startDate = readCalendarDate(body.startDate, 'Start date')
+  if (startDate instanceof Response) return startDate
+  const endDate = readCalendarDate(body.endDate, 'End date')
+  if (endDate instanceof Response) return endDate
+  if (endDate < startDate) return badRequest('End date must be on or after start date')
+
+  const dayCount = Math.floor((endDate.getTime() - startDate.getTime()) / DAY_MS) + 1
+  if (dayCount < 1 || dayCount > 31) return badRequest('Trip length must be between 1 and 31 days')
+
+  const destinationName = readRequiredText(body.destinationName, 'Destination name', 120)
+  if (destinationName instanceof Response) return destinationName
+  const basecampAddress = readOptionalText(body.basecampAddress, 'Basecamp address', 240)
+  if (basecampAddress instanceof Response) return basecampAddress
+
+  if (!Array.isArray(body.families) || body.families.length === 0) return badRequest('At least one family is required')
+  if (body.families.length > 12) return badRequest('At most 12 families are supported')
+
+  const families: CreateGuidedTripRequest['families'] = []
+  for (const family of body.families) {
+    if (!jsonRequestObject(family)) return badRequest('Family must be an object')
+    const displayName = readRequiredText(family.displayName, 'Family display name', 80)
+    if (displayName instanceof Response) return displayName
+    const origin = readOptionalText(family.origin, 'Family origin', 120)
+    if (origin instanceof Response) return origin
+    const adults = readHeadcount(family.adults, 'Adults')
+    if (adults instanceof Response) return adults
+    const kids = readHeadcount(family.kids, 'Kids')
+    if (kids instanceof Response) return kids
+    if (adults + kids < 1) return badRequest('Family headcount must include at least one person')
+    families.push(origin ? { displayName, origin, adults, kids } : { displayName, adults, kids })
+  }
+
+  return {
+    title,
+    startDate: formatDate(startDate),
+    endDate: formatDate(endDate),
+    destinationName,
+    ...(basecampAddress ? { basecampAddress } : {}),
+    families,
+  }
 }
 
 function routeMatch(path: string, pattern: RegExp): string | null {
@@ -156,20 +273,28 @@ const worker = {
 
         const state = crypto.randomUUID()
         const stateHash = await hashToken(state, env.SESSION_SECRET)
+        const expiresAt = minutesFromNow(OAUTH_STATE_TTL_MINUTES)
+        const headers = new Headers()
+        const options = cookieOptions(request)
+        headers.append('set-cookie', oauthStateCookie(OAUTH_STATE_COOKIE_NAME, stateHash, expiresAt, options))
+        headers.append('set-cookie', oauthNextCookie(
+          OAUTH_NEXT_COOKIE_NAME,
+          normalizedNextPath(new URL(request.url).searchParams.get('next')),
+          expiresAt,
+          options,
+        ))
         return redirect(buildGoogleAuthUrl({
           clientId: env.GOOGLE_CLIENT_ID,
           redirectUri: googleRedirectUri(request),
           state,
-        }), {
-          'set-cookie': oauthStateCookie(OAUTH_STATE_COOKIE_NAME, stateHash, minutesFromNow(OAUTH_STATE_TTL_MINUTES), cookieOptions(request)),
-        })
+        }), headers)
       }
 
     if (request.method === 'GET' && path === '/api/auth/google/callback') {
       const configError = googleAuthConfigError(env)
       if (configError) return configError
 
-      const clearStateHeader = { 'set-cookie': clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, cookieOptions(request)) }
+      const clearStateHeader = clearGoogleOauthCookies(request)
       const state = new URL(request.url).searchParams.get('state')
       const stateCookie = parseCookie(request.headers.get('cookie'), OAUTH_STATE_COOKIE_NAME)
       if (!state || !stateCookie) {
@@ -209,7 +334,8 @@ const worker = {
       const headers = new Headers()
       headers.append('set-cookie', sessionCookie(env.SESSION_COOKIE_NAME, token, expiresAt, cookieOptions(request)))
       headers.append('set-cookie', clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, cookieOptions(request)))
-      return redirect(appUrl(env, '/trips'), headers)
+      headers.append('set-cookie', clearOauthNextCookie(OAUTH_NEXT_COOKIE_NAME, cookieOptions(request)))
+      return redirect(appUrl(env, normalizedNextPath(parseCookie(request.headers.get('cookie'), OAUTH_NEXT_COOKIE_NAME))), headers)
     }
 
     if (request.method === 'POST' && path === '/api/auth/logout') {
@@ -246,13 +372,14 @@ const worker = {
       const user = await requireUser(request, env)
       if (user instanceof Response) return user
 
-      const title = await readTripTitle(request)
-      if (!title) return jsonError(400, 'bad_request', 'Trip title is required')
+      const input = await readGuidedTripRequest(request)
+      if (input instanceof Response) return input
+      const title = input.title
 
       const createdAt = nowIso()
       const tripId = createId('trip')
       const snapshotId = createId('snapshot')
-      const document = createTripFromTemplate({ id: tripId, title })
+      const document = { ...createGuidedTripDocument(input), id: tripId }
       await createTrip(env.DB, {
         id: tripId,
         title,
@@ -276,6 +403,46 @@ const worker = {
       })
 
       return jsonOk({ trip: { id: tripId, title, role: 'owner', currentVersion: 0 } }, { status: 201 })
+    }
+
+    const tripId = routeMatch(path, /^\/api\/trips\/([^/]+)$/)
+    if (request.method === 'GET' && tripId) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      const access = await getTripAccess(env.DB, tripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canWriteTrip(access.role)) return jsonError(403, 'forbidden', 'Trip access required')
+
+      const snapshot = await loadHydratedTripSnapshotWithVersion(env.DB, tripId)
+      if (!snapshot) return jsonError(404, 'not_found', 'Trip snapshot not found')
+      const members = await listTripMembers(env.DB, tripId)
+
+      return jsonOk({
+        trip: snapshot.document as unknown as JsonValue,
+        version: snapshot.version,
+        role: access.role,
+        members: members.map((member) => ({
+          userId: member.user_id,
+          email: member.email,
+          name: member.name,
+          avatarUrl: member.avatar_url,
+          role: member.role,
+          createdAt: member.created_at,
+        })),
+      })
+    }
+
+    if (request.method === 'DELETE' && tripId) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      const access = await getTripAccess(env.DB, tripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) return jsonError(403, 'forbidden', 'Owner access required')
+
+      const archivedAt = nowIso()
+      await archiveTrip(env.DB, tripId, archivedAt)
+      await disableShareLinks(env.DB, tripId, archivedAt)
+      return jsonOk({ archived: true })
     }
 
     const inviteTripId = routeMatch(path, /^\/api\/trips\/([^/]+)\/invites$/)

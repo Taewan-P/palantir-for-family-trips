@@ -15,6 +15,7 @@ import {
   UtensilsCrossed,
 } from 'lucide-react'
 import { EntityCrudPanel } from './components/EntityCrudPanel'
+import { SelectedItemEditor, type SelectedItemMember } from './components/SelectedItemEditor'
 import {
   getDependencyPrompts,
   getEntitySummary,
@@ -26,9 +27,11 @@ import {
 } from './tripModel'
 import { COLLECTION_BY_ENTITY_TYPE } from './shared/trip-types'
 import type {
+  EntityByType,
   EntitySelection,
   LocationEntity,
   TaskEntity,
+  TripDay,
   TripDocument,
   TripEntity,
   TripEntityType,
@@ -42,12 +45,13 @@ type LocationPatch = Partial<Omit<LocationEntity, 'id' | 'type'>>
 type SectionTitleProps = { eyebrow?: string; title: string; meta?: string }
 type StatusPillProps = { label: string }
 type DetailRowProps = { label: string; value?: string | number | null }
-type TaskRowProps = { task: TaskEntity; onToggle: (taskId: string) => void }
-type ActionChipProps = { icon: IconComponent; label: string; onClick: () => void; tone?: Tone }
+type TaskRowProps = { task: TaskEntity; onToggle: (taskId: string) => void; readOnly: boolean }
+type ActionChipProps = { icon: IconComponent; label: string; onClick: () => void; tone?: Tone; disabled?: boolean }
 type PhotoTileProps = { media: MediaItem }
 type DetailRowItem = [string, string | number | null | undefined]
 type DriveStopEditorProps = {
   stop: LocationEntity
+  readOnly: boolean
   onSelectEntity: (type: TripEntityType, id: string) => void
   onUpdateLocationFields: (locationId: string, patch: LocationPatch) => void
 }
@@ -56,6 +60,8 @@ type InspectorRailProps = {
   pageId: string
   selection: EntitySelection | null
   activeFamilyId: string | null
+  members: SelectedItemMember[]
+  days: Array<Pick<TripDay, 'id' | 'title' | 'shortLabel'>>
   readOnly: boolean
   showCrudPanel: boolean
   onSelectEntity: (type: TripEntityType, id: string) => void
@@ -65,6 +71,7 @@ type InspectorRailProps = {
   onUpdateLocationFields: (locationId: string, patch: LocationPatch) => void
   onToggleTask: (taskId: string) => void
   onUpdateEntityNote: (type: TripEntityType, id: string, value: string) => void
+  onPatchEntity: <Type extends TripEntityType>(type: Type, id: string, patch: Partial<EntityByType[Type]>) => void
   onAddTask: (entityType: TripEntityType, entityId: string, title: string) => void
   onConvertNoteToTask: (entityType: TripEntityType, entityId: string) => void
   onToggleMealStatus: (mealId: string) => void
@@ -141,13 +148,14 @@ function DetailRow({ label, value }: DetailRowProps) {
   )
 }
 
-function TaskRow({ task, onToggle }: TaskRowProps) {
+function TaskRow({ task, onToggle, readOnly }: TaskRowProps) {
   const done = task.status === 'done'
   return (
     <button
       type="button"
+      disabled={readOnly}
       onClick={() => onToggle(task.id)}
-      className="flex w-full items-center justify-between border-b border-[#30363D]/30 px-3 py-3 text-left text-[11px] text-[#C9D1D9] transition-colors last:border-b-0 hover:bg-[#1f2a34]/50"
+      className="flex w-full items-center justify-between border-b border-[#30363D]/30 px-3 py-3 text-left text-[11px] text-[#C9D1D9] transition-colors last:border-b-0 hover:bg-[#1f2a34]/50 disabled:cursor-default disabled:hover:bg-transparent"
     >
       <div>
         <div className="font-medium">{task.title}</div>
@@ -164,7 +172,7 @@ function TaskRow({ task, onToggle }: TaskRowProps) {
   )
 }
 
-function ActionChip({ icon: Icon, label, onClick, tone = 'default' }: ActionChipProps) {
+function ActionChip({ icon: Icon, label, onClick, tone = 'default', disabled = false }: ActionChipProps) {
   const tones: Record<string, string> = {
     default: 'border-[#30363D] bg-[#0d1117] text-[#C9D1D9] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]',
     success: 'border-[#3FB950]/30 bg-[#3FB950]/10 text-[#3FB950] hover:border-[#3FB950]',
@@ -174,8 +182,9 @@ function ActionChip({ icon: Icon, label, onClick, tone = 'default' }: ActionChip
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onClick}
-      className={`inline-flex items-center gap-2 border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-colors ${tones[tone] || tones.default}`}
+      className={`inline-flex items-center gap-2 border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-colors disabled:cursor-default disabled:opacity-50 ${tones[tone] || tones.default}`}
     >
       <Icon size={13} />
       {label}
@@ -243,7 +252,7 @@ function getStopMeta(stop: LocationEntity) {
   return items
 }
 
-function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: DriveStopEditorProps) {
+function DriveStopEditor({ stop, readOnly, onSelectEntity, onUpdateLocationFields }: DriveStopEditorProps) {
   const [isEditing, setIsEditing] = useState(false)
   const visual = getStopVisual(stop)
   const StopIcon = visual.icon
@@ -265,8 +274,9 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: Drive
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
+              disabled={readOnly}
               onClick={() => setIsEditing((current) => !current)}
-              className="inline-flex items-center gap-1 border border-[#30363D] bg-[#161b22] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
+              className="inline-flex items-center gap-1 border border-[#30363D] bg-[#161b22] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF] disabled:cursor-default disabled:opacity-50 disabled:hover:border-[#30363D] disabled:hover:text-[#C9D1D9]"
             >
               <Pencil size={11} />
               {isEditing ? 'Done' : 'Edit'}
@@ -352,6 +362,7 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: Drive
             <input
               value={stop.title || ''}
               onChange={(event) => onUpdateLocationFields(stop.id, { title: event.target.value })}
+              readOnly={readOnly}
               placeholder="Stop name"
               className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
@@ -369,6 +380,7 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }: Drive
                   livePhotos: [],
                 })
               }
+              readOnly={readOnly}
               placeholder="Address or place query"
               className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
@@ -384,6 +396,8 @@ export default function InspectorRail({
   pageId,
   selection,
   activeFamilyId,
+  members,
+  days,
   readOnly,
   showCrudPanel,
   onSelectEntity,
@@ -393,6 +407,7 @@ export default function InspectorRail({
   onUpdateLocationFields,
   onToggleTask,
   onUpdateEntityNote,
+  onPatchEntity,
   onAddTask,
   onConvertNoteToTask,
   onToggleMealStatus,
@@ -438,6 +453,12 @@ export default function InspectorRail({
 
     return linkedEntities.filter((item): item is LocationEntity => item.type === 'location' && Boolean(item.stopType))
   }, [doc.locations, entity, linkedEntities, route?.stopLocationIds])
+
+  useEffect(() => {
+    setRecentlyUpdated(true)
+    const timerId = window.setTimeout(() => setRecentlyUpdated(false), 700)
+    return () => window.clearTimeout(timerId)
+  }, [selection?.id, selection?.type])
 
   if (!entity) {
     return (
@@ -491,18 +512,13 @@ export default function InspectorRail({
   const familyDriveMode = entity.type === 'family' && driveStops.length > 0
   const actionChips: ActionChipProps[] = []
 
-  useEffect(() => {
-    setRecentlyUpdated(true)
-    const timerId = window.setTimeout(() => setRecentlyUpdated(false), 700)
-    return () => window.clearTimeout(timerId)
-  }, [selection?.id, selection?.type])
-
   if (entity.type === 'meal') {
     actionChips.push({
       icon: CheckSquare,
       label: entity.status === 'Assigned' ? 'Mark pending' : 'Mark assigned',
       onClick: () => onToggleMealStatus(entity.id),
       tone: entity.status === 'Assigned' ? 'warning' : 'success',
+      disabled: readOnly,
     })
   }
   if (entity.type === 'expense') {
@@ -511,6 +527,7 @@ export default function InspectorRail({
       label: entity.settled ? 'Mark open' : 'Mark settled',
       onClick: () => onToggleExpenseSettled(entity.id),
       tone: entity.settled ? 'warning' : 'success',
+      disabled: readOnly,
     })
   }
   if (entity.type === 'task') {
@@ -519,6 +536,7 @@ export default function InspectorRail({
       label: entity.status === 'done' ? 'Mark open' : 'Mark done',
       onClick: () => onToggleTask(entity.id),
       tone: entity.status === 'done' ? 'warning' : 'success',
+      disabled: readOnly,
     })
   }
   if (location && entity.type !== 'location') {
@@ -583,6 +601,7 @@ export default function InspectorRail({
                 label={action.label}
                 onClick={action.onClick}
                 tone={action.tone}
+                disabled={action.disabled}
               />
             ))}
           </div>
@@ -594,6 +613,15 @@ export default function InspectorRail({
           recentlyUpdated ? 'translate-y-[1px]' : ''
         }`}
       >
+        <SelectedItemEditor
+          doc={doc}
+          days={days}
+          entity={entity}
+          members={members}
+          readOnly={readOnly}
+          onPatchEntity={onPatchEntity}
+        />
+
         {showCrudPanel ? (
           <EntityCrudPanel
             document={doc}
@@ -627,6 +655,7 @@ export default function InspectorRail({
               <DriveStopEditor
                 key={stop.id}
                 stop={stop}
+                readOnly={readOnly}
                 onSelectEntity={onSelectEntity}
                 onUpdateLocationFields={onUpdateLocationFields}
               />
@@ -702,6 +731,7 @@ export default function InspectorRail({
               <DriveStopEditor
                 key={stop.id}
                 stop={stop}
+                readOnly={readOnly}
                 onSelectEntity={onSelectEntity}
                 onUpdateLocationFields={onUpdateLocationFields}
               />
@@ -728,7 +758,7 @@ export default function InspectorRail({
               {tasks.length ? (
                 <div className="-mx-4 mb-4 border-y border-[#30363D]">
                   {tasks.map((task) => (
-                    <TaskRow key={task.id} task={task} onToggle={onToggleTask} />
+                    <TaskRow key={task.id} task={task} onToggle={onToggleTask} readOnly={readOnly} />
                   ))}
                 </div>
               ) : (
@@ -741,16 +771,18 @@ export default function InspectorRail({
                   value={quickTask}
                   onChange={(event) => setQuickTask(event.target.value)}
                   placeholder="Add a task tied to this item..."
+                  readOnly={readOnly}
                   className="flex-1 border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                 />
                 <button
                   type="button"
+                  disabled={readOnly}
                   onClick={() => {
                     if (!quickTask.trim()) return
                     onAddTask(entity.type, entity.id, quickTask.trim())
                     setQuickTask('')
                   }}
-                  className="border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
+                  className="border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF] disabled:opacity-50"
                 >
                   Add
                 </button>
@@ -840,6 +872,7 @@ export default function InspectorRail({
           <textarea
             value={entity.note || ''}
             onChange={(event) => onUpdateEntityNote(entity.type, entity.id, event.target.value)}
+            readOnly={readOnly}
             placeholder={
               compactMealsMode
                 ? 'Capture decisions, venue-specific notes, or quick follow-ups that belong beside the Meals page intel...'
@@ -854,6 +887,7 @@ export default function InspectorRail({
               icon={Plus}
               label="Note to task"
               onClick={() => onConvertNoteToTask(entity.type, entity.id)}
+              disabled={readOnly}
             />
           </div>
         </section>

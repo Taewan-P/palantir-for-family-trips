@@ -60,6 +60,14 @@ export function clearOauthStateCookie(name: string, options?: CookieOptions): st
   return `${name}=; Path=/api/auth/google/callback; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
 }
 
+export function oauthNextCookie(name: string, nextPath: string, expiresAt: Date, options?: CookieOptions): string {
+  return `${name}=${encodeURIComponent(nextPath)}; Path=/api/auth/google/callback; Expires=${expiresAt.toUTCString()}; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
+}
+
+export function clearOauthNextCookie(name: string, options?: CookieOptions): string {
+  return `${name}=; Path=/api/auth/google/callback; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureCookieAttribute(options)}; SameSite=Lax`
+}
+
 export async function exchangeGoogleCode(env: Env, code: string, redirectUri: string): Promise<string> {
   const body = new URLSearchParams({
     code,

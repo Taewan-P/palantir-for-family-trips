@@ -6,6 +6,7 @@ import type { LucideIcon } from 'lucide-react'
 import { isLiveExternalDataEnabled } from './publishConfig'
 import { DAYS, TIME_SLOTS } from './tripData'
 import { getRouteDurationSlotSpan, parseEntityKey } from './tripModel'
+import type { TripDayShell } from './tripModel'
 import type {
   ActivityEntity,
   Coordinates,
@@ -145,6 +146,15 @@ type MapChipProps = {
   children: ReactNode
   tone?: 'neutral' | 'green' | 'amber'
 }
+type OfflineRouteBoardProps = {
+  locations: MapLocationEntity[]
+  routes: MapRouteEntity[]
+  families: FamilyEntity[]
+  mapUi: TripDocument['ui']['map']
+  selectedLocationId?: string | null
+  selectedRouteId?: string | null
+  onSelectEntity: (type: TripEntityType, id: string) => void
+}
 type CommandMapProps = {
   locations: LocationEntity[]
   routes: RouteEntity[]
@@ -152,6 +162,7 @@ type CommandMapProps = {
   itineraryItems?: ItineraryItemEntity[]
   meals?: MealEntity[]
   activities?: ActivityEntity[]
+  days?: TripDayShell[]
   cursorSlot?: number
   mapUi: TripDocument['ui']['map']
   mapWeather: MapWeather | null
@@ -285,6 +296,14 @@ function isFacility(location: LocationEntity) {
   return location.category === 'logistics' || location.category === 'park'
 }
 
+function isCoordinate(point: Coordinates | null | undefined): point is Coordinates {
+  return point != null && Number.isFinite(point.lat) && Number.isFinite(point.lng)
+}
+
+function validCoordinates(points: Array<Coordinates | null | undefined>) {
+  return points.filter(isCoordinate)
+}
+
 function colorForCategory(location: LocationEntity) {
   if (location.category === 'meal') return '#D29922'
   if (location.category === 'park') return '#3FB950'
@@ -365,10 +384,11 @@ function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, ent
 }
 
 function averagePoint(points: Coordinates[]) {
-  if (!points.length) return null
+  const validPoints = validCoordinates(points)
+  if (!validPoints.length) return null
   return {
-    lat: points.reduce((sum, point) => sum + point.lat, 0) / points.length,
-    lng: points.reduce((sum, point) => sum + point.lng, 0) / points.length,
+    lat: validPoints.reduce((sum, point) => sum + point.lat, 0) / validPoints.length,
+    lng: validPoints.reduce((sum, point) => sum + point.lng, 0) / validPoints.length,
   }
 }
 
@@ -679,6 +699,129 @@ function MapChip({ active, onClick, children, tone = 'neutral' }: MapChipProps) 
   )
 }
 
+function OfflineRouteBoard({
+  locations,
+  routes,
+  families,
+  mapUi,
+  selectedLocationId,
+  selectedRouteId,
+  onSelectEntity,
+}: OfflineRouteBoardProps) {
+  const locationsById = new Map<string, MapLocationEntity>(locations.map((location) => [location.id, location]))
+  const familyById = new Map<string, FamilyEntity>(families.map((family) => [family.id, family]))
+  const visibleRoutes = mapUi.showRoutes
+    ? routes.filter((route) => {
+        const familyMatch = mapUi.focusFamilyId === 'all' || route.familyId === mapUi.focusFamilyId
+        return familyMatch && matchesDay(route.dayId, mapUi.focusDayId)
+      })
+    : []
+  const routeLines = visibleRoutes
+    .map((route) => ({ route, points: buildRouteCoordinatePath(route, locationsById) || [] }))
+    .filter((entry) => entry.points.length >= 2)
+  const routeLocationIds = new Set(
+    visibleRoutes.flatMap((route) => [route.destinationLocationId, ...(route.stopLocationIds || [])].filter(Boolean) as string[]),
+  )
+  const visibleLocations = locations.filter((location) => isCoordinate(location.coordinates) && (mapUi.showFacilities || routeLocationIds.has(location.id)))
+  const boundsPoints = [
+    ...visibleLocations.map((location) => location.coordinates),
+    ...routeLines.flatMap((entry) => entry.points),
+  ]
+
+  if (!boundsPoints.length) {
+    return (
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-8 text-center">
+        <div>
+          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#58A6FF]">Offline route board</div>
+          <div className="mt-2 text-xs text-[#8B949E]">No mapped coordinates available</div>
+        </div>
+      </div>
+    )
+  }
+
+  const bounds = getBoundsFromPoints(boundsPoints)
+  const project = (point: Coordinates) => {
+    const lngSpan = Math.max(bounds.maxLng - bounds.minLng, 0.01)
+    const latSpan = Math.max(bounds.maxLat - bounds.minLat, 0.01)
+    return {
+      x: clamp(8 + ((point.lng - bounds.minLng) / lngSpan) * 84, 8, 92),
+      y: clamp(8 + (1 - (point.lat - bounds.minLat) / latSpan) * 84, 8, 92),
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 overflow-hidden">
+      <div className="pointer-events-none absolute left-1/2 top-6 z-10 -translate-x-1/2 text-center">
+        <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#58A6FF]">Offline route board</div>
+        <div className="mt-1 text-[10px] text-[#8B949E]">Seeded routes shown without Google Maps</div>
+      </div>
+
+      <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+        {routeLines.map(({ route, points }) => (
+          <polyline
+            key={route.id}
+            points={points.map((point) => {
+              const projected = project(point)
+              return `${projected.x},${projected.y}`
+            }).join(' ')}
+            fill="none"
+            stroke={getVehicleColor(route)}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeOpacity={selectedRouteId === route.id ? 0.95 : 0.58}
+            strokeWidth={selectedRouteId === route.id ? 1.1 : 0.7}
+          />
+        ))}
+      </svg>
+
+      {visibleLocations.map((location) => {
+        const point = project(location.coordinates)
+        const selected = selectedLocationId === location.id
+        return (
+          <button
+            key={location.id}
+            type="button"
+            onClick={() => onSelectEntity('location', location.id)}
+            className="absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 text-left"
+            style={{ left: `${point.x}%`, top: `${point.y}%` }}
+          >
+            <span
+              className={`h-3 w-3 rounded-full border ${
+                selected ? 'border-[#E6EDF3] bg-[#58A6FF]' : 'border-[#0A0C10] bg-[#58A6FF]'
+              } shadow-[0_0_16px_rgba(88,166,255,0.48)]`}
+            />
+            <span className="max-w-[150px] border border-[#30363D] bg-[#0D1117]/90 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-[#C9D1D9] shadow-lg">
+              {location.title}
+            </span>
+          </button>
+        )
+      })}
+
+      {routeLines.length ? (
+        <div className="absolute bottom-6 left-1/2 z-10 flex max-w-[min(720px,calc(100%-48px))] -translate-x-1/2 flex-wrap justify-center gap-2">
+          {routeLines.slice(0, 5).map(({ route }) => (
+            <button
+              key={route.id}
+              type="button"
+              onClick={() => onSelectEntity('route', route.id)}
+              className={`border px-3 py-2 text-left text-[10px] uppercase tracking-[0.12em] shadow-lg ${
+                selectedRouteId === route.id
+                  ? 'border-[#58A6FF] bg-[#58A6FF]/16 text-[#E6EDF3]'
+                  : 'border-[#30363D] bg-[#0D1117]/88 text-[#C9D1D9]'
+              }`}
+            >
+              <span className="block font-black">{route.title}</span>
+              <span className="mt-1 block text-[9px] text-[#8B949E]">
+                {route.familyId ? familyById.get(route.familyId)?.title || 'Unassigned' : 'Unassigned'}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function clamp01(value: number) {
   return Math.min(Math.max(value, 0), 1)
 }
@@ -707,20 +850,23 @@ function getVehicleColor(route: MapRouteEntity | null | undefined) {
 }
 
 function buildPathDistanceProfile(google: GoogleMaps | null, path: Coordinates[] | null | undefined): PathDistanceProfile | null {
-  if (!google || !path?.length || path.length < 2) return null
+  if (!google || !path?.length) return null
+
+  const validPath = validCoordinates(path)
+  if (validPath.length < 2) return null
 
   const cumulative = [0]
   let totalDistance = 0
 
-  for (let index = 1; index < path.length; index += 1) {
-    totalDistance += google.maps.geometry.spherical.computeDistanceBetween(path[index - 1], path[index])
+  for (let index = 1; index < validPath.length; index += 1) {
+    totalDistance += google.maps.geometry.spherical.computeDistanceBetween(validPath[index - 1], validPath[index])
     cumulative.push(totalDistance)
   }
 
   if (!totalDistance) return null
 
   return {
-    path,
+    path: validPath,
     cumulative,
     totalDistance,
   }
@@ -1004,9 +1150,9 @@ function getRouteSimulationWindow(route: MapRouteEntity | null | undefined, itin
   return { startSlot, endSlot }
 }
 
-function getCursorDayId(cursorSlot: number) {
-  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / TIME_SLOTS.length), 0), DAYS.length - 1)
-  return DAYS[dayIndex]?.id || DAYS[0]?.id || 'all'
+function getCursorDayId(cursorSlot: number, days: Pick<TripDayShell, 'id'>[] = DAYS) {
+  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / TIME_SLOTS.length), 0), days.length - 1)
+  return days[dayIndex]?.id || days[0]?.id || 'all'
 }
 
 function resolveOnsiteCueFamilies(
@@ -1099,7 +1245,10 @@ function latRad(lat: number) {
 }
 
 function getBoundsFromPoints(points: Coordinates[]): BoundsBox {
-  return points.reduce(
+  const validPoints = validCoordinates(points)
+  const firstPoint = validPoints[0]
+
+  return validPoints.reduce(
     (bounds, point) => ({
       minLat: Math.min(bounds.minLat, point.lat),
       maxLat: Math.max(bounds.maxLat, point.lat),
@@ -1107,17 +1256,18 @@ function getBoundsFromPoints(points: Coordinates[]): BoundsBox {
       maxLng: Math.max(bounds.maxLng, point.lng),
     }),
     {
-      minLat: points[0]?.lat ?? 0,
-      maxLat: points[0]?.lat ?? 0,
-      minLng: points[0]?.lng ?? 0,
-      maxLng: points[0]?.lng ?? 0,
+      minLat: firstPoint?.lat ?? 0,
+      maxLat: firstPoint?.lat ?? 0,
+      minLng: firstPoint?.lng ?? 0,
+      maxLng: firstPoint?.lng ?? 0,
     },
   )
 }
 
 function getBoundsCenter(points: Coordinates[]) {
-  if (!points.length) return null
-  const bounds = getBoundsFromPoints(points)
+  const validPoints = validCoordinates(points)
+  if (!validPoints.length) return null
+  const bounds = getBoundsFromPoints(validPoints)
   return {
     lat: (bounds.minLat + bounds.maxLat) / 2,
     lng: (bounds.minLng + bounds.maxLng) / 2,
@@ -1174,15 +1324,17 @@ function buildParticipantCameraTarget({
   vehicleEntries,
   highlightedLocation,
   cursorSlot,
+  days = DAYS,
 }: {
   google: GoogleMaps | null
   map: google.maps.Map
   vehicleEntries: VehicleEntry[]
   highlightedLocation: MapLocationEntity | null | undefined
   cursorSlot: number
+  days?: Pick<TripDayShell, 'id'>[]
 }) {
   if (!google) return null
-  const currentDayId = getCursorDayId(cursorSlot)
+  const currentDayId = getCursorDayId(cursorSlot, days)
   const visibleEntries = vehicleEntries
     .filter((entry) => entry.marker.getMap())
     .filter((entry) => {
@@ -1285,7 +1437,8 @@ function getRouteOrigin(family: FamilyEntity, route: MapRouteEntity | null | und
 
 function buildRouteCoordinatePath(route: MapRouteEntity | null | undefined, locationsById: Map<string, MapLocationEntity>) {
   if (route?.path?.length) {
-    return route.path
+    const path = validCoordinates(route.path)
+    return path.length >= 2 ? path : null
   }
 
   const origin = route?.originCoordinates || null
@@ -1294,9 +1447,9 @@ function buildRouteCoordinatePath(route: MapRouteEntity | null | undefined, loca
     : null
   const stops = (route?.stopLocationIds || [])
     .map((locationId) => locationsById.get(locationId)?.coordinates || null)
-    .filter((coordinate): coordinate is Coordinates => Boolean(coordinate))
+    .filter(isCoordinate)
 
-  const points = [origin, ...stops, destination].filter((coordinate): coordinate is Coordinates => Boolean(coordinate))
+  const points = [origin, ...stops, destination].filter(isCoordinate)
   return points.length >= 2 ? points : null
 }
 
@@ -1346,10 +1499,10 @@ function pickFamilyRouteEntry(
   }, null)
 }
 
-function getPlaybackDayId(cursorSlot: number) {
+function getPlaybackDayId(cursorSlot: number, days: Pick<TripDayShell, 'id'>[] = DAYS) {
   const slotsPerDay = TIME_SLOTS.length || 1
-  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / slotsPerDay), 0), DAYS.length - 1)
-  return DAYS[dayIndex]?.id || DAYS[0]?.id || 'all'
+  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / slotsPerDay), 0), days.length - 1)
+  return days[dayIndex]?.id || days[0]?.id || 'all'
 }
 
 export default function CommandMap({
@@ -1359,6 +1512,7 @@ export default function CommandMap({
   itineraryItems = [],
   meals = [],
   activities = [],
+  days: inputDays,
   cursorSlot = 0,
   mapUi,
   mapWeather,
@@ -1373,6 +1527,7 @@ export default function CommandMap({
   onSelectEntity,
   onPlaybackFeedItems,
 }: CommandMapProps) {
+  const days = inputDays?.length ? inputDays : DAYS
   const locations = rawLocations as MapLocationEntity[]
   const routes = rawRoutes as MapRouteEntity[]
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -1399,7 +1554,7 @@ export default function CommandMap({
   const [mapLayerCollapsed, setMapLayerCollapsed] = useState(false)
   const [weatherCollapsed, setWeatherCollapsed] = useState(false)
   const effectiveFocusDayId =
-    playbackActive && mapUi.focusDayId === 'all' ? getPlaybackDayId(cursorSlot) : mapUi.focusDayId
+    playbackActive && mapUi.focusDayId === 'all' ? getPlaybackDayId(cursorSlot, days) : mapUi.focusDayId
 
   const getRoutePath = (entry: RouteEntry) => entry.currentPath || entry.route.path || null
 
@@ -2675,6 +2830,7 @@ export default function CommandMap({
       vehicleEntries: vehicleEntriesRef.current,
       highlightedLocation,
       cursorSlot,
+      days,
     })
 
     if (participantCameraTarget && (playbackActive || (!selectedRouteEntry && !selectedLocation))) {
@@ -2743,7 +2899,7 @@ export default function CommandMap({
     }
 
     lastViewportTargetRef.current = ''
-  }, [cursorSlot, locations, mapUi, playbackActive, playbackHighlightLocationId, selectedLocationId, selectedRouteId, status])
+  }, [cursorSlot, days, locations, mapUi, playbackActive, playbackHighlightLocationId, selectedLocationId, selectedRouteId, status])
 
   const summaryText = useMemo(() => {
     const summaryBits = []
@@ -2757,10 +2913,10 @@ export default function CommandMap({
     if (mapUi.showFacilities) summaryBits.push('logistics facilities')
     if (mapUi.showTraffic) summaryBits.push('live traffic')
     if (mapUi.focusDayId !== 'all') {
-      summaryBits.push(`${DAYS.find((item) => item.id === mapUi.focusDayId)?.title.toLowerCase() || mapUi.focusDayId} focus`)
+      summaryBits.push(`${days.find((item) => item.id === mapUi.focusDayId)?.title.toLowerCase() || mapUi.focusDayId} focus`)
     }
     return summaryBits.length ? `Showing ${summaryBits.join(', ')}` : 'No operational layers visible'
-  }, [families, mapUi])
+  }, [days, families, mapUi])
 
   const badgeTone =
     status === 'ready'
@@ -2778,6 +2934,17 @@ export default function CommandMap({
         style={{ opacity: mapUi.showTraffic ? 0.14 : 0 }}
       />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(rgba(17,27,34,0.35)_1px,transparent_1px)] [background-size:32px_32px]" />
+      {status === 'missing' ? (
+        <OfflineRouteBoard
+          locations={locations}
+          routes={routes}
+          families={families}
+          mapUi={mapUi}
+          selectedLocationId={selectedLocationId}
+          selectedRouteId={selectedRouteId}
+          onSelectEntity={onSelectEntity}
+        />
+      ) : null}
 
       {mapLayerCollapsed ? (
         <button
@@ -2836,7 +3003,7 @@ export default function CommandMap({
             Day Focus
           </div>
           <div className="mb-3 flex flex-wrap gap-2">
-            {[{ id: 'all', label: 'All Days' }, ...DAYS.map((day) => ({ id: day.id, label: day.title.replace(' Day', '') }))].map((item) => (
+            {[{ id: 'all', label: 'All Days' }, ...days.map((day) => ({ id: day.id, label: day.title.replace(' Day', '') }))].map((item) => (
               <MapChip
                 key={item.id}
                 active={mapUi.focusDayId === item.id}

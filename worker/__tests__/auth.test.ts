@@ -1,4 +1,4 @@
-import { buildGoogleAuthUrl, hashToken, oauthStateCookie, sessionCookie } from '../auth'
+import { buildGoogleAuthUrl, hashToken, oauthNextCookie, oauthStateCookie, sessionCookie } from '../auth'
 
 describe('auth helpers', () => {
   it('builds a Google auth URL with state', () => {
@@ -35,9 +35,19 @@ describe('auth helpers', () => {
     expect(cookie).toContain('SameSite=Lax')
   })
 
+  it('creates a scoped OAuth next-path cookie', () => {
+    const cookie = oauthNextCookie('trip_oauth_next', '/invites/token_123', new Date('2026-07-01T00:10:00.000Z'))
+    expect(cookie).toContain('trip_oauth_next=%2Finvites%2Ftoken_123')
+    expect(cookie).toContain('Path=/api/auth/google/callback')
+    expect(cookie).toContain('HttpOnly')
+    expect(cookie).toContain('Secure')
+    expect(cookie).toContain('SameSite=Lax')
+  })
+
   it('can omit Secure for local HTTP cookies', () => {
     const expiresAt = new Date('2026-07-02T00:00:00.000Z')
     expect(sessionCookie('trip_session', 'raw-token', expiresAt, { secure: false })).not.toContain('Secure')
     expect(oauthStateCookie('trip_oauth_state', 'hashed-state', expiresAt, { secure: false })).not.toContain('Secure')
+    expect(oauthNextCookie('trip_oauth_next', '/trips', expiresAt, { secure: false })).not.toContain('Secure')
   })
 })

@@ -1,5 +1,5 @@
-import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { InvitePage } from './app/InvitePage'
 import { LoginPage } from './app/LoginPage'
 import { SharePage } from './app/SharePage'
 import { TripsPage } from './app/TripsPage'
@@ -11,6 +11,7 @@ function Root() {
   const route = useRoute()
 
   if (route.name === 'login') return <LoginPage />
+  if (route.name === 'invite') return <InvitePage token={route.token} />
   if (route.name === 'share') return <SharePage token={route.token} />
   if (route.name === 'trip') return <TripWorkspace tripId={route.tripId} />
 
@@ -23,7 +24,5 @@ if (!root) {
 }
 
 ReactDOM.createRoot(root).render(
-  <React.StrictMode>
-    <Root />
-  </React.StrictMode>,
+  <Root />,
 )

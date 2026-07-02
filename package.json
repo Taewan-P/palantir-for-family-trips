@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "test:worker": "vitest run -c vitest.worker.config.ts",
     "cf:build": "npm run typecheck && npm run typecheck:worker && npm run test && npm run test:worker && npm run build",
-    "cf:deploy": "wrangler deploy"
+    "cf:deploy": "wrangler deploy",
+    "cf:deploy:pages": "wrangler pages deploy dist --project-name travelops --branch main"
   },
   "keywords": [
     "react",
