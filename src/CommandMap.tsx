@@ -1,14 +1,194 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
 import { ChevronDown, ChevronUp, Cloud, CloudRain, Layers3, Sun } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { isLiveExternalDataEnabled } from './publishConfig'
 import { DAYS, TIME_SLOTS } from './tripData'
 import { getRouteDurationSlotSpan, parseEntityKey } from './tripModel'
+import type { TripDayShell } from './tripModel'
+import type {
+  ActivityEntity,
+  Coordinates,
+  FamilyEntity,
+  ItineraryItemEntity,
+  LocationEntity,
+  MealEntity,
+  RouteEntity,
+  TripDocument,
+  TripEntityType,
+} from './shared/trip-types'
+import type { MapWeather, MapWeatherTarget } from './weather'
+
+type GoogleMaps = typeof google
+type MapLocationEntity = LocationEntity & { coordinates: Coordinates; placeId?: string }
+type MapRouteEntity = RouteEntity & { path?: Coordinates[] }
+type CueEntity = (MealEntity | ActivityEntity | ItineraryItemEntity) & { startSlot: number }
+type PlaybackCueKind = 'departure' | 'arrival' | 'stop' | 'onsite'
+type PlaybackPhase = 'travel' | 'stop' | 'arrival'
+type CameraMode = 'active' | 'premove' | 'arrival'
+type AvailabilityState = 'unknown' | 'unavailable'
+type RouteSource = 'seeded' | 'directions'
+type PointWeight = Coordinates & { weight: number }
+type BoundsBox = { minLat: number; maxLat: number; minLng: number; maxLng: number }
+type CameraPadding = { left: number; right: number; top: number; bottom: number }
+type CameraState = { center: Coordinates; zoom: number }
+type PathDistanceProfile = { path: Coordinates[]; cumulative: number[]; totalDistance: number }
+type RoutePlaybackProfile = {
+  anchorProgresses: number[]
+  legDistanceShares: number[]
+  totalLegShare: number
+  perStopFraction: number
+  totalTravelFraction: number
+}
+type RoutePlaybackState = { progress: number; phase: PlaybackPhase }
+type RouteWindow = { startSlot: number; endSlot: number }
+type PlaybackCue = {
+  key: string
+  kind: PlaybackCueKind
+  title: string
+  subtitle: string
+  caption: string
+  tone: string
+  familyId: string | null
+  locationId: string | null
+  entityType: CueEntity['type'] | null
+  entityId: string | null
+  families: FamilyEntity[]
+  anchor: Coordinates | null
+  clickable: true
+}
+type PlaybackCueKeyInput = {
+  kind: PlaybackCueKind
+  route?: MapRouteEntity | null
+  location?: MapLocationEntity | null
+  entity?: CueEntity | null
+  slot?: number | null
+}
+type BuildPlaybackCueInput = PlaybackCueKeyInput & {
+  cueKey?: string | null
+  families: FamilyEntity[]
+  anchor: Coordinates | null
+  subtitleOverride?: string | null
+  captionOverride?: string | null
+}
+type OnsiteCueGroup = { primary: CueEntity; entities: CueEntity[] }
+type MutableOnsiteCueGroup = { dayId?: string; locationId?: string | null; startSlot: number; entities: CueEntity[] }
+type PlaybackCandidate = {
+  groupKey: string
+  cueKey: string
+  kind: PlaybackCueKind
+  family?: FamilyEntity
+  families?: FamilyEntity[]
+  route?: MapRouteEntity | null
+  location?: MapLocationEntity | null
+  entity?: CueEntity | null
+  anchor?: Coordinates | null
+}
+type PlaybackCandidateGroup = {
+  cueKey: string
+  kind: PlaybackCueKind
+  route?: MapRouteEntity | null
+  location?: MapLocationEntity | null
+  entity: CueEntity | null
+  families: FamilyEntity[]
+  anchors: Coordinates[]
+}
+type RouteEntry = {
+  route: MapRouteEntity
+  basePolyline: google.maps.Polyline
+  animatedPolyline: google.maps.Polyline
+  currentPath: Coordinates[]
+  animationPath: Coordinates[]
+  routeSource: RouteSource
+  lengthMeters: number
+  offset: number
+  nominalSpeedMetersPerSecond: number
+  loopDurationSeconds: number
+  shouldAnimate: boolean
+}
+type MarkerEntry = {
+  location: MapLocationEntity
+  marker: google.maps.Marker
+  pulseMarker: google.maps.Marker
+  infoWindow: google.maps.InfoWindow
+  pulseOffset: number
+  pulseVisible: boolean
+  isPlaybackHighlighted?: boolean
+}
+type VehicleEntry = {
+  family: FamilyEntity
+  routeEntry: RouteEntry | null
+  marker: google.maps.Marker
+  radarMarker: google.maps.Marker
+  currentPosition: Coordinates | null
+  targetPosition: Coordinates | null
+  cameraLeadPosition?: Coordinates | null
+  currentHeading: number
+  targetHeading: number
+  isInTransit?: boolean
+  isPreMove?: boolean
+  routePathProfile?: PathDistanceProfile | null
+  routePlaybackProgress?: number | null
+  alertVisible: boolean
+  alertTone: string
+}
+type DriveProfile = {
+  distanceText: string
+  distanceMeters: number
+  durationText: string
+  durationSeconds: number
+}
+type ResolvedDrivingPath = Partial<DriveProfile> & { path: Coordinates[]; source: RouteSource }
+type MapChipProps = {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+  tone?: 'neutral' | 'green' | 'amber'
+}
+type OfflineRouteBoardProps = {
+  locations: MapLocationEntity[]
+  routes: MapRouteEntity[]
+  families: FamilyEntity[]
+  mapUi: TripDocument['ui']['map']
+  selectedLocationId?: string | null
+  selectedRouteId?: string | null
+  onSelectEntity: (type: TripEntityType, id: string) => void
+}
+type CommandMapProps = {
+  locations: LocationEntity[]
+  routes: RouteEntity[]
+  families: FamilyEntity[]
+  itineraryItems?: ItineraryItemEntity[]
+  meals?: MealEntity[]
+  activities?: ActivityEntity[]
+  days?: TripDayShell[]
+  cursorSlot?: number
+  mapUi: TripDocument['ui']['map']
+  mapWeather: MapWeather | null
+  mapWeatherTargets?: MapWeatherTarget[]
+  selectedLocationId?: string | null
+  selectedRouteId?: string | null
+  playbackActive?: boolean
+  playbackHighlightLocationId?: string | null
+  onUpdateMapUi: (patch: Partial<TripDocument['ui']['map']>) => void
+  onHydrateLocationDetails?: (locationId: string, patch: Partial<LocationEntity>) => void
+  onHydrateRouteDetails?: (routeId: string, patch: Partial<RouteEntity>) => void
+  onSelectEntity: (type: TripEntityType, id: string) => void
+  onPlaybackFeedItems?: (items: PlaybackCue[]) => void
+}
+
+declare global {
+  interface Window {
+    __tripCommandCenterMapsConfigured?: boolean
+    google?: GoogleMaps
+  }
+}
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
 const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID
 
-const DARK_MAP_STYLES = [
+const DARK_MAP_STYLES: google.maps.MapTypeStyle[] = [
   { elementType: 'geometry', stylers: [{ color: '#0b0f14' }] },
   { elementType: 'labels.text.stroke', stylers: [{ color: '#0b0f14' }] },
   { elementType: 'labels.text.fill', stylers: [{ color: '#8b949e' }] },
@@ -25,7 +205,7 @@ const DARK_MAP_STYLES = [
   { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#58a6ff' }] },
 ]
 
-const TONE_COLORS = {
+const TONE_COLORS: Record<string, string> = {
   info: '#58A6FF',
   warning: '#D29922',
   success: '#3FB950',
@@ -40,7 +220,7 @@ const MAX_ROUTE_LOOP_SECONDS = 34
 const LIVE_EXTERNAL_DATA = isLiveExternalDataEnabled()
 const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = import.meta.env.VITE_DISABLE_LEGACY_GOOGLE_ROUTING === 'true'
 const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = Boolean(import.meta.env?.DEV)
-const WEATHER_ICONS = {
+const WEATHER_ICONS: Record<string, LucideIcon> = {
   sun: Sun,
   partly: Cloud,
   cloud: Cloud,
@@ -51,7 +231,11 @@ const WEATHER_ICONS = {
   snow: Cloud,
 }
 
-function formatDurationText(totalSeconds) {
+function getWeatherIcon(iconKey?: string) {
+  return iconKey ? WEATHER_ICONS[iconKey] || Cloud : Cloud
+}
+
+function formatDurationText(totalSeconds: number) {
   if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return ''
 
   const totalMinutes = Math.round(totalSeconds / 60)
@@ -63,7 +247,7 @@ function formatDurationText(totalSeconds) {
   return `${hours} hr ${minutes} min`
 }
 
-function formatDistanceText(distanceMeters) {
+function formatDistanceText(distanceMeters: number) {
   if (!Number.isFinite(distanceMeters) || distanceMeters <= 0) return ''
 
   const miles = distanceMeters / 1609.344
@@ -71,7 +255,7 @@ function formatDistanceText(distanceMeters) {
   return `${miles.toFixed(decimals)} mi`
 }
 
-function buildAnimatedPath(google, path) {
+function buildAnimatedPath(google: GoogleMaps, path: Coordinates[] | null) {
   if (!path?.length || path.length < 4) return path
 
   const totalLength = google.maps.geometry.spherical.computeLength(path)
@@ -104,37 +288,45 @@ function buildAnimatedPath(google, path) {
   })
 }
 
-function matchesDay(dayId, focusDayId) {
+function matchesDay(dayId: string | undefined, focusDayId: string) {
   return focusDayId === 'all' || dayId === 'all' || dayId === focusDayId
 }
 
-function isFacility(location) {
+function isFacility(location: LocationEntity) {
   return location.category === 'logistics' || location.category === 'park'
 }
 
-function colorForCategory(location) {
+function isCoordinate(point: Coordinates | null | undefined): point is Coordinates {
+  return point != null && Number.isFinite(point.lat) && Number.isFinite(point.lng)
+}
+
+function validCoordinates(points: Array<Coordinates | null | undefined>) {
+  return points.filter(isCoordinate)
+}
+
+function colorForCategory(location: LocationEntity) {
   if (location.category === 'meal') return '#D29922'
   if (location.category === 'park') return '#3FB950'
   if (location.category === 'logistics') return '#8B949E'
   return '#58A6FF'
 }
 
-function getPlaybackCueTone(route, location) {
+function getPlaybackCueTone(route: MapRouteEntity | null | undefined, location: MapLocationEntity | null | undefined) {
   if (location) return colorForCategory(location)
   return getVehicleColor(route)
 }
 
-function getPlaybackCueSlotBucket(slot) {
-  return Number.isFinite(slot) ? Math.floor(slot * 10) : 'na'
+function getPlaybackCueSlotBucket(slot: number | null | undefined) {
+  return typeof slot === 'number' && Number.isFinite(slot) ? Math.floor(slot * 10) : 'na'
 }
 
-function buildPlaybackCueKey({ kind, route = null, location = null, entity = null, slot = null }) {
+function buildPlaybackCueKey({ kind, route = null, location = null, entity = null, slot = null }: PlaybackCueKeyInput) {
   const dayId = entity?.dayId || route?.dayId || 'all'
   const anchorId = entity?.id || location?.id || route?.destinationLocationId || route?.id || 'unknown'
   return `${kind}:${dayId}:${anchorId}:${getPlaybackCueSlotBucket(slot)}`
 }
 
-function getPlaybackCueSignature(cue) {
+function getPlaybackCueSignature(cue: PlaybackCue) {
   const familyIds = [...(cue.families || [])]
     .map((family) => family.id)
     .sort()
@@ -150,14 +342,15 @@ function getPlaybackCueSignature(cue) {
   ].join(':')
 }
 
-function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, entity = null, subtitleOverride = null, captionOverride = null }) {
+function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, entity = null, subtitleOverride = null, captionOverride = null }: BuildPlaybackCueInput): PlaybackCue | null {
+  if (!route && kind !== 'onsite') return null
   const tone = getPlaybackCueTone(route, location)
   const familyTitles = families.map((family) => family.title)
   const caravan = families.length > 1
   const caravanLabel = caravan ? `${families.length}-car caravan` : familyTitles[0]
   if (kind === 'departure') {
     return {
-      key: cueKey || `departure:${route.destinationLocationId || route.id}:${familyTitles.join('|')}`,
+      key: cueKey || `departure:${route?.destinationLocationId || route?.id || 'unknown'}:${familyTitles.join('|')}`,
       kind,
       title: caravan ? caravanLabel : familyTitles[0],
       subtitle: subtitleOverride || 'Departure',
@@ -174,7 +367,7 @@ function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, ent
   }
 
   return {
-    key: cueKey || `${kind}:${location?.id || route.destinationLocationId || route.id}:${familyTitles.join('|')}`,
+    key: cueKey || `${kind}:${location?.id || route?.destinationLocationId || route?.id || 'unknown'}:${familyTitles.join('|')}`,
     kind,
     title: location?.title || (kind === 'arrival' ? 'Arrival' : 'Road stop'),
     subtitle: subtitleOverride || (caravan ? caravanLabel : kind === 'arrival' ? 'Arrival' : kind === 'stop' ? 'Road stop' : 'On site'),
@@ -190,15 +383,16 @@ function buildPlaybackCue({ cueKey, families, route, kind, location, anchor, ent
   }
 }
 
-function averagePoint(points) {
-  if (!points.length) return null
+function averagePoint(points: Coordinates[]) {
+  const validPoints = validCoordinates(points)
+  if (!validPoints.length) return null
   return {
-    lat: points.reduce((sum, point) => sum + point.lat, 0) / points.length,
-    lng: points.reduce((sum, point) => sum + point.lng, 0) / points.length,
+    lat: validPoints.reduce((sum, point) => sum + point.lat, 0) / validPoints.length,
+    lng: validPoints.reduce((sum, point) => sum + point.lng, 0) / validPoints.length,
   }
 }
 
-function getCueEntityPriority(entity) {
+function getCueEntityPriority(entity: CueEntity | null | undefined) {
   if (!entity) return 0
   if (entity.type === 'meal') return 4
   if (entity.type === 'itineraryItem' && entity.rowId === 'activities') return 3
@@ -207,7 +401,7 @@ function getCueEntityPriority(entity) {
   return 0
 }
 
-function collapseOnsiteCueEntities(entities) {
+function collapseOnsiteCueEntities(entities: CueEntity[]): OnsiteCueGroup[] {
   if (!entities.length) return []
 
   const sorted = [...entities].sort((left, right) => {
@@ -217,7 +411,7 @@ function collapseOnsiteCueEntities(entities) {
     return getCueEntityPriority(right) - getCueEntityPriority(left)
   })
 
-  const groups = []
+  const groups: MutableOnsiteCueGroup[] = []
   sorted.forEach((entity) => {
     const previous = groups[groups.length - 1]
     if (
@@ -253,7 +447,7 @@ function collapseOnsiteCueEntities(entities) {
   })
 }
 
-function escapeHtml(value = '') {
+function escapeHtml(value: string | number | null | undefined = '') {
   return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -262,27 +456,29 @@ function escapeHtml(value = '') {
     .replaceAll("'", '&#39;')
 }
 
-function formatCategoryLabel(location) {
+function formatCategoryLabel(location: LocationEntity) {
   if (location.stopType) return location.stopType
   if (!location.category) return 'Location'
   return location.category.replaceAll('-', ' ')
 }
 
-function getLocationPhoto(location) {
-  return [...(location.livePhotos || []), ...(location.photos || [])].find((media) => media?.imageUrl) || null
+function getLocationPhoto(location: LocationEntity) {
+  return [...(location.livePhotos || []), ...(location.photos || [])].find(
+    (media): media is Exclude<typeof media, string> => typeof media !== 'string' && Boolean(media?.imageUrl),
+  ) || null
 }
 
-function getHoursPreview(location) {
+function getHoursPreview(location: LocationEntity) {
   return Array.isArray(location.openingHours) && location.openingHours.length ? location.openingHours[0] : ''
 }
 
-function getRatingSummary(location) {
+function getRatingSummary(location: LocationEntity) {
   if (typeof location.rating !== 'number') return ''
   const reviewText = location.userRatingsTotal ? ` · ${location.userRatingsTotal} reviews` : ''
   return `${location.rating.toFixed(1)} rating${reviewText}`
 }
 
-function buildLocationBriefingContent(location) {
+function buildLocationBriefingContent(location: LocationEntity) {
   const accent = colorForCategory(location)
   const photo = getLocationPhoto(location)
   const categoryLabel = formatCategoryLabel(location)
@@ -481,7 +677,7 @@ function ensureLocationBriefingStyles() {
   document.head.appendChild(style)
 }
 
-function MapChip({ active, onClick, children, tone = 'neutral' }) {
+function MapChip({ active, onClick, children, tone = 'neutral' }: MapChipProps) {
   const activeClasses = {
     neutral: 'border-[#58A6FF]/50 bg-[#58A6FF]/12 text-[#C9D1D9]',
     green: 'border-[#3FB950]/50 bg-[#3FB950]/12 text-[#3FB950]',
@@ -503,22 +699,145 @@ function MapChip({ active, onClick, children, tone = 'neutral' }) {
   )
 }
 
-function clamp01(value) {
+function OfflineRouteBoard({
+  locations,
+  routes,
+  families,
+  mapUi,
+  selectedLocationId,
+  selectedRouteId,
+  onSelectEntity,
+}: OfflineRouteBoardProps) {
+  const locationsById = new Map<string, MapLocationEntity>(locations.map((location) => [location.id, location]))
+  const familyById = new Map<string, FamilyEntity>(families.map((family) => [family.id, family]))
+  const visibleRoutes = mapUi.showRoutes
+    ? routes.filter((route) => {
+        const familyMatch = mapUi.focusFamilyId === 'all' || route.familyId === mapUi.focusFamilyId
+        return familyMatch && matchesDay(route.dayId, mapUi.focusDayId)
+      })
+    : []
+  const routeLines = visibleRoutes
+    .map((route) => ({ route, points: buildRouteCoordinatePath(route, locationsById) || [] }))
+    .filter((entry) => entry.points.length >= 2)
+  const routeLocationIds = new Set(
+    visibleRoutes.flatMap((route) => [route.destinationLocationId, ...(route.stopLocationIds || [])].filter(Boolean) as string[]),
+  )
+  const visibleLocations = locations.filter((location) => isCoordinate(location.coordinates) && (mapUi.showFacilities || routeLocationIds.has(location.id)))
+  const boundsPoints = [
+    ...visibleLocations.map((location) => location.coordinates),
+    ...routeLines.flatMap((entry) => entry.points),
+  ]
+
+  if (!boundsPoints.length) {
+    return (
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-8 text-center">
+        <div>
+          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#58A6FF]">Offline route board</div>
+          <div className="mt-2 text-xs text-[#8B949E]">No mapped coordinates available</div>
+        </div>
+      </div>
+    )
+  }
+
+  const bounds = getBoundsFromPoints(boundsPoints)
+  const project = (point: Coordinates) => {
+    const lngSpan = Math.max(bounds.maxLng - bounds.minLng, 0.01)
+    const latSpan = Math.max(bounds.maxLat - bounds.minLat, 0.01)
+    return {
+      x: clamp(8 + ((point.lng - bounds.minLng) / lngSpan) * 84, 8, 92),
+      y: clamp(8 + (1 - (point.lat - bounds.minLat) / latSpan) * 84, 8, 92),
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 overflow-hidden">
+      <div className="pointer-events-none absolute left-1/2 top-6 z-10 -translate-x-1/2 text-center">
+        <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#58A6FF]">Offline route board</div>
+        <div className="mt-1 text-[10px] text-[#8B949E]">Seeded routes shown without Google Maps</div>
+      </div>
+
+      <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+        {routeLines.map(({ route, points }) => (
+          <polyline
+            key={route.id}
+            points={points.map((point) => {
+              const projected = project(point)
+              return `${projected.x},${projected.y}`
+            }).join(' ')}
+            fill="none"
+            stroke={getVehicleColor(route)}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeOpacity={selectedRouteId === route.id ? 0.95 : 0.58}
+            strokeWidth={selectedRouteId === route.id ? 1.1 : 0.7}
+          />
+        ))}
+      </svg>
+
+      {visibleLocations.map((location) => {
+        const point = project(location.coordinates)
+        const selected = selectedLocationId === location.id
+        return (
+          <button
+            key={location.id}
+            type="button"
+            onClick={() => onSelectEntity('location', location.id)}
+            className="absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 text-left"
+            style={{ left: `${point.x}%`, top: `${point.y}%` }}
+          >
+            <span
+              className={`h-3 w-3 rounded-full border ${
+                selected ? 'border-[#E6EDF3] bg-[#58A6FF]' : 'border-[#0A0C10] bg-[#58A6FF]'
+              } shadow-[0_0_16px_rgba(88,166,255,0.48)]`}
+            />
+            <span className="max-w-[150px] border border-[#30363D] bg-[#0D1117]/90 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-[#C9D1D9] shadow-lg">
+              {location.title}
+            </span>
+          </button>
+        )
+      })}
+
+      {routeLines.length ? (
+        <div className="absolute bottom-6 left-1/2 z-10 flex max-w-[min(720px,calc(100%-48px))] -translate-x-1/2 flex-wrap justify-center gap-2">
+          {routeLines.slice(0, 5).map(({ route }) => (
+            <button
+              key={route.id}
+              type="button"
+              onClick={() => onSelectEntity('route', route.id)}
+              className={`border px-3 py-2 text-left text-[10px] uppercase tracking-[0.12em] shadow-lg ${
+                selectedRouteId === route.id
+                  ? 'border-[#58A6FF] bg-[#58A6FF]/16 text-[#E6EDF3]'
+                  : 'border-[#30363D] bg-[#0D1117]/88 text-[#C9D1D9]'
+              }`}
+            >
+              <span className="block font-black">{route.title}</span>
+              <span className="mt-1 block text-[9px] text-[#8B949E]">
+                {route.familyId ? familyById.get(route.familyId)?.title || 'Unassigned' : 'Unassigned'}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function clamp01(value: number) {
   return Math.min(Math.max(value, 0), 1)
 }
 
-function lerp(start, end, alpha) {
+function lerp(start: number, end: number, alpha: number) {
   return start + (end - start) * alpha
 }
 
-function lerpPoint(start, end, alpha) {
+function lerpPoint(start: Coordinates, end: Coordinates, alpha: number): Coordinates {
   return {
     lat: lerp(start.lat, end.lat, alpha),
     lng: lerp(start.lng, end.lng, alpha),
   }
 }
 
-function smoothstep(edgeStart, edgeEnd, value) {
+function smoothstep(edgeStart: number, edgeEnd: number, value: number) {
   if (edgeStart === edgeEnd) {
     return value >= edgeEnd ? 1 : 0
   }
@@ -526,31 +845,34 @@ function smoothstep(edgeStart, edgeEnd, value) {
   return normalized * normalized * (3 - 2 * normalized)
 }
 
-function getVehicleColor(route) {
-  return TONE_COLORS[route?.tone] || TONE_COLORS.info
+function getVehicleColor(route: MapRouteEntity | null | undefined) {
+  return route?.tone ? TONE_COLORS[route.tone] || TONE_COLORS.info : TONE_COLORS.info
 }
 
-function buildPathDistanceProfile(google, path) {
-  if (!google || !path?.length || path.length < 2) return null
+function buildPathDistanceProfile(google: GoogleMaps | null, path: Coordinates[] | null | undefined): PathDistanceProfile | null {
+  if (!google || !path?.length) return null
+
+  const validPath = validCoordinates(path)
+  if (validPath.length < 2) return null
 
   const cumulative = [0]
   let totalDistance = 0
 
-  for (let index = 1; index < path.length; index += 1) {
-    totalDistance += google.maps.geometry.spherical.computeDistanceBetween(path[index - 1], path[index])
+  for (let index = 1; index < validPath.length; index += 1) {
+    totalDistance += google.maps.geometry.spherical.computeDistanceBetween(validPath[index - 1], validPath[index])
     cumulative.push(totalDistance)
   }
 
   if (!totalDistance) return null
 
   return {
-    path,
+    path: validPath,
     cumulative,
     totalDistance,
   }
 }
 
-function getNearestPathProgress(google, pathProfile, coordinate) {
+function getNearestPathProgress(google: GoogleMaps, pathProfile: PathDistanceProfile | null, coordinate: Coordinates | null | undefined) {
   if (!google || !pathProfile || !coordinate) return null
 
   let nearestIndex = 0
@@ -567,14 +889,20 @@ function getNearestPathProgress(google, pathProfile, coordinate) {
   return clamp01(pathProfile.cumulative[nearestIndex] / pathProfile.totalDistance)
 }
 
-function buildRoutePlaybackProfile(google, route, pathProfile, locationsById, routeWindowSlots) {
+function buildRoutePlaybackProfile(
+  google: GoogleMaps,
+  route: MapRouteEntity | null | undefined,
+  pathProfile: PathDistanceProfile | null,
+  locationsById: Map<string, MapLocationEntity>,
+  routeWindowSlots: number,
+): RoutePlaybackProfile | null {
   if (!pathProfile) return null
   const { path } = pathProfile
 
   const origin = route?.originCoordinates || path[0]
   const intermediateStops = (route?.stopLocationIds || [])
     .map((locationId) => locationsById.get(locationId)?.coordinates || null)
-    .filter(Boolean)
+    .filter((coordinate): coordinate is Coordinates => Boolean(coordinate))
   const destination = route?.destinationLocationId
     ? locationsById.get(route.destinationLocationId)?.coordinates || path[path.length - 1]
     : path[path.length - 1]
@@ -588,7 +916,7 @@ function buildRoutePlaybackProfile(google, route, pathProfile, locationsById, ro
   const anchorProgresses = rawAnchorProgresses.map((progress, index, anchors) => {
     if (index === 0) return 0
     if (index === anchors.length - 1) return 1
-    return clamp01(Number.isFinite(progress) ? progress : index / (anchors.length - 1))
+    return clamp01(typeof progress === 'number' && Number.isFinite(progress) ? progress : index / (anchors.length - 1))
   })
 
   for (let index = 1; index < anchorProgresses.length - 1; index += 1) {
@@ -612,7 +940,7 @@ function buildRoutePlaybackProfile(google, route, pathProfile, locationsById, ro
   }
 }
 
-function getRoutePlaybackState(playbackProfile, rawProgress) {
+function getRoutePlaybackState(playbackProfile: RoutePlaybackProfile | null, rawProgress: number): RoutePlaybackState {
   const normalized = clamp01(rawProgress)
   if (!playbackProfile || playbackProfile.anchorProgresses.length < 2) {
     return {
@@ -659,7 +987,14 @@ function getRoutePlaybackState(playbackProfile, rawProgress) {
   }
 }
 
-function getRoutePlaybackProgress(google, routeEntry, pathProfile, locationsById, rawProgress, routeWindowSlots) {
+function getRoutePlaybackProgress(
+  google: GoogleMaps,
+  routeEntry: RouteEntry,
+  pathProfile: PathDistanceProfile | null,
+  locationsById: Map<string, MapLocationEntity>,
+  rawProgress: number,
+  routeWindowSlots: number,
+) {
   const profile = buildRoutePlaybackProfile(
     google,
     routeEntry?.route,
@@ -670,9 +1005,9 @@ function getRoutePlaybackProgress(google, routeEntry, pathProfile, locationsById
   return getRoutePlaybackState(profile, rawProgress)
 }
 
-function interpolateAlongPath(google, pathProfile, progress) {
-  const path = pathProfile?.path
-  if (!path?.length) return null
+function interpolateAlongPath(google: GoogleMaps, pathProfile: PathDistanceProfile | null, progress: number): Coordinates | null {
+  if (!pathProfile?.path.length) return null
+  const { path } = pathProfile
   if (path.length === 1 || !pathProfile.totalDistance) return path[0]
 
   const targetDistance = clamp01(progress) * pathProfile.totalDistance
@@ -693,7 +1028,7 @@ function interpolateAlongPath(google, pathProfile, progress) {
   return path[path.length - 1]
 }
 
-function appendDistinctPoint(points, point) {
+function appendDistinctPoint(points: Coordinates[], point: Coordinates | null) {
   if (!point) return
 
   const normalizedPoint = { lat: point.lat, lng: point.lng }
@@ -709,9 +1044,9 @@ function appendDistinctPoint(points, point) {
   points.push(normalizedPoint)
 }
 
-function extractPathSegment(google, pathProfile, startProgress = 0, endProgress = 1) {
-  const path = pathProfile?.path
-  if (!google || !path?.length) return []
+function extractPathSegment(google: GoogleMaps, pathProfile: PathDistanceProfile | null, startProgress = 0, endProgress = 1) {
+  if (!google || !pathProfile?.path.length) return []
+  const { path } = pathProfile
   if (path.length === 1 || !pathProfile.totalDistance) {
     return path.map((point) => ({ lat: point.lat, lng: point.lng }))
   }
@@ -720,7 +1055,7 @@ function extractPathSegment(google, pathProfile, startProgress = 0, endProgress 
   const end = clamp01(Math.max(startProgress, endProgress))
   const startDistance = start * pathProfile.totalDistance
   const endDistance = end * pathProfile.totalDistance
-  const segment = []
+  const segment: Coordinates[] = []
 
   appendDistinctPoint(segment, interpolateAlongPath(google, pathProfile, start))
 
@@ -735,7 +1070,7 @@ function extractPathSegment(google, pathProfile, startProgress = 0, endProgress 
   return segment
 }
 
-function buildRouteCameraViewportPoints(google, pathProfile, progress, mode) {
+function buildRouteCameraViewportPoints(google: GoogleMaps, pathProfile: PathDistanceProfile | null, progress: number, mode: CameraMode) {
   if (!pathProfile?.path?.length) return []
   if (mode === 'arrival') return []
   if (mode === 'premove') {
@@ -751,30 +1086,34 @@ function buildRouteCameraViewportPoints(google, pathProfile, progress, mode) {
   return extractPathSegment(google, pathProfile, viewportStart, 1)
 }
 
-function findNearestPlaybackStop(google, position, route, locationsById) {
+function findNearestPlaybackStop(
+  google: GoogleMaps | null,
+  position: Coordinates | google.maps.LatLng | null,
+  route: MapRouteEntity | null | undefined,
+  locationsById: Map<string, MapLocationEntity>,
+): MapLocationEntity | null {
   if (!google || !position || !route) return null
 
   const PLAYBACK_STOP_FOCUS_RADIUS_METERS = 1800
   const candidates = [...(route.stopLocationIds || []), route.destinationLocationId]
-    .filter(Boolean)
+    .filter((locationId): locationId is string => Boolean(locationId))
     .map((locationId) => locationsById.get(locationId))
-    .filter((location) => location?.coordinates)
+    .filter((location): location is MapLocationEntity => Boolean(location?.coordinates))
 
   if (!candidates.length) return null
 
-  let nearest = null
-
-  candidates.forEach((location) => {
+  const nearest = candidates.reduce<{ location: MapLocationEntity; distanceMeters: number } | null>((best, location) => {
     const distanceMeters = google.maps.geometry.spherical.computeDistanceBetween(position, location.coordinates)
-    if (!nearest || distanceMeters < nearest.distanceMeters) {
-      nearest = { location, distanceMeters }
+    if (!best || distanceMeters < best.distanceMeters) {
+      return { location, distanceMeters }
     }
-  })
+    return best
+  }, null)
 
   return nearest && nearest.distanceMeters < PLAYBACK_STOP_FOCUS_RADIUS_METERS ? nearest.location : null
 }
 
-function getRouteWindowDistance(route, cursorSlot, itineraryItems = []) {
+function getRouteWindowDistance(route: MapRouteEntity, cursorSlot: number, itineraryItems: ItineraryItemEntity[] = []) {
   const { startSlot, endSlot } = getRouteSimulationWindow(route, itineraryItems)
 
   if (cursorSlot < startSlot) return startSlot - cursorSlot
@@ -782,7 +1121,7 @@ function getRouteWindowDistance(route, cursorSlot, itineraryItems = []) {
   return 0
 }
 
-function getRouteSimulationWindow(route, itineraryItems = []) {
+function getRouteSimulationWindow(route: MapRouteEntity | null | undefined, itineraryItems: ItineraryItemEntity[] = []): RouteWindow {
   if (!route) {
     return { startSlot: 0, endSlot: 1 }
   }
@@ -792,7 +1131,7 @@ function getRouteSimulationWindow(route, itineraryItems = []) {
     if (linked.type === 'itineraryItem') {
       const linkedItem = itineraryItems.find((item) => item.id === linked.id)
       if (linkedItem && Number.isFinite(linkedItem.startSlot)) {
-        const fallbackSpan = Number.isFinite(linkedItem.span) && linkedItem.span > 0 ? linkedItem.span : 1
+        const fallbackSpan = typeof linkedItem.span === 'number' && Number.isFinite(linkedItem.span) && linkedItem.span > 0 ? linkedItem.span : 1
         const span = getRouteDurationSlotSpan(route, fallbackSpan)
         return {
           startSlot: linkedItem.startSlot,
@@ -802,24 +1141,29 @@ function getRouteSimulationWindow(route, itineraryItems = []) {
     }
   }
 
-  const startSlot = Number.isFinite(route.simulationStartSlot) ? route.simulationStartSlot : 0
+  const startSlot = typeof route.simulationStartSlot === 'number' && Number.isFinite(route.simulationStartSlot) ? route.simulationStartSlot : 0
   const fallbackSpan =
-    Number.isFinite(route.simulationEndSlot) && route.simulationEndSlot > startSlot
+    typeof route.simulationEndSlot === 'number' && Number.isFinite(route.simulationEndSlot) && route.simulationEndSlot > startSlot
       ? route.simulationEndSlot - startSlot
       : 1
   const endSlot = startSlot + getRouteDurationSlotSpan(route, fallbackSpan)
   return { startSlot, endSlot }
 }
 
-function getCursorDayId(cursorSlot) {
-  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / TIME_SLOTS.length), 0), DAYS.length - 1)
-  return DAYS[dayIndex]?.id || DAYS[0]?.id || 'all'
+function getCursorDayId(cursorSlot: number, days: Pick<TripDayShell, 'id'>[] = DAYS) {
+  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / TIME_SLOTS.length), 0), days.length - 1)
+  return days[dayIndex]?.id || days[0]?.id || 'all'
 }
 
-function resolveOnsiteCueFamilies(group, itineraryItems, routeEntries, families) {
+function resolveOnsiteCueFamilies(
+  group: OnsiteCueGroup,
+  itineraryItems: ItineraryItemEntity[],
+  routeEntries: RouteEntry[],
+  families: FamilyEntity[],
+) {
   if (!group?.primary) return []
 
-  const familyIds = new Set()
+  const familyIds = new Set<string>()
   const groupLocationId = group.primary.locationId
   const groupDayId = group.primary.dayId
   const groupStartSlot = group.primary.startSlot
@@ -845,7 +1189,7 @@ function resolveOnsiteCueFamilies(group, itineraryItems, routeEntries, families)
       ? getRouteSimulationWindow(route, itineraryItems)
       : {
           startSlot: item.startSlot,
-          endSlot: item.startSlot + (Number.isFinite(item.span) ? item.span : 0),
+          endSlot: item.startSlot + (typeof item.span === 'number' && Number.isFinite(item.span) ? item.span : 0),
         }
 
     const sameLocation =
@@ -863,11 +1207,11 @@ function resolveOnsiteCueFamilies(group, itineraryItems, routeEntries, families)
   return families.filter((family) => familyIds.has(family.id))
 }
 
-function clamp(value, min, max) {
+function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
 }
 
-function getCameraPadding(map, pointCount, mode) {
+function getCameraPadding(map: google.maps.Map, pointCount: number, mode: CameraMode): CameraPadding {
   const mapDiv = map?.getDiv?.()
   const width = Math.max(mapDiv?.clientWidth || 0, 1)
   const height = Math.max(mapDiv?.clientHeight || 0, 1)
@@ -894,14 +1238,17 @@ function getCameraPadding(map, pointCount, mode) {
   }
 }
 
-function latRad(lat) {
+function latRad(lat: number) {
   const sin = Math.sin((lat * Math.PI) / 180)
   const radX2 = Math.log((1 + sin) / (1 - sin)) / 2
   return clamp(radX2 / 2, -Math.PI / 2, Math.PI / 2)
 }
 
-function getBoundsFromPoints(points) {
-  return points.reduce(
+function getBoundsFromPoints(points: Coordinates[]): BoundsBox {
+  const validPoints = validCoordinates(points)
+  const firstPoint = validPoints[0]
+
+  return validPoints.reduce(
     (bounds, point) => ({
       minLat: Math.min(bounds.minLat, point.lat),
       maxLat: Math.max(bounds.maxLat, point.lat),
@@ -909,24 +1256,30 @@ function getBoundsFromPoints(points) {
       maxLng: Math.max(bounds.maxLng, point.lng),
     }),
     {
-      minLat: points[0]?.lat ?? 0,
-      maxLat: points[0]?.lat ?? 0,
-      minLng: points[0]?.lng ?? 0,
-      maxLng: points[0]?.lng ?? 0,
+      minLat: firstPoint?.lat ?? 0,
+      maxLat: firstPoint?.lat ?? 0,
+      minLng: firstPoint?.lng ?? 0,
+      maxLng: firstPoint?.lng ?? 0,
     },
   )
 }
 
-function getBoundsCenter(points) {
-  if (!points.length) return null
-  const bounds = getBoundsFromPoints(points)
+function getBoundsCenter(points: Coordinates[]) {
+  const validPoints = validCoordinates(points)
+  if (!validPoints.length) return null
+  const bounds = getBoundsFromPoints(validPoints)
   return {
     lat: (bounds.minLat + bounds.maxLat) / 2,
     lng: (bounds.minLng + bounds.maxLng) / 2,
   }
 }
 
-function getViewportAwareZoom(map, points, padding, { minZoom = 6.9, maxZoom = 10.9 } = {}) {
+function getViewportAwareZoom(
+  map: google.maps.Map,
+  points: Coordinates[],
+  padding: CameraPadding,
+  { minZoom = 6.9, maxZoom = 10.9 }: { minZoom?: number; maxZoom?: number } = {},
+) {
   if (!map || !points.length) return minZoom
 
   const mapDiv = map.getDiv?.()
@@ -946,7 +1299,7 @@ function getViewportAwareZoom(map, points, padding, { minZoom = 6.9, maxZoom = 1
   return clamp(Math.min(lngZoom, latZoom), minZoom, maxZoom)
 }
 
-function weightedCenter(points) {
+function weightedCenter(points: PointWeight[]) {
   if (!points.length) return null
   const totals = points.reduce(
     (accumulator, point) => ({
@@ -956,7 +1309,9 @@ function weightedCenter(points) {
     }),
     { lat: 0, lng: 0, weight: 0 },
   )
-  if (!totals.weight) return { lat: points[0].lat, lng: points[0].lng }
+  const firstPoint = points[0]
+  if (!firstPoint) return null
+  if (!totals.weight) return { lat: firstPoint.lat, lng: firstPoint.lng }
   return {
     lat: totals.lat / totals.weight,
     lng: totals.lng / totals.weight,
@@ -969,8 +1324,17 @@ function buildParticipantCameraTarget({
   vehicleEntries,
   highlightedLocation,
   cursorSlot,
+  days = DAYS,
+}: {
+  google: GoogleMaps | null
+  map: google.maps.Map
+  vehicleEntries: VehicleEntry[]
+  highlightedLocation: MapLocationEntity | null | undefined
+  cursorSlot: number
+  days?: Pick<TripDayShell, 'id'>[]
 }) {
-  const currentDayId = getCursorDayId(cursorSlot)
+  if (!google) return null
+  const currentDayId = getCursorDayId(cursorSlot, days)
   const visibleEntries = vehicleEntries
     .filter((entry) => entry.marker.getMap())
     .filter((entry) => {
@@ -981,7 +1345,7 @@ function buildParticipantCameraTarget({
       ...entry,
       position: entry.currentPosition || entry.targetPosition,
     }))
-    .filter((entry) => entry.position)
+    .filter((entry): entry is VehicleEntry & { position: Coordinates } => Boolean(entry.position))
 
   if (!visibleEntries.length) return null
 
@@ -996,7 +1360,7 @@ function buildParticipantCameraTarget({
         ? arrivalEntries
         : visibleEntries
 
-  let trackedPoints =
+  let trackedPoints: PointWeight[] =
     trackedEntries.length === 1
       ? [
           { ...trackedEntries[0].position, weight: 1.15 },
@@ -1004,7 +1368,7 @@ function buildParticipantCameraTarget({
         ]
       : trackedEntries.map((entry) => ({ ...entry.position, weight: entry.isInTransit ? 1.2 : 1 }))
 
-  const mode = activeEntries.length ? 'active' : preMoveEntries.length ? 'premove' : 'arrival'
+  const mode: CameraMode = activeEntries.length ? 'active' : preMoveEntries.length ? 'premove' : 'arrival'
   const routeViewportPoints =
     mode === 'arrival'
       ? []
@@ -1039,11 +1403,11 @@ function buildParticipantCameraTarget({
         ])
       : weightedCenter(trackedPoints)
   const padding = getCameraPadding(map, trackedEntries.length, mode)
-  const currentZoom = map.getZoom()
   const zoomMax =
     trackedEntries.length <= 1
       ? mode === 'arrival' ? 13.2 : 12.2
       : 10.8
+  const currentZoom = map.getZoom() ?? zoomMax
   let zoom = getViewportAwareZoom(
     map,
     routeViewportPoints.length > 1
@@ -1067,13 +1431,14 @@ function buildParticipantCameraTarget({
   }
 }
 
-function getRouteOrigin(family, route, path) {
+function getRouteOrigin(family: FamilyEntity, route: MapRouteEntity | null | undefined, path: Coordinates[] | null | undefined) {
   return route?.originCoordinates || path?.[0] || family?.originCoordinates || null
 }
 
-function buildRouteCoordinatePath(route, locationsById) {
+function buildRouteCoordinatePath(route: MapRouteEntity | null | undefined, locationsById: Map<string, MapLocationEntity>) {
   if (route?.path?.length) {
-    return route.path
+    const path = validCoordinates(route.path)
+    return path.length >= 2 ? path : null
   }
 
   const origin = route?.originCoordinates || null
@@ -1082,13 +1447,19 @@ function buildRouteCoordinatePath(route, locationsById) {
     : null
   const stops = (route?.stopLocationIds || [])
     .map((locationId) => locationsById.get(locationId)?.coordinates || null)
-    .filter(Boolean)
+    .filter(isCoordinate)
 
-  const points = [origin, ...stops, destination].filter(Boolean)
+  const points = [origin, ...stops, destination].filter(isCoordinate)
   return points.length >= 2 ? points : null
 }
 
-function pickFamilyRouteEntry(routeEntries, familyId, cursorSlot, focusDayId = 'all', itineraryItems = []) {
+function pickFamilyRouteEntry(
+  routeEntries: RouteEntry[],
+  familyId: string,
+  cursorSlot: number,
+  focusDayId = 'all',
+  itineraryItems: ItineraryItemEntity[] = [],
+): RouteEntry | null {
   const directCandidates = routeEntries.filter((entry) => entry.route.familyId === familyId)
   if (!directCandidates.length) return null
 
@@ -1101,7 +1472,7 @@ function pickFamilyRouteEntry(routeEntries, familyId, cursorSlot, focusDayId = '
   })
 
   if (activeCandidates.length) {
-    return activeCandidates.reduce((bestEntry, entry) => {
+    return activeCandidates.reduce<RouteEntry | null>((bestEntry, entry) => {
       if (!bestEntry) return entry
 
       const bestStart = getRouteSimulationWindow(bestEntry.route, itineraryItems).startSlot
@@ -1110,7 +1481,7 @@ function pickFamilyRouteEntry(routeEntries, familyId, cursorSlot, focusDayId = '
     }, null)
   }
 
-  return candidates.reduce((bestEntry, entry) => {
+  return candidates.reduce<RouteEntry | null>((bestEntry, entry) => {
     if (!bestEntry) return entry
 
     const bestDistance = getRouteWindowDistance(bestEntry.route, cursorSlot, itineraryItems)
@@ -1128,19 +1499,20 @@ function pickFamilyRouteEntry(routeEntries, familyId, cursorSlot, focusDayId = '
   }, null)
 }
 
-function getPlaybackDayId(cursorSlot) {
+function getPlaybackDayId(cursorSlot: number, days: Pick<TripDayShell, 'id'>[] = DAYS) {
   const slotsPerDay = TIME_SLOTS.length || 1
-  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / slotsPerDay), 0), DAYS.length - 1)
-  return DAYS[dayIndex]?.id || DAYS[0]?.id || 'all'
+  const dayIndex = Math.min(Math.max(Math.floor(cursorSlot / slotsPerDay), 0), days.length - 1)
+  return days[dayIndex]?.id || days[0]?.id || 'all'
 }
 
 export default function CommandMap({
-  locations,
-  routes,
+  locations: rawLocations,
+  routes: rawRoutes,
   families,
   itineraryItems = [],
   meals = [],
   activities = [],
+  days: inputDays,
   cursorSlot = 0,
   mapUi,
   mapWeather,
@@ -1154,36 +1526,39 @@ export default function CommandMap({
   onHydrateRouteDetails,
   onSelectEntity,
   onPlaybackFeedItems,
-}) {
-  const containerRef = useRef(null)
-  const mapRef = useRef(null)
-  const googleRef = useRef(null)
-  const trafficLayerRef = useRef(null)
-  const routeEntriesRef = useRef([])
-  const markerEntriesRef = useRef([])
-  const vehicleEntriesRef = useRef([])
-  const animationFrameRef = useRef(null)
-  const lastAnimationTimestampRef = useRef(null)
+}: CommandMapProps) {
+  const days = inputDays?.length ? inputDays : DAYS
+  const locations = rawLocations as MapLocationEntity[]
+  const routes = rawRoutes as MapRouteEntity[]
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const mapRef = useRef<google.maps.Map | null>(null)
+  const googleRef = useRef<GoogleMaps | null>(null)
+  const trafficLayerRef = useRef<google.maps.TrafficLayer | null>(null)
+  const routeEntriesRef = useRef<RouteEntry[]>([])
+  const markerEntriesRef = useRef<MarkerEntry[]>([])
+  const vehicleEntriesRef = useRef<VehicleEntry[]>([])
+  const animationFrameRef = useRef<number | null>(null)
+  const lastAnimationTimestampRef = useRef<number | null>(null)
   const lastViewportTargetRef = useRef('')
-  const playbackStopSelectionRef = useRef(null)
-  const playbackCameraTargetRef = useRef(null)
-  const cameraStateRef = useRef(null)
-  const prevCursorSlotRef = useRef(null)
-  const playbackCueKeysRef = useRef(new Map())
-  const directionsServiceRef = useRef(null)
-  const directionsAvailabilityRef = useRef('unknown')
-  const placesServiceRef = useRef(null)
-  const placesAvailabilityRef = useRef('unknown')
+  const playbackStopSelectionRef = useRef<string | null>(null)
+  const playbackCameraTargetRef = useRef<{ center: Coordinates | null; zoom: number; mode: CameraMode; participantCount: number } | null>(null)
+  const cameraStateRef = useRef<CameraState | null>(null)
+  const prevCursorSlotRef = useRef<number | null>(null)
+  const playbackCueKeysRef = useRef(new Map<string, string>())
+  const directionsServiceRef = useRef<google.maps.DirectionsService | null>(null)
+  const directionsAvailabilityRef = useRef<AvailabilityState>('unknown')
+  const placesServiceRef = useRef<google.maps.places.PlacesService | null>(null)
+  const placesAvailabilityRef = useRef<AvailabilityState>('unknown')
   const [status, setStatus] = useState('loading')
   const [statusDetail, setStatusDetail] = useState('Connecting to Google Maps...')
   const [mapLayerCollapsed, setMapLayerCollapsed] = useState(false)
   const [weatherCollapsed, setWeatherCollapsed] = useState(false)
   const effectiveFocusDayId =
-    playbackActive && mapUi.focusDayId === 'all' ? getPlaybackDayId(cursorSlot) : mapUi.focusDayId
+    playbackActive && mapUi.focusDayId === 'all' ? getPlaybackDayId(cursorSlot, days) : mapUi.focusDayId
 
-  const getRoutePath = (entry) => entry.currentPath || entry.route.path
+  const getRoutePath = (entry: RouteEntry) => entry.currentPath || entry.route.path || null
 
-  const showPlaybackCues = useCallback((cues) => {
+  const showPlaybackCues = useCallback((cues: PlaybackCue | PlaybackCue[]) => {
     const nextCues = (Array.isArray(cues) ? cues : [cues]).filter(Boolean)
     if (!nextCues.length) return
 
@@ -1199,11 +1574,11 @@ export default function CommandMap({
     onPlaybackFeedItems?.(freshCues)
   }, [onPlaybackFeedItems])
 
-  const resolveDrivingPath = async (google, route) => {
-    const locationsById = new Map(locations.map((location) => [location.id, location]))
+  const resolveDrivingPath = async (google: GoogleMaps, route: MapRouteEntity): Promise<ResolvedDrivingPath> => {
+    const locationsById = new Map<string, MapLocationEntity>(locations.map((location) => [location.id, location]))
     const fallbackPath = buildRouteCoordinatePath(route, locationsById)
     if (!fallbackPath || fallbackPath.length < 2) {
-      return { path: fallbackPath, source: 'seeded' }
+      return { path: fallbackPath || [], source: 'seeded' }
     }
     if (!LIVE_EXTERNAL_DATA) return { path: fallbackPath, source: 'seeded' }
     if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) return { path: fallbackPath, source: 'seeded' }
@@ -1219,10 +1594,10 @@ export default function CommandMap({
       : fallbackPath[fallbackPath.length - 1]
     const waypointPoints = (route?.stopLocationIds || [])
       .map((locationId) => locationsById.get(locationId)?.coordinates || null)
-      .filter(Boolean)
+      .filter((coordinate): coordinate is Coordinates => Boolean(coordinate))
 
-    return new Promise((resolve, reject) => {
-      directionsServiceRef.current.route(
+    return new Promise<ResolvedDrivingPath>((resolve, reject) => {
+      directionsServiceRef.current?.route(
         {
           origin,
           destination,
@@ -1266,20 +1641,22 @@ export default function CommandMap({
     })
   }
 
-  const resolvePlaceMatch = async (google, location) => {
-    if (!location.placesQuery || location.placeId) return null
+  const resolvePlaceMatch = async (google: GoogleMaps, location: MapLocationEntity) => {
+    if (typeof location.placesQuery !== 'string' || location.placeId) return null
+    const placesQuery = location.placesQuery
     if (!LIVE_EXTERNAL_DATA) return null
     if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) return null
     if (placesAvailabilityRef.current === 'unavailable') return null
 
     if (!placesServiceRef.current) {
+      if (!mapRef.current) return null
       placesServiceRef.current = new google.maps.places.PlacesService(mapRef.current)
     }
 
-    return new Promise((resolve, reject) => {
-      placesServiceRef.current.findPlaceFromQuery(
+    return new Promise<google.maps.places.PlaceResult | null>((resolve, reject) => {
+      placesServiceRef.current?.findPlaceFromQuery(
         {
-          query: location.placesQuery,
+          query: placesQuery,
           fields: ['name', 'formatted_address', 'geometry', 'place_id'],
         },
         (results, placeStatus) => {
@@ -1297,18 +1674,19 @@ export default function CommandMap({
     })
   }
 
-  const resolvePlaceDetails = async (google, placeId) => {
+  const resolvePlaceDetails = async (google: GoogleMaps, placeId: string | undefined) => {
     if (!placeId) return null
     if (!LIVE_EXTERNAL_DATA) return null
     if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) return null
     if (placesAvailabilityRef.current === 'unavailable') return null
 
     if (!placesServiceRef.current) {
+      if (!mapRef.current) return null
       placesServiceRef.current = new google.maps.places.PlacesService(mapRef.current)
     }
 
-    return new Promise((resolve, reject) => {
-      placesServiceRef.current.getDetails(
+    return new Promise<google.maps.places.PlaceResult | null>((resolve, reject) => {
+      placesServiceRef.current?.getDetails(
         {
           placeId,
           fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
@@ -1328,7 +1706,11 @@ export default function CommandMap({
     })
   }
 
-  const resolveDriveProfile = async (google, origin, destination) => {
+  const resolveDriveProfile = async (
+    google: GoogleMaps,
+    origin: Coordinates | null | undefined,
+    destination: Coordinates | null | undefined,
+  ): Promise<DriveProfile | null> => {
     if (!origin || !destination) return null
     if (!LIVE_EXTERNAL_DATA) return null
     if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) return null
@@ -1338,8 +1720,8 @@ export default function CommandMap({
       directionsServiceRef.current = new google.maps.DirectionsService()
     }
 
-    return new Promise((resolve, reject) => {
-      directionsServiceRef.current.route(
+    return new Promise<DriveProfile | null>((resolve, reject) => {
+      directionsServiceRef.current?.route(
         {
           origin,
           destination,
@@ -1395,7 +1777,7 @@ export default function CommandMap({
         if (!window.__tripCommandCenterMapsConfigured) {
           setOptions({
             key: GOOGLE_MAPS_API_KEY,
-            version: 'weekly',
+            v: 'weekly',
             mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
           })
           window.__tripCommandCenterMapsConfigured = true
@@ -1404,6 +1786,7 @@ export default function CommandMap({
         await importLibrary('maps')
         await importLibrary('geometry')
         const google = window.google
+        if (!google) throw new Error('Google Maps API unavailable')
         if (cancelled || !containerRef.current) return
 
         googleRef.current = google
@@ -1435,15 +1818,16 @@ export default function CommandMap({
           await importLibrary('places')
         }
 
-        const initialLocationsById = new Map(initialLocations.map((location) => [location.id, location]))
+        const initialLocationsById = new Map<string, MapLocationEntity>(initialLocations.map((location) => [location.id, location]))
 
         routeEntriesRef.current = initialRoutes.map((route) => {
-          const seededPath = buildRouteCoordinatePath(route, initialLocationsById)
+          const seededPath = buildRouteCoordinatePath(route, initialLocationsById) || []
+          const routeColor = getVehicleColor(route)
           const basePolyline = new google.maps.Polyline({
             map,
             path: seededPath,
             geodesic: true,
-            strokeColor: TONE_COLORS[route.tone],
+            strokeColor: routeColor,
             strokeOpacity: route.tone === 'muted' ? 0.34 : 0.28,
             strokeWeight: route.tone === 'muted' ? 2 : 2.5,
           })
@@ -1458,7 +1842,7 @@ export default function CommandMap({
                 icon: {
                   path: 'M 0,-1 0,1',
                   strokeOpacity: route.tone === 'muted' ? 0.45 : 0.55,
-                  strokeColor: TONE_COLORS[route.tone],
+                  strokeColor: routeColor,
                   scale: route.tone === 'muted' ? 2.5 : 3,
                 },
                 offset: '0%',
@@ -1468,7 +1852,9 @@ export default function CommandMap({
           })
 
           const handleRouteClick = () => {
+            if (!route.linkedEntityKey) return
             const linked = parseEntityKey(route.linkedEntityKey)
+            if (!linked.id) return
             onSelectEntity(linked.type, linked.id)
           }
 
@@ -1506,15 +1892,16 @@ export default function CommandMap({
               distanceText,
             } = await resolveDrivingPath(google, entry.route)
             if (cancelled) return
-            entry.currentPath = drivingPath
-            entry.animationPath = buildAnimatedPath(google, drivingPath)
+            const nextPath = drivingPath.length ? drivingPath : entry.currentPath
+            entry.currentPath = nextPath
+            entry.animationPath = buildAnimatedPath(google, nextPath) || nextPath
             entry.routeSource = source
-            entry.lengthMeters = Math.max(google.maps.geometry.spherical.computeLength(drivingPath), 1)
-            entry.basePolyline.setPath(drivingPath)
+            entry.lengthMeters = Math.max(google.maps.geometry.spherical.computeLength(nextPath), 1)
+            entry.basePolyline.setPath(nextPath)
             entry.animatedPolyline.setPath(entry.animationPath)
             if (source === 'directions') {
               onHydrateRouteDetails?.(entry.route.id, {
-                path: drivingPath,
+                path: nextPath,
                 durationSeconds,
                 durationText,
                 distanceMeters,
@@ -1685,7 +2072,7 @@ export default function CommandMap({
                   google,
                   basecampLocation.coordinates,
                   entry.location.coordinates,
-                )
+                ) || undefined
               } catch {
                 basecampDrive = entry.location.basecampDrive
               }
@@ -1732,7 +2119,7 @@ export default function CommandMap({
       } catch (error) {
         if (cancelled) return
         setStatus('error')
-        setStatusDetail(error?.message || 'Google Maps failed to load')
+        setStatusDetail(error instanceof Error ? error.message : 'Google Maps failed to load')
       }
     }
 
@@ -1763,6 +2150,8 @@ export default function CommandMap({
 
   useEffect(() => {
     if (status !== 'ready') return
+    const googleApi = googleRef.current
+    if (!googleApi) return
 
     markerEntriesRef.current.forEach((entry) => {
       const latestLocation = locations.find((location) => location.id === entry.location.id)
@@ -1809,12 +2198,13 @@ export default function CommandMap({
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || status !== 'ready') return
+    const googleApi = googleRef.current
+    if (!map || !googleApi || status !== 'ready') return
 
     let targetLocationId = playbackActive ? playbackHighlightLocationId : null
 
     if (playbackActive && !targetLocationId) {
-      const locationsById = new Map(locations.map((location) => [location.id, location]))
+      const locationsById = new Map<string, MapLocationEntity>(locations.map((location) => [location.id, location]))
       vehicleEntriesRef.current.some((entry) => {
         if (!entry.marker.getMap()) return false
         if (!entry.isInTransit) return false
@@ -1855,10 +2245,12 @@ export default function CommandMap({
 
   useEffect(() => {
     if (status !== 'ready') return
+    const googleApi = googleRef.current
+    if (!googleApi) return
 
     let mounted = true
 
-    const animate = (timestamp) => {
+    const animate = (timestamp: number) => {
       const previousTimestamp = lastAnimationTimestampRef.current ?? timestamp
       const deltaSeconds = Math.min((timestamp - previousTimestamp) / 1000, 0.1)
       lastAnimationTimestampRef.current = timestamp
@@ -1897,7 +2289,7 @@ export default function CommandMap({
         entry.radarMarker.setMap(mapRef.current)
         entry.radarMarker.setPosition(entry.currentPosition)
         entry.radarMarker.setIcon({
-          path: googleRef.current.maps.SymbolPath.CIRCLE,
+          path: googleApi.maps.SymbolPath.CIRCLE,
           strokeColor: entry.alertTone || '#58A6FF',
           strokeOpacity: 0.34 * cycle,
           strokeWeight: 1.8,
@@ -1925,7 +2317,7 @@ export default function CommandMap({
         entry.pulseMarker.setMap(mapRef.current)
         entry.pulseMarker.setPosition(entry.location.coordinates)
         entry.pulseMarker.setIcon({
-          path: googleRef.current.maps.SymbolPath.CIRCLE,
+          path: googleApi.maps.SymbolPath.CIRCLE,
           strokeColor: pulseColor,
           strokeOpacity: pulseStrokeOpacity,
           strokeWeight: entry.isPlaybackHighlighted ? 2 : 1.6,
@@ -1979,9 +2371,10 @@ export default function CommandMap({
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || status !== 'ready') return
+    const googleApi = googleRef.current
+    if (!map || !googleApi || status !== 'ready') return
 
-    const locationsById = new Map(locations.map((location) => [location.id, location]))
+    const locationsById = new Map<string, MapLocationEntity>(locations.map((location) => [location.id, location]))
     let playbackAutoLocationId = playbackHighlightLocationId || null
 
     if (playbackActive && !playbackAutoLocationId) {
@@ -2001,13 +2394,13 @@ export default function CommandMap({
         if (!visible) return false
 
         const path = getRoutePath(routeEntry)
-        const pathProfile = buildPathDistanceProfile(googleRef.current, path)
+        const pathProfile = buildPathDistanceProfile(googleApi, path)
         const origin = getRouteOrigin(family, route, path)
         const destination = path?.[path.length - 1] || origin
         const { startSlot, endSlot } = getRouteSimulationWindow(route, itineraryItems)
         const rawProgress = endSlot === startSlot ? 1 : (cursorSlot - startSlot) / (endSlot - startSlot)
         const { progress: mappedProgress } = getRoutePlaybackProgress(
-          googleRef.current,
+          googleApi,
           routeEntry,
           pathProfile,
           locationsById,
@@ -2019,10 +2412,10 @@ export default function CommandMap({
         if (cursorSlot >= endSlot) {
           position = destination
         } else if (cursorSlot > startSlot) {
-          position = interpolateAlongPath(googleRef.current, pathProfile, mappedProgress) || origin
+          position = interpolateAlongPath(googleApi, pathProfile, mappedProgress) || origin
         }
 
-        const nearestStop = findNearestPlaybackStop(googleRef.current, position, route, locationsById)
+        const nearestStop = findNearestPlaybackStop(googleApi, position, route, locationsById)
         if (!nearestStop) return false
 
         playbackAutoLocationId = nearestStop.id
@@ -2032,6 +2425,7 @@ export default function CommandMap({
 
     routeEntriesRef.current.forEach((entry) => {
       const { route, basePolyline, animatedPolyline } = entry
+      const routeColor = getVehicleColor(route)
       const visible =
         route.id === selectedRouteId ||
         (mapUi.showRoutes &&
@@ -2042,7 +2436,7 @@ export default function CommandMap({
       const hasSpecificFocus = mapUi.focusFamilyId !== 'all' || mapUi.focusDayId !== 'all'
 
       basePolyline.setOptions({
-        strokeColor: TONE_COLORS[route.tone] || TONE_COLORS.info,
+        strokeColor: routeColor,
         strokeOpacity:
           route.tone === 'muted'
             ? emphasized ? 0.44 : 0.24
@@ -2057,7 +2451,7 @@ export default function CommandMap({
       if (icons?.length) {
         icons[0].icon = {
           ...icons[0].icon,
-          strokeColor: TONE_COLORS[route.tone] || TONE_COLORS.info,
+          strokeColor: routeColor,
           strokeOpacity:
             entry.routeSource === 'directions'
               ? emphasized ? 0.72 : 0.3
@@ -2122,7 +2516,7 @@ export default function CommandMap({
           strokeColor: colorForCategory(location),
           strokeWeight: location.id === selectedLocationId || highlightedByPlayback ? 3 : 2,
           scale: location.id === selectedLocationId || highlightedByPlayback ? 1.5 : 1.2,
-          labelOrigin: new googleRef.current.maps.Point(0, 18),
+          labelOrigin: new googleApi.maps.Point(0, 18),
         },
       })
     })
@@ -2161,13 +2555,13 @@ export default function CommandMap({
       }
 
       const path = getRoutePath(routeEntry)
-      const pathProfile = buildPathDistanceProfile(googleRef.current, path)
+      const pathProfile = buildPathDistanceProfile(googleApi, path)
       const origin = getRouteOrigin(family, route, path)
       const destination = path?.[path.length - 1] || origin
       const { startSlot, endSlot } = getRouteSimulationWindow(route, itineraryItems)
       const rawProgress = endSlot === startSlot ? 1 : (cursorSlot - startSlot) / (endSlot - startSlot)
       const { progress: mappedProgress } = getRoutePlaybackProgress(
-        googleRef.current,
+        googleApi,
         routeEntry,
         pathProfile,
         locationsById,
@@ -2179,7 +2573,7 @@ export default function CommandMap({
       if (cursorSlot >= endSlot) {
         position = destination
       } else if (cursorSlot > startSlot) {
-        position = interpolateAlongPath(googleRef.current, pathProfile, mappedProgress) || origin
+        position = interpolateAlongPath(googleApi, pathProfile, mappedProgress) || origin
       }
 
       const lookaheadMeters = pathProfile ? Math.min(Math.max(pathProfile.totalDistance * 0.018, 180), 1400) : 420
@@ -2189,10 +2583,10 @@ export default function CommandMap({
       const nextPosition =
         cursorSlot >= endSlot
           ? destination
-          : interpolateAlongPath(googleRef.current, pathProfile, nextProgress) || destination
+          : interpolateAlongPath(googleApi, pathProfile, nextProgress) || destination
       const heading =
         position && nextPosition
-          ? googleRef.current.maps.geometry.spherical.computeHeading(position, nextPosition) || 0
+          ? googleApi.maps.geometry.spherical.computeHeading(position, nextPosition) || 0
           : 0
       const emphasized = selectedRoute || selectedFamily
       const fillColor = getVehicleColor(route)
@@ -2217,14 +2611,14 @@ export default function CommandMap({
       entry.marker.setZIndex(emphasized ? 85 : 60)
       entry.marker.setOpacity(emphasized ? 1 : 0.9)
       entry.marker.setIcon({
-        path: googleRef.current.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+        path: googleApi.maps.SymbolPath.FORWARD_CLOSED_ARROW,
         fillColor,
         fillOpacity: emphasized ? 1 : 0.9,
         strokeColor: emphasized ? '#E6EDF3' : '#0D1117',
         strokeWeight: emphasized ? 2.4 : 2,
         rotation: heading,
         scale: emphasized ? 6.3 : 5.6,
-        anchor: new googleRef.current.maps.Point(0, 2.8),
+        anchor: new googleApi.maps.Point(0, 2.8),
       })
     })
 
@@ -2235,6 +2629,8 @@ export default function CommandMap({
 
   useEffect(() => {
     if (status !== 'ready') return
+    const googleApi = googleRef.current
+    if (!googleApi) return
 
     if (!playbackActive) {
       prevCursorSlotRef.current = null
@@ -2247,8 +2643,8 @@ export default function CommandMap({
       playbackCueKeysRef.current.clear()
     }
 
-    const locationsById = new Map(locations.map((location) => [location.id, location]))
-    const crossedThreshold = (threshold) => {
+    const locationsById = new Map<string, MapLocationEntity>(locations.map((location) => [location.id, location]))
+    const crossedThreshold = (threshold: number) => {
       if (previousCursor == null) {
         return cursorSlot >= threshold && cursorSlot <= threshold + 0.08
       }
@@ -2259,12 +2655,17 @@ export default function CommandMap({
       ...meals,
       ...activities,
       ...itineraryItems.filter((item) => item.rowId !== 'travel' && item.locationId),
-    ].filter((entity) => entity.locationId && matchesDay(entity.dayId, effectiveFocusDayId))
+    ].filter((entity): entity is CueEntity =>
+      Boolean(entity.locationId) &&
+      'startSlot' in entity &&
+      typeof entity.startSlot === 'number' &&
+      matchesDay(entity.dayId, effectiveFocusDayId),
+    )
 
     const crossedOnsiteEntityGroups = collapseOnsiteCueEntities(
       onsiteEntities.filter((entity) => crossedThreshold(entity.startSlot)),
     )
-    const hasNearbyOnsitePhase = (locationId, slot) =>
+    const hasNearbyOnsitePhase = (locationId: string, slot: number) =>
       onsiteEntities.some(
         (entity) =>
           entity.locationId === locationId &&
@@ -2272,7 +2673,7 @@ export default function CommandMap({
           entity.startSlot <= slot + 0.22,
       )
 
-    const candidates = []
+    const candidates: PlaybackCandidate[] = []
 
     vehicleEntriesRef.current.forEach((entry) => {
       if (!entry.marker.getMap() || !entry.routeEntry) return false
@@ -2302,13 +2703,13 @@ export default function CommandMap({
 
       if (!position) return
 
-      const stopLocations = [...(route.stopLocationIds || []), route.destinationLocationId]
-        .filter(Boolean)
+      const stopLocations: MapLocationEntity[] = [...(route.stopLocationIds || []), route.destinationLocationId]
+        .filter((locationId): locationId is string => Boolean(locationId))
         .map((locationId) => locationsById.get(locationId))
-        .filter((location) => location?.coordinates)
+        .filter((location): location is MapLocationEntity => Boolean(location?.coordinates))
 
       for (const location of stopLocations) {
-        const distanceMeters = googleRef.current.maps.geometry.spherical.computeDistanceBetween(position, location.coordinates)
+        const distanceMeters = googleApi.maps.geometry.spherical.computeDistanceBetween(position, location.coordinates)
         const isArrival = location.id === route.destinationLocationId
         const threshold = isArrival ? 2200 : 1800
         if (distanceMeters <= threshold) {
@@ -2337,7 +2738,7 @@ export default function CommandMap({
 
     crossedOnsiteEntityGroups.forEach((group) => {
       const entity = group.primary
-      const location = locationsById.get(entity.locationId)
+      const location = entity.locationId ? locationsById.get(entity.locationId) : null
       if (!location) return
 
       const visibleFamilies = vehicleEntriesRef.current
@@ -2364,9 +2765,9 @@ export default function CommandMap({
       })
     })
 
-    let cuesToShow = []
+    let cuesToShow: PlaybackCue[] = []
     if (candidates.length) {
-      const grouped = new Map()
+      const grouped = new Map<string, PlaybackCandidateGroup>()
       candidates.forEach((candidate) => {
         const existing = grouped.get(candidate.groupKey) || {
           cueKey: candidate.cueKey,
@@ -2401,7 +2802,7 @@ export default function CommandMap({
               : null,
           captionOverride: group.kind === 'onsite' ? group.entity?.title || null : null,
         }))
-        .filter(Boolean)
+        .filter((cue): cue is PlaybackCue => Boolean(cue))
     }
 
     if (cuesToShow.length) {
@@ -2413,9 +2814,10 @@ export default function CommandMap({
 
   useEffect(() => {
     const map = mapRef.current
+    const googleApi = googleRef.current
     const selectedLocation = locations.find((location) => location.id === selectedLocationId)
     const selectedRouteEntry = routeEntriesRef.current.find((entry) => entry.route.id === selectedRouteId)
-    if (!map || status !== 'ready') return
+    if (!map || !googleApi || status !== 'ready') return
 
     const highlightedLocation =
       locations.find((location) => location.id === playbackHighlightLocationId) ||
@@ -2423,11 +2825,12 @@ export default function CommandMap({
       (!playbackActive ? locations.find((location) => location.id === selectedLocationId) : null)
 
     const participantCameraTarget = buildParticipantCameraTarget({
-      google: googleRef.current,
+      google: googleApi,
       map,
       vehicleEntries: vehicleEntriesRef.current,
       highlightedLocation,
       cursorSlot,
+      days,
     })
 
     if (participantCameraTarget && (playbackActive || (!selectedRouteEntry && !selectedLocation))) {
@@ -2449,6 +2852,7 @@ export default function CommandMap({
       const viewportKey = `route:${selectedRouteEntry.route.id}`
       if (lastViewportTargetRef.current === viewportKey) return
       const routePath = getRoutePath(selectedRouteEntry)
+      if (!routePath.length) return
       const routeLengthMeters = selectedRouteEntry.lengthMeters || 0
 
       if (routeLengthMeters < 25000) {
@@ -2458,7 +2862,7 @@ export default function CommandMap({
           map.setZoom(10)
         }
       } else {
-        const bounds = new googleRef.current.maps.LatLngBounds()
+        const bounds = new googleApi.maps.LatLngBounds()
         routePath.forEach((point) => bounds.extend(point))
         map.fitBounds(bounds, 120)
       }
@@ -2480,7 +2884,7 @@ export default function CommandMap({
       if (lastViewportTargetRef.current === viewportKey) return
       const currentCenter = map.getCenter()
       const distanceFromCenter = currentCenter
-        ? googleRef.current.maps.geometry.spherical.computeDistanceBetween(currentCenter, selectedLocation.coordinates)
+        ? googleApi.maps.geometry.spherical.computeDistanceBetween(currentCenter, selectedLocation.coordinates)
         : Infinity
       map.panTo(selectedLocation.coordinates)
       if (distanceFromCenter > 6000 && (map.getZoom() || 0) < 12) {
@@ -2495,7 +2899,7 @@ export default function CommandMap({
     }
 
     lastViewportTargetRef.current = ''
-  }, [cursorSlot, locations, mapUi, playbackActive, playbackHighlightLocationId, selectedLocationId, selectedRouteId, status])
+  }, [cursorSlot, days, locations, mapUi, playbackActive, playbackHighlightLocationId, selectedLocationId, selectedRouteId, status])
 
   const summaryText = useMemo(() => {
     const summaryBits = []
@@ -2509,10 +2913,10 @@ export default function CommandMap({
     if (mapUi.showFacilities) summaryBits.push('logistics facilities')
     if (mapUi.showTraffic) summaryBits.push('live traffic')
     if (mapUi.focusDayId !== 'all') {
-      summaryBits.push(`${DAYS.find((item) => item.id === mapUi.focusDayId)?.title.toLowerCase() || mapUi.focusDayId} focus`)
+      summaryBits.push(`${days.find((item) => item.id === mapUi.focusDayId)?.title.toLowerCase() || mapUi.focusDayId} focus`)
     }
     return summaryBits.length ? `Showing ${summaryBits.join(', ')}` : 'No operational layers visible'
-  }, [families, mapUi])
+  }, [days, families, mapUi])
 
   const badgeTone =
     status === 'ready'
@@ -2520,7 +2924,7 @@ export default function CommandMap({
       : status === 'error' || status === 'missing'
         ? 'border-[#F85149]/30 bg-[#F85149]/10 text-[#F85149]'
         : 'border-[#58A6FF]/30 bg-[#58A6FF]/10 text-[#58A6FF]'
-  const WeatherIcon = WEATHER_ICONS[mapWeather?.iconKey] || Cloud
+  const WeatherIcon = getWeatherIcon(mapWeather?.iconKey)
 
   return (
     <div className="relative h-full min-h-0 overflow-hidden bg-[#080a0f]">
@@ -2530,6 +2934,17 @@ export default function CommandMap({
         style={{ opacity: mapUi.showTraffic ? 0.14 : 0 }}
       />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(rgba(17,27,34,0.35)_1px,transparent_1px)] [background-size:32px_32px]" />
+      {status === 'missing' ? (
+        <OfflineRouteBoard
+          locations={locations}
+          routes={routes}
+          families={families}
+          mapUi={mapUi}
+          selectedLocationId={selectedLocationId}
+          selectedRouteId={selectedRouteId}
+          onSelectEntity={onSelectEntity}
+        />
+      ) : null}
 
       {mapLayerCollapsed ? (
         <button
@@ -2588,7 +3003,7 @@ export default function CommandMap({
             Day Focus
           </div>
           <div className="mb-3 flex flex-wrap gap-2">
-            {[{ id: 'all', label: 'All Days' }, ...DAYS.map((day) => ({ id: day.id, label: day.title.replace(' Day', '') }))].map((item) => (
+            {[{ id: 'all', label: 'All Days' }, ...days.map((day) => ({ id: day.id, label: day.title.replace(' Day', '') }))].map((item) => (
               <MapChip
                 key={item.id}
                 active={mapUi.focusDayId === item.id}
@@ -2612,7 +3027,7 @@ export default function CommandMap({
           className="absolute right-6 top-6 z-20 flex items-center gap-2 border border-[#58A6FF]/25 bg-[#111722]/94 px-3 py-2 shadow-[0_18px_40px_rgba(0,0,0,0.42)] backdrop-blur"
         >
           {mapWeatherTargets.slice(0, 2).map((target) => {
-            const TargetIcon = WEATHER_ICONS[target.iconKey] || Cloud
+            const TargetIcon = getWeatherIcon(target.iconKey)
             return (
               <div key={target.id} className="flex items-center gap-1 text-[#E6EDF3]">
                 <TargetIcon size={14} className={target.active ? 'text-[#7CC0FF]' : 'text-[#8B949E]'} />
@@ -2639,7 +3054,7 @@ export default function CommandMap({
           </div>
           <div className="grid gap-px bg-[#58A6FF]/10 p-px">
             {mapWeatherTargets.length ? mapWeatherTargets.map((target) => {
-              const TargetIcon = WEATHER_ICONS[target.iconKey] || Cloud
+              const TargetIcon = getWeatherIcon(target.iconKey)
               return (
                 <div
                   key={target.id}

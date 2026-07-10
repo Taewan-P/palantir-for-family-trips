@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ComponentType } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -13,6 +14,8 @@ import {
   Square,
   UtensilsCrossed,
 } from 'lucide-react'
+import { EntityCrudPanel } from './components/EntityCrudPanel'
+import { SelectedItemEditor, type SelectedItemMember } from './components/SelectedItemEditor'
 import {
   getDependencyPrompts,
   getEntitySummary,
@@ -22,8 +25,74 @@ import {
   getRouteForEntity,
   getTasksForEntity,
 } from './tripModel'
+import { COLLECTION_BY_ENTITY_TYPE } from './shared/trip-types'
+import type {
+  EntityByType,
+  EntitySelection,
+  LocationEntity,
+  TaskEntity,
+  TripDay,
+  TripDocument,
+  TripEntity,
+  TripEntityType,
+} from './shared/trip-types'
 
-function pillClasses(tone) {
+type IconComponent = ComponentType<{ size?: number; className?: string }>
+type Tone = 'default' | 'success' | 'warning'
+type MediaItem = Exclude<NonNullable<LocationEntity['photos']>[number], string>
+type LocationPatch = Partial<Omit<LocationEntity, 'id' | 'type'>>
+
+type SectionTitleProps = { eyebrow?: string; title: string; meta?: string }
+type StatusPillProps = { label: string }
+type DetailRowProps = { label: string; value?: string | number | null }
+type TaskRowProps = { task: TaskEntity; onToggle: (taskId: string) => void; readOnly: boolean }
+type ActionChipProps = { icon: IconComponent; label: string; onClick: () => void; tone?: Tone; disabled?: boolean }
+type PhotoTileProps = { media: MediaItem }
+type DetailRowItem = [string, string | number | null | undefined]
+type DriveStopEditorProps = {
+  stop: LocationEntity
+  readOnly: boolean
+  onSelectEntity: (type: TripEntityType, id: string) => void
+  onUpdateLocationFields: (locationId: string, patch: LocationPatch) => void
+}
+type InspectorRailProps = {
+  doc: TripDocument
+  pageId: string
+  selection: EntitySelection | null
+  activeFamilyId: string | null
+  members: SelectedItemMember[]
+  days: Array<Pick<TripDay, 'id' | 'title' | 'shortLabel'>>
+  readOnly: boolean
+  canAssignMembers: boolean
+  showCrudPanel: boolean
+  onSelectEntity: (type: TripEntityType, id: string) => void
+  onCreateEntity: (entityType: TripEntityType) => void
+  onDeleteEntity: (entityType: TripEntityType, id: string) => void
+  canDeleteEntity: (entityType: TripEntityType, id: string) => boolean
+  onUpdateLocationFields: (locationId: string, patch: LocationPatch) => void
+  onToggleTask: (taskId: string) => void
+  onUpdateEntityNote: (type: TripEntityType, id: string, value: string) => void
+  onPatchEntity: <Type extends TripEntityType>(type: Type, id: string, patch: Partial<EntityByType[Type]>) => void
+  onAddTask: (entityType: TripEntityType, entityId: string, title: string) => void
+  onConvertNoteToTask: (entityType: TripEntityType, entityId: string) => void
+  onToggleMealStatus: (mealId: string) => void
+  onToggleExpenseSettled: (expenseId: string) => void
+}
+
+function isMediaItem(media: LocationEntity['photos'] extends (infer Item)[] | undefined ? Item : never): media is MediaItem {
+  return typeof media !== 'string'
+}
+
+function getTextField(entity: TripEntity, key: string) {
+  const value = (entity as Record<string, unknown>)[key]
+  return typeof value === 'string' || typeof value === 'number' ? value : null
+}
+
+function detailRow(label: string, value: string | number | null | undefined): DetailRowItem | null {
+  return value ? [label, value] : null
+}
+
+function pillClasses(tone: string) {
   switch (tone) {
     case 'done':
     case 'Go':
@@ -42,7 +111,7 @@ function pillClasses(tone) {
   }
 }
 
-function SectionTitle({ eyebrow, title, meta }) {
+function SectionTitle({ eyebrow, title, meta }: SectionTitleProps) {
   return (
     <div className="mb-3">
       {eyebrow ? (
@@ -60,7 +129,7 @@ function SectionTitle({ eyebrow, title, meta }) {
   )
 }
 
-function StatusPill({ label }) {
+function StatusPill({ label }: StatusPillProps) {
   return (
     <span
       className={`inline-flex items-center rounded-[2px] border px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ${pillClasses(label)}`}
@@ -70,7 +139,7 @@ function StatusPill({ label }) {
   )
 }
 
-function DetailRow({ label, value }) {
+function DetailRow({ label, value }: DetailRowProps) {
   if (!value) return null
   return (
     <div className="flex items-start justify-between gap-3 border-b border-[#30363D]/30 py-2 text-[11px] last:border-b-0">
@@ -80,13 +149,14 @@ function DetailRow({ label, value }) {
   )
 }
 
-function TaskRow({ task, onToggle }) {
+function TaskRow({ task, onToggle, readOnly }: TaskRowProps) {
   const done = task.status === 'done'
   return (
     <button
       type="button"
+      disabled={readOnly}
       onClick={() => onToggle(task.id)}
-      className="flex w-full items-center justify-between border-b border-[#30363D]/30 px-3 py-3 text-left text-[11px] text-[#C9D1D9] transition-colors last:border-b-0 hover:bg-[#1f2a34]/50"
+      className="flex w-full items-center justify-between border-b border-[#30363D]/30 px-3 py-3 text-left text-[11px] text-[#C9D1D9] transition-colors last:border-b-0 hover:bg-[#1f2a34]/50 disabled:cursor-default disabled:hover:bg-transparent"
     >
       <div>
         <div className="font-medium">{task.title}</div>
@@ -103,8 +173,8 @@ function TaskRow({ task, onToggle }) {
   )
 }
 
-function ActionChip({ icon: Icon, label, onClick, tone = 'default' }) {
-  const tones = {
+function ActionChip({ icon: Icon, label, onClick, tone = 'default', disabled = false }: ActionChipProps) {
+  const tones: Record<string, string> = {
     default: 'border-[#30363D] bg-[#0d1117] text-[#C9D1D9] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]',
     success: 'border-[#3FB950]/30 bg-[#3FB950]/10 text-[#3FB950] hover:border-[#3FB950]',
     warning: 'border-[#D29922]/30 bg-[#D29922]/10 text-[#D29922] hover:border-[#D29922]',
@@ -113,8 +183,9 @@ function ActionChip({ icon: Icon, label, onClick, tone = 'default' }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onClick}
-      className={`inline-flex items-center gap-2 border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-colors ${tones[tone] || tones.default}`}
+      className={`inline-flex items-center gap-2 border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-colors disabled:cursor-default disabled:opacity-50 ${tones[tone] || tones.default}`}
     >
       <Icon size={13} />
       {label}
@@ -122,7 +193,7 @@ function ActionChip({ icon: Icon, label, onClick, tone = 'default' }) {
   )
 }
 
-function PhotoTile({ media }) {
+function PhotoTile({ media }: PhotoTileProps) {
   return (
     <a
       href={media.sourceUrl || media.imageUrl}
@@ -144,7 +215,7 @@ function PhotoTile({ media }) {
   )
 }
 
-function getStopVisual(stop) {
+function getStopVisual(stop: LocationEntity) {
   const stopType = (stop.stopType || '').toLowerCase()
   if (stopType.includes('lunch')) {
     return {
@@ -167,8 +238,8 @@ function getStopVisual(stop) {
   }
 }
 
-function getStopMeta(stop) {
-  const items = []
+function getStopMeta(stop: LocationEntity) {
+  const items: string[] = []
   if (stop.rating) {
     const reviews = stop.userRatingsTotal ? ` · ${stop.userRatingsTotal} reviews` : ''
     items.push(`${stop.rating.toFixed(1)} rating${reviews}`)
@@ -182,11 +253,11 @@ function getStopMeta(stop) {
   return items
 }
 
-function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }) {
+function DriveStopEditor({ stop, readOnly, onSelectEntity, onUpdateLocationFields }: DriveStopEditorProps) {
   const [isEditing, setIsEditing] = useState(false)
   const visual = getStopVisual(stop)
   const StopIcon = visual.icon
-  const photo = [...(stop.livePhotos || []), ...(stop.photos || [])].find((item) => item?.imageUrl)
+  const photo = [...(stop.livePhotos || []), ...(stop.photos || [])].filter(isMediaItem).find((item) => item?.imageUrl)
   const metaItems = getStopMeta(stop)
 
   return (
@@ -204,8 +275,9 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }) {
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
+              disabled={readOnly}
               onClick={() => setIsEditing((current) => !current)}
-              className="inline-flex items-center gap-1 border border-[#30363D] bg-[#161b22] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
+              className="inline-flex items-center gap-1 border border-[#30363D] bg-[#161b22] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF] disabled:cursor-default disabled:opacity-50 disabled:hover:border-[#30363D] disabled:hover:text-[#C9D1D9]"
             >
               <Pencil size={11} />
               {isEditing ? 'Done' : 'Edit'}
@@ -291,6 +363,7 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }) {
             <input
               value={stop.title || ''}
               onChange={(event) => onUpdateLocationFields(stop.id, { title: event.target.value })}
+              readOnly={readOnly}
               placeholder="Stop name"
               className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
@@ -308,6 +381,7 @@ function DriveStopEditor({ stop, onSelectEntity, onUpdateLocationFields }) {
                   livePhotos: [],
                 })
               }
+              readOnly={readOnly}
               placeholder="Address or place query"
               className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
             />
@@ -323,29 +397,29 @@ export default function InspectorRail({
   pageId,
   selection,
   activeFamilyId,
+  members,
+  days,
+  readOnly,
+  canAssignMembers,
+  showCrudPanel,
   onSelectEntity,
+  onCreateEntity,
+  onDeleteEntity,
+  canDeleteEntity,
   onUpdateLocationFields,
   onToggleTask,
   onUpdateEntityNote,
+  onPatchEntity,
   onAddTask,
   onConvertNoteToTask,
   onToggleMealStatus,
   onToggleExpenseSettled,
-}) {
+}: InspectorRailProps) {
   const entity = useMemo(() => {
-    const collectionName = selection ? {
-      family: 'families',
-      location: 'locations',
-      route: 'routes',
-      itineraryItem: 'itineraryItems',
-      meal: 'meals',
-      activity: 'activities',
-      stayItem: 'stayItems',
-      expense: 'expenses',
-      task: 'tasks',
-    }[selection.type] : null
+    if (!selection) return null
+    const collectionName = COLLECTION_BY_ENTITY_TYPE[selection.type]
 
-    return collectionName ? doc[collectionName]?.find((item) => item.id === selection.id) || null : null
+    return collectionName ? (doc[collectionName] || []).find((item) => item.id === selection.id) || null : null
   }, [doc, selection])
 
   const [quickTask, setQuickTask] = useState('')
@@ -366,21 +440,27 @@ export default function InspectorRail({
     () => doc.families.find((family) => family.id === entity?.lastEditedByFamilyId) || null,
     [doc.families, entity?.lastEditedByFamilyId],
   )
-  const prompts = useMemo(() => getDependencyPrompts(doc, entity), [doc, entity])
+  const prompts = useMemo(() => (entity ? getDependencyPrompts(doc, entity) : []), [doc, entity])
   const driveStops = useMemo(() => {
     const stopIds =
-      entity?.plannedStopIds ||
+      (entity?.type === 'family' ? entity.plannedStopIds : null) ||
       route?.stopLocationIds ||
       []
 
     const explicitStops = stopIds
       .map((locationId) => doc.locations.find((location) => location.id === locationId))
-      .filter(Boolean)
+      .filter((location): location is LocationEntity => Boolean(location))
 
     if (explicitStops.length) return explicitStops
 
-    return linkedEntities.filter((item) => item.type === 'location' && item.stopType)
-  }, [doc.locations, entity?.plannedStopIds, linkedEntities, route?.stopLocationIds])
+    return linkedEntities.filter((item): item is LocationEntity => item.type === 'location' && Boolean(item.stopType))
+  }, [doc.locations, entity, linkedEntities, route?.stopLocationIds])
+
+  useEffect(() => {
+    setRecentlyUpdated(true)
+    const timerId = window.setTimeout(() => setRecentlyUpdated(false), 700)
+    return () => window.clearTimeout(timerId)
+  }, [selection?.id, selection?.type])
 
   if (!entity) {
     return (
@@ -398,39 +478,41 @@ export default function InspectorRail({
   }
 
   const taskCompletion = tasks.length ? `${tasks.filter((task) => task.status === 'done').length}/${tasks.length}` : '0/0'
-  const detailRows = [
-    'window' in entity && entity.window ? ['Window', entity.window] : null,
-    'timeLabel' in entity && entity.timeLabel ? ['Timing', entity.timeLabel] : null,
-    'origin' in entity && entity.origin ? ['Origin', entity.origin] : null,
-    'originAddress' in entity && entity.originAddress ? ['Origin detail', entity.originAddress] : null,
-    'driveTime' in entity && entity.driveTime ? ['Drive time', entity.driveTime] : null,
-    'eta' in entity && entity.eta ? ['ETA', entity.eta] : null,
-    'vehicle' in entity && entity.vehicle ? ['Vehicle', entity.vehicle] : null,
-    'vehicleLabel' in entity && entity.vehicleLabel ? ['Call sign', entity.vehicleLabel] : null,
-    'responsibility' in entity && entity.responsibility ? ['Task package', entity.responsibility] : null,
-    'owner' in entity && entity.owner ? ['Owner', entity.owner] : null,
-    'reservationType' in entity && entity.reservationType ? ['Mode', entity.reservationType] : null,
-    'payer' in entity && entity.payer ? ['Payer', entity.payer] : null,
-    'split' in entity && entity.split ? ['Split', entity.split] : null,
-    'amount' in entity && entity.amount ? ['Amount', `$${entity.amount}`] : null,
-    routeOwner?.originAddress ? ['Origin detail', routeOwner.originAddress] : null,
-    routeOwner?.vehicleLabel ? ['Call sign', routeOwner.vehicleLabel] : null,
-    route ? ['Route', route.title] : null,
-    location ? ['Location', location.title] : null,
-  ].filter(Boolean)
+  const riskLevel = getTextField(entity, 'riskLevel')
+  const timeSignal = getTextField(entity, 'window') || getTextField(entity, 'timeLabel')
+  const summary = getTextField(entity, 'summary')
+  const routeSummary = getTextField(entity, 'routeSummary')
+  const description = getTextField(entity, 'description')
+  const backup = getTextField(entity, 'backup')
+  const status = getTextField(entity, 'status')
   const externalTarget = entity.type === 'location' ? entity : location
+  const externalUrl = typeof externalTarget?.externalUrl === 'string' ? externalTarget.externalUrl : null
+  const detailRows = [
+    detailRow('Window', getTextField(entity, 'window')),
+    detailRow('Timing', getTextField(entity, 'timeLabel')),
+    detailRow('Origin', getTextField(entity, 'origin')),
+    detailRow('Origin detail', getTextField(entity, 'originAddress')),
+    detailRow('Drive time', getTextField(entity, 'driveTime')),
+    detailRow('ETA', getTextField(entity, 'eta')),
+    detailRow('Vehicle', getTextField(entity, 'vehicle')),
+    detailRow('Call sign', getTextField(entity, 'vehicleLabel')),
+    detailRow('Task package', getTextField(entity, 'responsibility')),
+    detailRow('Owner', getTextField(entity, 'owner')),
+    detailRow('Mode', getTextField(entity, 'reservationType')),
+    detailRow('Payer', getTextField(entity, 'payer')),
+    detailRow('Split', getTextField(entity, 'split')),
+    detailRow('Amount', entity.type === 'expense' ? `$${entity.amount}` : null),
+    detailRow('Origin detail', routeOwner?.originAddress),
+    detailRow('Call sign', routeOwner?.vehicleLabel),
+    detailRow('Route', route?.title),
+    detailRow('Location', location?.title),
+  ].filter((row): row is DetailRowItem => Boolean(row))
   const compactStayMode = pageId === 'stay'
   const compactMealsMode = pageId === 'meals'
   const compactActivitiesMode = pageId === 'activities'
   const compactRailMode = compactStayMode || compactMealsMode || compactActivitiesMode
   const familyDriveMode = entity.type === 'family' && driveStops.length > 0
-  const actionChips = []
-
-  useEffect(() => {
-    setRecentlyUpdated(true)
-    const timerId = window.setTimeout(() => setRecentlyUpdated(false), 700)
-    return () => window.clearTimeout(timerId)
-  }, [selection?.id, selection?.type])
+  const actionChips: ActionChipProps[] = []
 
   if (entity.type === 'meal') {
     actionChips.push({
@@ -438,6 +520,7 @@ export default function InspectorRail({
       label: entity.status === 'Assigned' ? 'Mark pending' : 'Mark assigned',
       onClick: () => onToggleMealStatus(entity.id),
       tone: entity.status === 'Assigned' ? 'warning' : 'success',
+      disabled: readOnly,
     })
   }
   if (entity.type === 'expense') {
@@ -446,6 +529,7 @@ export default function InspectorRail({
       label: entity.settled ? 'Mark open' : 'Mark settled',
       onClick: () => onToggleExpenseSettled(entity.id),
       tone: entity.settled ? 'warning' : 'success',
+      disabled: readOnly,
     })
   }
   if (entity.type === 'task') {
@@ -454,6 +538,7 @@ export default function InspectorRail({
       label: entity.status === 'done' ? 'Mark open' : 'Mark done',
       onClick: () => onToggleTask(entity.id),
       tone: entity.status === 'done' ? 'warning' : 'success',
+      disabled: readOnly,
     })
   }
   if (location && entity.type !== 'location') {
@@ -463,11 +548,11 @@ export default function InspectorRail({
       onClick: () => onSelectEntity('location', location.id),
     })
   }
-  if (externalTarget?.externalUrl) {
+  if (externalUrl) {
     actionChips.push({
       icon: ExternalLink,
       label: 'Open external',
-      onClick: () => window.open(externalTarget.externalUrl, '_blank', 'noreferrer'),
+      onClick: () => window.open(externalUrl, '_blank', 'noreferrer'),
     })
   }
 
@@ -493,9 +578,9 @@ export default function InspectorRail({
             <h2 className="text-[15px] font-black uppercase tracking-[0.12em] text-[#C9D1D9]">
               {getEntityTitle(entity)}
             </h2>
-            <div className="mt-1 text-[11px] text-[#8B949E]">{getEntitySummary(entity)}</div>
+            <div className="mt-1 text-[11px] text-[#8B949E]">{getEntitySummary(entity, doc)}</div>
           </div>
-          {'status' in entity && entity.status ? <StatusPill label={entity.status} /> : null}
+          {status ? <StatusPill label={String(status)} /> : null}
         </div>
 
         <div className="mb-3 grid grid-cols-2 gap-2">
@@ -518,6 +603,7 @@ export default function InspectorRail({
                 label={action.label}
                 onClick={action.onClick}
                 tone={action.tone}
+                disabled={action.disabled}
               />
             ))}
           </div>
@@ -529,6 +615,27 @@ export default function InspectorRail({
           recentlyUpdated ? 'translate-y-[1px]' : ''
         }`}
       >
+        <SelectedItemEditor
+          doc={doc}
+          days={days}
+          entity={entity}
+          members={members}
+          readOnly={readOnly}
+          canAssignMembers={canAssignMembers}
+          onPatchEntity={onPatchEntity}
+        />
+
+        {showCrudPanel && entity.type !== 'day' ? (
+          <EntityCrudPanel
+            document={doc}
+            entityType={entity.type}
+            readOnly={readOnly}
+            canDelete={canDeleteEntity}
+            onCreate={onCreateEntity}
+            onDelete={onDeleteEntity}
+          />
+        ) : null}
+
         {familyDriveMode ? (
           <section className="border border-[#30363D] bg-[#161b22]">
             <div className="border-b border-[#30363D] px-4 py-3">
@@ -551,6 +658,7 @@ export default function InspectorRail({
               <DriveStopEditor
                 key={stop.id}
                 stop={stop}
+                readOnly={readOnly}
                 onSelectEntity={onSelectEntity}
                 onUpdateLocationFields={onUpdateLocationFields}
               />
@@ -572,26 +680,26 @@ export default function InspectorRail({
             }
           />
           <div className="space-y-2 text-[11px] text-[#C9D1D9]">
-            {'riskLevel' in entity && entity.riskLevel ? (
+            {riskLevel ? (
               <div className="flex items-center gap-2">
                 <AlertTriangle size={13} className="text-[#D29922]" />
-                <span>Risk watch: {entity.riskLevel}</span>
+                <span>Risk watch: {riskLevel}</span>
               </div>
             ) : null}
-            {('window' in entity && entity.window) || ('timeLabel' in entity && entity.timeLabel) ? (
+            {timeSignal ? (
               <div className="flex items-center gap-2">
                 <Clock size={13} className="text-[#58A6FF]" />
-                <span>{entity.window || entity.timeLabel}</span>
+                <span>{timeSignal}</span>
               </div>
             ) : null}
-            {'summary' in entity && entity.summary ? <div className="leading-relaxed text-[#8B949E]">{entity.summary}</div> : null}
-            {'routeSummary' in entity && entity.routeSummary ? (
-              <div className="leading-relaxed text-[#8B949E]">{entity.routeSummary}</div>
+            {summary ? <div className="leading-relaxed text-[#8B949E]">{summary}</div> : null}
+            {routeSummary ? (
+              <div className="leading-relaxed text-[#8B949E]">{routeSummary}</div>
             ) : null}
-            {'description' in entity && entity.description ? <div className="leading-relaxed text-[#8B949E]">{entity.description}</div> : null}
-            {'backup' in entity && entity.backup ? (
+            {description ? <div className="leading-relaxed text-[#8B949E]">{description}</div> : null}
+            {backup ? (
               <div className="rounded-[2px] border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[#8B949E]">
-                <span className="font-black uppercase tracking-wider text-[#D29922]">Fallback:</span> {entity.backup}
+                <span className="font-black uppercase tracking-wider text-[#D29922]">Fallback:</span> {backup}
               </div>
             ) : null}
           </div>
@@ -626,6 +734,7 @@ export default function InspectorRail({
               <DriveStopEditor
                 key={stop.id}
                 stop={stop}
+                readOnly={readOnly}
                 onSelectEntity={onSelectEntity}
                 onUpdateLocationFields={onUpdateLocationFields}
               />
@@ -652,7 +761,7 @@ export default function InspectorRail({
               {tasks.length ? (
                 <div className="-mx-4 mb-4 border-y border-[#30363D]">
                   {tasks.map((task) => (
-                    <TaskRow key={task.id} task={task} onToggle={onToggleTask} />
+                    <TaskRow key={task.id} task={task} onToggle={onToggleTask} readOnly={readOnly} />
                   ))}
                 </div>
               ) : (
@@ -665,16 +774,18 @@ export default function InspectorRail({
                   value={quickTask}
                   onChange={(event) => setQuickTask(event.target.value)}
                   placeholder="Add a task tied to this item..."
+                  readOnly={readOnly}
                   className="flex-1 border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                 />
                 <button
                   type="button"
+                  disabled={readOnly}
                   onClick={() => {
                     if (!quickTask.trim()) return
                     onAddTask(entity.type, entity.id, quickTask.trim())
                     setQuickTask('')
                   }}
-                  className="border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
+                  className="border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF] disabled:opacity-50"
                 >
                   Add
                 </button>
@@ -719,7 +830,7 @@ export default function InspectorRail({
               {location.confirmationCode ? <div className="text-[#8B949E]">Confirmation: {location.confirmationCode}</div> : null}
             </div>
             <div className="mb-3 grid grid-cols-2 gap-3">
-              {(location.photos || []).slice(0, 2).map((media) => (
+              {(location.photos || []).filter(isMediaItem).slice(0, 2).map((media) => (
                 <PhotoTile key={media.id} media={media} />
               ))}
             </div>
@@ -728,7 +839,7 @@ export default function InspectorRail({
                 <ActionChip
                   icon={ExternalLink}
                   label="House manual"
-                  onClick={() => window.open(location.manualUrl, '_blank', 'noreferrer')}
+                  onClick={() => window.open(location.manualUrl || undefined, '_blank', 'noreferrer')}
                 />
               </div>
             ) : null}
@@ -764,6 +875,7 @@ export default function InspectorRail({
           <textarea
             value={entity.note || ''}
             onChange={(event) => onUpdateEntityNote(entity.type, entity.id, event.target.value)}
+            readOnly={readOnly}
             placeholder={
               compactMealsMode
                 ? 'Capture decisions, venue-specific notes, or quick follow-ups that belong beside the Meals page intel...'
@@ -778,6 +890,7 @@ export default function InspectorRail({
               icon={Plus}
               label="Note to task"
               onClick={() => onConvertNoteToTask(entity.type, entity.id)}
+              disabled={readOnly}
             />
           </div>
         </section>
@@ -785,4 +898,3 @@ export default function InspectorRail({
     </aside>
   )
 }
-

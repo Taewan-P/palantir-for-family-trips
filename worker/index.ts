@@ -1,0 +1,540 @@
+import { createId, createToken, timingSafeEqualString } from '../src/shared/ids'
+import type { JsonValue } from '../src/shared/json'
+import { sanitizeTripForShare } from '../src/shared/trip-sanitizer'
+import { createGuidedTripDocument } from '../src/shared/trip-template'
+import type { CreateGuidedTripRequest } from '../src/shared/trip-types'
+import { buildGoogleAuthUrl, clearOauthNextCookie, clearOauthStateCookie, clearSessionCookie, exchangeGoogleCode, hashToken, oauthNextCookie, oauthStateCookie, sessionCookie, verifyGoogleIdToken } from './auth'
+import {
+  archiveTrip,
+  claimInviteAndCreateMembership,
+  createInvite,
+  createSession,
+  createTripWithOwnerAndInitialSnapshot,
+  disableShareLinks,
+  findActiveInvite,
+  findActiveShareLink,
+  findMembership,
+  findSessionUser,
+  getTripAccess,
+  listTripMembers,
+  listVisibleTrips,
+  loadHydratedTripSnapshot,
+  loadHydratedTripSnapshotWithVersion,
+  rotateShareLink,
+  revokeSession,
+  upsertGoogleUser,
+} from './db'
+import type { Env } from './env'
+import { jsonError, jsonOk, parseCookie, redirect } from './http'
+export { TripRoom } from './trip-room'
+
+type WorkerApi = {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>
+}
+
+type SignedInUser = {
+  id: string
+  email: string
+  name: string
+  avatarUrl: string | null
+}
+
+export type TripRole = 'owner' | 'editor'
+
+const OAUTH_STATE_COOKIE_NAME = 'trip_oauth_state'
+const OAUTH_NEXT_COOKIE_NAME = 'trip_oauth_next'
+const OAUTH_STATE_TTL_MINUTES = 10
+const DAY_MS = 24 * 60 * 60 * 1000
+const GOOGLE_AUTH_CONFIG_KEYS = [
+  'APP_ORIGIN',
+  'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET',
+  'SESSION_COOKIE_NAME',
+  'SESSION_SECRET',
+] as const
+
+export function canWriteTrip(role: TripRole | null): boolean {
+  return role === 'owner' || role === 'editor'
+}
+
+export function canManageAccess(role: TripRole | null): boolean {
+  return role === 'owner'
+}
+
+function routePath(request: Request): string {
+  return new URL(request.url).pathname
+}
+
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+function daysFromNow(days: number): Date {
+  const date = new Date()
+  date.setUTCDate(date.getUTCDate() + days)
+  return date
+}
+
+function minutesFromNow(minutes: number): Date {
+  const date = new Date()
+  date.setUTCMinutes(date.getUTCMinutes() + minutes)
+  return date
+}
+
+function appUrl(env: Env, path: string): string {
+  return `${env.APP_ORIGIN.replace(/\/$/, '')}${path}`
+}
+
+function cookieOptions(request: Request): { secure: boolean } {
+  return { secure: new URL(request.url).protocol === 'https:' }
+}
+
+function googleAuthConfigError(env: Env): Response | null {
+  const missing = GOOGLE_AUTH_CONFIG_KEYS.filter((key) => !env[key]?.trim())
+  if (missing.length === 0) return null
+  return jsonError(500, 'internal_error', `Missing Worker auth configuration: ${missing.join(', ')}`)
+}
+
+function googleRedirectUri(request: Request): string {
+  const url = new URL(request.url)
+  const forwardedHost = request.headers.get('x-forwarded-host')
+  const forwardedProto = request.headers.get('x-forwarded-proto')
+  if (forwardedHost) {
+    const protocol = forwardedProto || url.protocol.replace(/:$/, '')
+    return `${protocol}://${forwardedHost}/api/auth/google/callback`
+  }
+  return new URL('/api/auth/google/callback', request.url).toString()
+}
+
+function normalizedNextPath(nextPath: string | null): string {
+  if (!nextPath || !nextPath.startsWith('/') || nextPath.startsWith('//') || nextPath.includes('\\')) {
+    return '/trips'
+  }
+  return nextPath
+}
+
+function clearGoogleOauthCookies(request: Request): Headers {
+  const headers = new Headers()
+  const options = cookieOptions(request)
+  headers.append('set-cookie', clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, options))
+  headers.append('set-cookie', clearOauthNextCookie(OAUTH_NEXT_COOKIE_NAME, options))
+  return headers
+}
+
+function slugify(title: string, tripId: string): string {
+  const slug = title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+  return `${slug || 'trip'}-${tripId.slice(-8)}`
+}
+
+function jsonRequestObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+async function requireUser(request: Request, env: Env): Promise<SignedInUser | Response> {
+  const token = parseCookie(request.headers.get('cookie'), env.SESSION_COOKIE_NAME)
+  if (!token) return jsonError(401, 'unauthorized', 'Sign in required')
+
+  const user = await findSessionUser(env.DB, await hashToken(token, env.SESSION_SECRET), nowIso())
+  if (!user) return jsonError(401, 'unauthorized', 'Sign in required')
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    avatarUrl: user.avatar_url,
+  }
+}
+
+function badRequest(message: string): Response {
+  return jsonError(400, 'bad_request', message)
+}
+
+function readRequiredText(value: unknown, label: string, maxLength: number): string | Response {
+  if (typeof value !== 'string') return badRequest(`${label} is required`)
+  const trimmed = value.trim()
+  if (!trimmed) return badRequest(`${label} is required`)
+  if (trimmed.length > maxLength) return badRequest(`${label} must be ${maxLength} characters or fewer`)
+  return trimmed
+}
+
+function readOptionalText(value: unknown, label: string, maxLength: number): string | Response | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') return badRequest(`${label} must be a string`)
+  const trimmed = value.trim()
+  if (trimmed.length > maxLength) return badRequest(`${label} must be ${maxLength} characters or fewer`)
+  return trimmed || undefined
+}
+
+function formatDate(date: Date): string {
+  const year = String(date.getUTCFullYear()).padStart(4, '0')
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(date.getUTCDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function readCalendarDate(value: unknown, label: string): Date | Response {
+  if (typeof value !== 'string') return badRequest(`${label} must use YYYY-MM-DD`)
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return badRequest(`${label} must use YYYY-MM-DD`)
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(Date.UTC(0, month - 1, day))
+  date.setUTCFullYear(year)
+  if (formatDate(date) !== value) return badRequest(`${label} must be a valid calendar date`)
+  return date
+}
+
+function readHeadcount(value: unknown, label: string): number | Response {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 20) {
+    return badRequest(`${label} must be an integer between 0 and 20`)
+  }
+  return value
+}
+
+async function readGuidedTripRequest(request: Request): Promise<CreateGuidedTripRequest | Response> {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return badRequest('Request body must be valid JSON')
+  }
+
+  if (!jsonRequestObject(body)) return badRequest('Request body must be a JSON object')
+
+  const title = readRequiredText(body.title, 'Trip title', 120)
+  if (title instanceof Response) return title
+  const startDate = readCalendarDate(body.startDate, 'Start date')
+  if (startDate instanceof Response) return startDate
+  const endDate = readCalendarDate(body.endDate, 'End date')
+  if (endDate instanceof Response) return endDate
+  if (endDate < startDate) return badRequest('End date must be on or after start date')
+
+  const dayCount = Math.floor((endDate.getTime() - startDate.getTime()) / DAY_MS) + 1
+  if (dayCount < 1 || dayCount > 31) return badRequest('Trip length must be between 1 and 31 days')
+
+  const destinationName = readRequiredText(body.destinationName, 'Destination name', 120)
+  if (destinationName instanceof Response) return destinationName
+  const basecampAddress = readOptionalText(body.basecampAddress, 'Basecamp address', 240)
+  if (basecampAddress instanceof Response) return basecampAddress
+
+  if (!Array.isArray(body.families) || body.families.length === 0) return badRequest('At least one family is required')
+  if (body.families.length > 12) return badRequest('At most 12 families are supported')
+
+  const families: CreateGuidedTripRequest['families'] = []
+  for (const family of body.families) {
+    if (!jsonRequestObject(family)) return badRequest('Family must be an object')
+    const displayName = readRequiredText(family.displayName, 'Family display name', 80)
+    if (displayName instanceof Response) return displayName
+    const origin = readOptionalText(family.origin, 'Family origin', 120)
+    if (origin instanceof Response) return origin
+    const adults = readHeadcount(family.adults, 'Adults')
+    if (adults instanceof Response) return adults
+    const kids = readHeadcount(family.kids, 'Kids')
+    if (kids instanceof Response) return kids
+    if (adults + kids < 1) return badRequest('Family headcount must include at least one person')
+    families.push(origin ? { displayName, origin, adults, kids } : { displayName, adults, kids })
+  }
+
+  return {
+    title,
+    startDate: formatDate(startDate),
+    endDate: formatDate(endDate),
+    destinationName,
+    ...(basecampAddress ? { basecampAddress } : {}),
+    families,
+  }
+}
+
+function routeMatch(path: string, pattern: RegExp): string | null {
+  const match = pattern.exec(path)
+  return match?.[1] ?? null
+}
+
+function tripJson(document: ReturnType<typeof sanitizeTripForShare>): JsonValue {
+  return document as unknown as JsonValue
+}
+
+const worker = {
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    try {
+      const path = routePath(request)
+      const liveTripId = routeMatch(path, /^\/api\/trips\/([^/]+)\/live$/)
+      if (liveTripId) {
+        const id = env.TRIP_ROOM.idFromName(liveTripId)
+        return env.TRIP_ROOM.get(id).fetch(request)
+      }
+
+      if (request.method === 'GET' && path === '/api/auth/google/start') {
+        const configError = googleAuthConfigError(env)
+        if (configError) return configError
+
+        const state = crypto.randomUUID()
+        const stateHash = await hashToken(state, env.SESSION_SECRET)
+        const expiresAt = minutesFromNow(OAUTH_STATE_TTL_MINUTES)
+        const headers = new Headers()
+        const options = cookieOptions(request)
+        headers.append('set-cookie', oauthStateCookie(OAUTH_STATE_COOKIE_NAME, stateHash, expiresAt, options))
+        headers.append('set-cookie', oauthNextCookie(
+          OAUTH_NEXT_COOKIE_NAME,
+          normalizedNextPath(new URL(request.url).searchParams.get('next')),
+          expiresAt,
+          options,
+        ))
+        return redirect(buildGoogleAuthUrl({
+          clientId: env.GOOGLE_CLIENT_ID,
+          redirectUri: googleRedirectUri(request),
+          state,
+        }), headers)
+      }
+
+    if (request.method === 'GET' && path === '/api/auth/google/callback') {
+      const configError = googleAuthConfigError(env)
+      if (configError) return configError
+
+      const clearStateHeader = clearGoogleOauthCookies(request)
+      const state = new URL(request.url).searchParams.get('state')
+      const stateCookie = parseCookie(request.headers.get('cookie'), OAUTH_STATE_COOKIE_NAME)
+      if (!state || !stateCookie) {
+        return jsonError(400, 'bad_request', 'Invalid Google OAuth state', { headers: clearStateHeader })
+      }
+      const stateHash = await hashToken(state, env.SESSION_SECRET)
+      if (!timingSafeEqualString(stateHash, stateCookie)) {
+        return jsonError(400, 'bad_request', 'Invalid Google OAuth state', { headers: clearStateHeader })
+      }
+
+      const code = new URL(request.url).searchParams.get('code')
+      if (!code) {
+        return jsonError(400, 'bad_request', 'Missing Google authorization code', { headers: clearStateHeader })
+      }
+
+      const signedInAt = nowIso()
+      const expiresAt = daysFromNow(30)
+      const idToken = await exchangeGoogleCode(env, code, googleRedirectUri(request))
+      const googleProfile = await verifyGoogleIdToken(env, idToken)
+      const user = await upsertGoogleUser(env.DB, {
+        id: createId('user'),
+        googleSub: googleProfile.id,
+        email: googleProfile.email,
+        name: googleProfile.name,
+        avatarUrl: googleProfile.avatarUrl,
+        now: signedInAt,
+      })
+      const token = createToken()
+      await createSession(env.DB, {
+        id: createId('session'),
+        userId: user.id,
+        tokenHash: await hashToken(token, env.SESSION_SECRET),
+        expiresAt: expiresAt.toISOString(),
+        createdAt: signedInAt,
+      })
+
+      const headers = new Headers()
+      headers.append('set-cookie', sessionCookie(env.SESSION_COOKIE_NAME, token, expiresAt, cookieOptions(request)))
+      headers.append('set-cookie', clearOauthStateCookie(OAUTH_STATE_COOKIE_NAME, cookieOptions(request)))
+      headers.append('set-cookie', clearOauthNextCookie(OAUTH_NEXT_COOKIE_NAME, cookieOptions(request)))
+      return redirect(appUrl(env, normalizedNextPath(parseCookie(request.headers.get('cookie'), OAUTH_NEXT_COOKIE_NAME))), headers)
+    }
+
+    if (request.method === 'POST' && path === '/api/auth/logout') {
+      const token = parseCookie(request.headers.get('cookie'), env.SESSION_COOKIE_NAME)
+      if (token) {
+        await revokeSession(env.DB, await hashToken(token, env.SESSION_SECRET))
+      }
+      return jsonOk({ loggedOut: true }, {
+        headers: { 'set-cookie': clearSessionCookie(env.SESSION_COOKIE_NAME, cookieOptions(request)) },
+      })
+    }
+
+    if (request.method === 'GET' && path === '/api/me') {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      return jsonOk({ user })
+    }
+
+    if (request.method === 'GET' && path === '/api/trips') {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+
+      const trips = await listVisibleTrips(env.DB, user.id)
+      return jsonOk({
+        trips: trips.map((trip) => ({
+          id: trip.id,
+          title: trip.title,
+          slug: trip.slug,
+          currentVersion: trip.current_version,
+          role: trip.role,
+          createdAt: trip.created_at,
+          updatedAt: trip.updated_at,
+        })),
+      })
+    }
+
+    if (request.method === 'POST' && path === '/api/trips') {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+
+      const input = await readGuidedTripRequest(request)
+      if (input instanceof Response) return input
+      const title = input.title
+
+      const createdAt = nowIso()
+      const tripId = createId('trip')
+      const snapshotId = createId('snapshot')
+      const document = { ...createGuidedTripDocument(input), id: tripId }
+      await createTripWithOwnerAndInitialSnapshot(env.DB, {
+        tripId,
+        title,
+        slug: slugify(title, tripId),
+        ownerUserId: user.id,
+        snapshotId,
+        document,
+        now: createdAt,
+      })
+
+      return jsonOk({ trip: { id: tripId, title, role: 'owner', currentVersion: 0 } }, { status: 201 })
+    }
+
+    const tripId = routeMatch(path, /^\/api\/trips\/([^/]+)$/)
+    if (request.method === 'GET' && tripId) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      const access = await getTripAccess(env.DB, tripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canWriteTrip(access.role)) return jsonError(403, 'forbidden', 'Trip access required')
+
+      const snapshot = await loadHydratedTripSnapshotWithVersion(env.DB, tripId)
+      if (!snapshot) return jsonError(404, 'not_found', 'Trip snapshot not found')
+      const members = await listTripMembers(env.DB, tripId)
+
+      return jsonOk({
+        trip: snapshot.document as unknown as JsonValue,
+        version: snapshot.version,
+        role: access.role,
+        members: members.map((member) => ({
+          userId: member.user_id,
+          email: member.email,
+          name: member.name,
+          avatarUrl: member.avatar_url,
+          role: member.role,
+          createdAt: member.created_at,
+        })),
+      })
+    }
+
+    if (request.method === 'DELETE' && tripId) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      const access = await getTripAccess(env.DB, tripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) return jsonError(403, 'forbidden', 'Owner access required')
+
+      const archivedAt = nowIso()
+      await archiveTrip(env.DB, tripId, archivedAt)
+      await disableShareLinks(env.DB, tripId, archivedAt)
+      return jsonOk({ archived: true })
+    }
+
+    const inviteTripId = routeMatch(path, /^\/api\/trips\/([^/]+)\/invites$/)
+    if (request.method === 'POST' && inviteTripId) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      const access = await getTripAccess(env.DB, inviteTripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) {
+        return jsonError(403, 'forbidden', 'Owner access required')
+      }
+
+      const token = createToken()
+      const createdAt = nowIso()
+      await createInvite(env.DB, {
+        id: createId('invite'),
+        tripId: inviteTripId,
+        tokenHash: await hashToken(token, env.SESSION_SECRET),
+        expiresAt: daysFromNow(14).toISOString(),
+        createdByUserId: user.id,
+        createdAt,
+      })
+
+      return jsonOk({ token, inviteUrl: appUrl(env, `/invites/${token}`) }, { status: 201 })
+    }
+
+    const acceptToken = routeMatch(path, /^\/api\/invites\/([^/]+)\/accept$/)
+    if (request.method === 'POST' && acceptToken) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+
+      const acceptedAt = nowIso()
+      const tokenHash = await hashToken(acceptToken, env.SESSION_SECRET)
+      const invite = await findActiveInvite(env.DB, tokenHash, acceptedAt)
+      if (!invite) return jsonError(404, 'not_found', 'Invite not found')
+      if (await findMembership(env.DB, invite.trip_id, user.id)) {
+        return jsonError(409, 'conflict', 'User is already a trip member')
+      }
+
+      const claimedInvite = await claimInviteAndCreateMembership(env.DB, {
+        tokenHash,
+        userId: user.id,
+        now: acceptedAt,
+      })
+      if (!claimedInvite) return jsonError(404, 'not_found', 'Invite not found')
+
+      return jsonOk({ tripId: claimedInvite.trip_id, role: claimedInvite.role })
+    }
+
+    const shareTripId = routeMatch(path, /^\/api\/trips\/([^/]+)\/share-link$/)
+    if (request.method === 'POST' && shareTripId) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      const access = await getTripAccess(env.DB, shareTripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) {
+        return jsonError(403, 'forbidden', 'Owner access required')
+      }
+
+      const token = createToken()
+      const createdAt = nowIso()
+      await rotateShareLink(env.DB, {
+        id: createId('share'),
+        tripId: shareTripId,
+        tokenHash: await hashToken(token, env.SESSION_SECRET),
+        createdByUserId: user.id,
+        now: createdAt,
+      })
+
+      return jsonOk({ token, shareUrl: appUrl(env, `/share/${token}`) }, { status: 201 })
+    }
+
+    if (request.method === 'DELETE' && shareTripId) {
+      const user = await requireUser(request, env)
+      if (user instanceof Response) return user
+      const access = await getTripAccess(env.DB, shareTripId, user.id)
+      if (!access.exists) return jsonError(404, 'not_found', 'Trip not found')
+      if (!canManageAccess(access.role)) {
+        return jsonError(403, 'forbidden', 'Owner access required')
+      }
+
+      await disableShareLinks(env.DB, shareTripId, nowIso())
+      return jsonOk({ disabled: true })
+    }
+
+    const shareToken = routeMatch(path, /^\/api\/share\/([^/]+)$/)
+    if (request.method === 'GET' && shareToken) {
+      const share = await findActiveShareLink(env.DB, await hashToken(shareToken, env.SESSION_SECRET))
+      if (!share) return jsonError(404, 'not_found', 'Share link not found')
+
+      const document = await loadHydratedTripSnapshot(env.DB, share.trip_id)
+      if (!document) return jsonError(404, 'not_found', 'Trip snapshot not found')
+
+      return jsonOk({ trip: tripJson(sanitizeTripForShare(document)), readOnly: true })
+    }
+
+      return jsonError(404, 'not_found', 'Route not found')
+    } catch {
+      return jsonError(500, 'internal_error', 'Unexpected server error')
+    }
+  },
+} satisfies ExportedHandler<Env> & WorkerApi
+
+export default worker

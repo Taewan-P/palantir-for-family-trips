@@ -1,0 +1,26 @@
+name = "family-trip-command-center-api"
+main = "worker/index.ts"
+compatibility_date = "2026-06-30"
+workers_dev = false
+
+[[routes]]
+pattern = "travelops.chungjungsoo.dev/api/*"
+zone_name = "chungjungsoo.dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "family-trip-command-center"
+database_id = "4cb18de0-f680-4b40-bf9d-0072aa1323dd"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "TRIP_ROOM"
+class_name = "TripRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TripRoom"]
+
+[vars]
+SESSION_COOKIE_NAME = "trip_session"
+APP_ORIGIN = "https://travelops.chungjungsoo.dev"

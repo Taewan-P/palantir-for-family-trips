@@ -1,6 +1,421 @@
 import { DAYS, TIME_SLOTS, TRIP_META } from './tripData'
+import type {
+  ActivityEntity,
+  EntitySelection,
+  Coordinates,
+  ExpenseEntity,
+  FamilyEntity,
+  ItineraryItemEntity,
+  LocationEntity,
+  MealEntity,
+  RouteEntity,
+  StayItemEntity,
+  TaskEntity,
+  TripCollectionName,
+  TripDay,
+  TripDocument,
+  TripEntity,
+  TripEntityType,
+} from './shared/trip-types'
 
-export const COLLECTION_BY_TYPE = {
+export type TripDayShell = Pick<TripDay, 'id' | 'type' | 'title' | 'shortLabel'> &
+  Partial<Pick<TripDay, 'date' | 'code' | 'note'>> & {
+    weather: string
+    temperature: string
+    caution: string
+  }
+
+type LegacyState = Record<string, unknown>
+type BrowserStorageHost = {
+  localStorage?: {
+    getItem(key: string): string | null
+    removeItem(key: string): void
+  }
+}
+type EntityWithOptionalLocation = TripEntity & { locationId?: string | null }
+type EntityWithOptionalRoute = TripEntity & { routeId?: string }
+type TimelineEntity = (ItineraryItemEntity | MealEntity) & { startSlot: number; span?: number; routeId?: string }
+type MediaItem = {
+  id: string
+  label: string
+  imageUrl: string
+  sourceUrl: string | null
+}
+type TripDocumentSnapshotEnvelope = LegacyState & {
+  selectedPage: string
+  selection: EntitySelection
+  pageNotes: Record<string, string>
+  pageNoteMeta: TripDocument['pageNoteMeta']
+  ui: TripDocument['ui']
+  families: unknown[]
+  locations: unknown[]
+  routes: unknown[]
+  itineraryItems: unknown[]
+  meals: unknown[]
+  activities: unknown[]
+  stayItems: unknown[]
+  expenses: unknown[]
+  tasks: unknown[]
+}
+
+function getEntityLocationId(entity: TripEntity): string | null {
+  return (entity as EntityWithOptionalLocation).locationId || null
+}
+
+function getEntityRouteId(entity: TripEntity): string | null {
+  return (entity as EntityWithOptionalRoute).routeId || null
+}
+
+function toTripDayShell(day: TripDay | (typeof DAYS)[number]): TripDayShell {
+  return {
+    type: 'day',
+    weather: 'Forecast pending',
+    temperature: '--',
+    caution: 'Low',
+    ...day,
+  }
+}
+
+function cloneCoordinates(coordinates: Coordinates): Coordinates {
+  return { ...coordinates }
+}
+
+function cloneMediaItems(media: readonly MediaItem[]): MediaItem[] {
+  return media.map((item) => ({ ...item }))
+}
+
+function ownLocationNestedData(location: LocationEntity): LocationEntity {
+  const photos = location.photos
+  return {
+    ...location,
+    coordinates: location.coordinates ? cloneCoordinates(location.coordinates) : undefined,
+    photos: Array.isArray(photos) ? cloneMediaItems(photos.filter(isMediaItem)) : photos,
+  }
+}
+
+function ownRouteNestedData(route: RouteEntity): RouteEntity {
+  return {
+    ...route,
+    originCoordinates: route.originCoordinates ? cloneCoordinates(route.originCoordinates) : undefined,
+    path: route.path?.map(cloneCoordinates),
+    simulationMilestones: route.simulationMilestones?.map((milestone) => ({ ...milestone })),
+  }
+}
+
+function isMediaItem(value: unknown): value is MediaItem {
+  return isLegacyState(value)
+    && typeof value.id === 'string'
+    && typeof value.label === 'string'
+    && typeof value.imageUrl === 'string'
+    && (typeof value.sourceUrl === 'string' || value.sourceUrl === null)
+}
+
+function isLegacyState(value: unknown): value is LegacyState {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function legacyArray(value: unknown): LegacyState[] {
+  return Array.isArray(value) ? value.filter(isLegacyState) : []
+}
+
+function legacyString(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+function legacyStringRecord(value: unknown): Record<string, string> {
+  if (!isLegacyState(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  )
+}
+
+function legacyNumberRecord(value: unknown): Record<string, number> | null {
+  if (!isLegacyState(value)) return null
+  const record: Record<string, number> = {}
+  for (const [key, amount] of Object.entries(value)) {
+    if (typeof amount !== 'number') return null
+    record[key] = amount
+  }
+  return record
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isLegacyState(value) && Object.values(value).every((entry) => typeof entry === 'string')
+}
+
+function isJsonObjectRecord(value: unknown): value is TripDocument['pageNoteMeta'] {
+  return isLegacyState(value) && Object.values(value).every(isLegacyState)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isOptionalString(value: LegacyState, key: string): boolean {
+  return value[key] === undefined || typeof value[key] === 'string'
+}
+
+function isOptionalNullableString(value: LegacyState, key: string): boolean {
+  return value[key] === undefined || value[key] === null || typeof value[key] === 'string'
+}
+
+function isOptionalNumber(value: LegacyState, key: string): boolean {
+  return value[key] === undefined || typeof value[key] === 'number'
+}
+
+function isOptionalBoolean(value: LegacyState, key: string): boolean {
+  return value[key] === undefined || typeof value[key] === 'boolean'
+}
+
+function isOptionalStringArray(value: LegacyState, key: string): boolean {
+  return value[key] === undefined || isStringArray(value[key])
+}
+
+function hasBaseEntityFields(value: unknown, type: TripEntityType): value is LegacyState {
+  return isLegacyState(value)
+    && value.type === type
+    && typeof value.id === 'string'
+    && isOptionalString(value, 'title')
+    && isOptionalString(value, 'name')
+    && isOptionalString(value, 'dayId')
+    && isOptionalString(value, 'note')
+    && isOptionalString(value, 'summary')
+    && isOptionalStringArray(value, 'linkedEntityKeys')
+    && isOptionalStringArray(value, 'taskIds')
+    && isOptionalNullableString(value, 'createdByFamilyId')
+    && isOptionalString(value, 'createdAt')
+    && isOptionalNullableString(value, 'lastEditedByFamilyId')
+    && isOptionalString(value, 'lastEditedAt')
+}
+
+function isCoordinates(value: unknown): value is Coordinates {
+  return isLegacyState(value) && typeof value.lat === 'number' && typeof value.lng === 'number'
+}
+
+function isOptionalCoordinates(value: LegacyState, key: string): boolean {
+  return value[key] === undefined || isCoordinates(value[key])
+}
+
+function isCoordinatesArray(value: unknown): value is Coordinates[] {
+  return Array.isArray(value) && value.every(isCoordinates)
+}
+
+function isFamilyEntity(value: unknown): value is FamilyEntity {
+  return hasBaseEntityFields(value, 'family')
+    && typeof value.title === 'string'
+    && isOptionalString(value, 'origin')
+    && isOptionalString(value, 'shortOrigin')
+    && isOptionalString(value, 'originAddress')
+    && isOptionalCoordinates(value, 'originCoordinates')
+    && isOptionalString(value, 'arrivalDayId')
+    && isOptionalString(value, 'status')
+    && isOptionalString(value, 'eta')
+    && isOptionalString(value, 'driveTime')
+    && isOptionalString(value, 'headcount')
+    && isOptionalNumber(value, 'adults')
+    && isOptionalNumber(value, 'kids')
+    && isOptionalString(value, 'vehicle')
+    && isOptionalString(value, 'vehicleLabel')
+    && isOptionalString(value, 'responsibility')
+    && isOptionalNumber(value, 'readiness')
+    && isOptionalString(value, 'routeSummary')
+    && isOptionalStringArray(value, 'plannedStopIds')
+}
+
+function isLocationEntity(value: unknown): value is LocationEntity {
+  return hasBaseEntityFields(value, 'location')
+    && typeof value.title === 'string'
+    && typeof value.category === 'string'
+    && isOptionalString(value, 'address')
+    && isOptionalCoordinates(value, 'coordinates')
+    && isOptionalNullableString(value, 'accessNote')
+    && isOptionalNullableString(value, 'directionsNote')
+    && isOptionalNullableString(value, 'parkingNote')
+    && isOptionalNullableString(value, 'lockNote')
+    && isOptionalNullableString(value, 'wifiNetwork')
+    && isOptionalNullableString(value, 'wifiPassword')
+    && isOptionalNullableString(value, 'externalUrl')
+    && isOptionalNullableString(value, 'websiteUrl')
+    && isOptionalNullableString(value, 'phoneNumber')
+}
+
+function isRouteEntity(value: unknown): value is RouteEntity {
+  return hasBaseEntityFields(value, 'route')
+    && typeof value.title === 'string'
+    && isOptionalString(value, 'familyId')
+    && isOptionalString(value, 'origin')
+    && isOptionalString(value, 'tone')
+    && isOptionalBoolean(value, 'dashed')
+    && isOptionalCoordinates(value, 'originCoordinates')
+    && isOptionalString(value, 'destinationLocationId')
+    && isOptionalStringArray(value, 'stopLocationIds')
+    && (value.path === undefined || isCoordinatesArray(value.path))
+    && isOptionalString(value, 'linkedEntityKey')
+    && isOptionalNumber(value, 'simulationStartSlot')
+    && isOptionalNumber(value, 'simulationEndSlot')
+    && isOptionalNumber(value, 'durationSeconds')
+    && isOptionalString(value, 'durationText')
+    && isOptionalNumber(value, 'distanceMeters')
+    && isOptionalString(value, 'distanceText')
+}
+
+function isItineraryItemEntity(value: unknown): value is ItineraryItemEntity {
+  return hasBaseEntityFields(value, 'itineraryItem')
+    && typeof value.title === 'string'
+    && typeof value.startSlot === 'number'
+    && isOptionalString(value, 'rowId')
+    && isOptionalNumber(value, 'span')
+    && isOptionalString(value, 'color')
+    && isOptionalString(value, 'routeId')
+    && isOptionalNullableString(value, 'locationId')
+    && isOptionalStringArray(value, 'familyIds')
+    && isOptionalString(value, 'status')
+    && isOptionalString(value, 'riskLevel')
+}
+
+function isMealEntity(value: unknown): value is MealEntity {
+  return hasBaseEntityFields(value, 'meal')
+    && typeof value.title === 'string'
+    && isOptionalString(value, 'timeLabel')
+    && isOptionalNumber(value, 'startSlot')
+    && isOptionalString(value, 'status')
+    && isOptionalString(value, 'owner')
+    && isOptionalNullableString(value, 'locationId')
+    && isOptionalString(value, 'reservationType')
+}
+
+function isActivityEntity(value: unknown): value is ActivityEntity {
+  return hasBaseEntityFields(value, 'activity')
+    && typeof value.title === 'string'
+    && isOptionalString(value, 'window')
+    && isOptionalString(value, 'status')
+    && isOptionalString(value, 'description')
+    && isOptionalString(value, 'backup')
+    && isOptionalNullableString(value, 'locationId')
+    && isOptionalString(value, 'riskLevel')
+    && isOptionalString(value, 'weatherSensitivity')
+}
+
+function isStayItemEntity(value: unknown): value is StayItemEntity {
+  return hasBaseEntityFields(value, 'stayItem')
+    && typeof value.title === 'string'
+    && isOptionalString(value, 'category')
+    && isOptionalNullableString(value, 'locationId')
+}
+
+function isExpenseEntity(value: unknown): value is ExpenseEntity {
+  return hasBaseEntityFields(value, 'expense')
+    && typeof value.title === 'string'
+    && typeof value.payer === 'string'
+    && typeof value.amount === 'number'
+    && typeof value.split === 'string'
+    && (value.allocationMode === 'equal' || value.allocationMode === 'manual' || value.allocationMode === 'individual')
+    && legacyNumberRecord(value.allocations) !== null
+    && typeof value.settled === 'boolean'
+}
+
+function isTaskEntity(value: unknown): value is TaskEntity {
+  return hasBaseEntityFields(value, 'task')
+    && typeof value.title === 'string'
+    && typeof value.status === 'string'
+    && isOptionalNullableString(value, 'ownerFamilyId')
+}
+
+function isEntitySelection(value: unknown): value is EntitySelection {
+  return isLegacyState(value)
+    && typeof value.type === 'string'
+    && value.type in COLLECTION_BY_TYPE
+    && typeof value.id === 'string'
+}
+
+function isTripUiState(value: unknown): value is TripDocument['ui'] {
+  if (!isLegacyState(value) || typeof value.searchQuery !== 'string') return false
+  if (!isLegacyState(value.timeline) || typeof value.timeline.mode !== 'string' || typeof value.timeline.cursorSlot !== 'number') {
+    return false
+  }
+  if (!isLegacyState(value.map)) return false
+  return typeof value.map.showRoutes === 'boolean'
+    && typeof value.map.showFacilities === 'boolean'
+    && typeof value.map.showTraffic === 'boolean'
+    && typeof value.map.focusFamilyId === 'string'
+    && typeof value.map.focusDayId === 'string'
+}
+
+function isTripTemplateKind(value: unknown): value is NonNullable<TripDocument['templateKind']> {
+  return value === 'seeded' || value === 'guided'
+}
+
+function isTripDay(value: unknown): value is TripDay {
+  return isLegacyState(value)
+    && typeof value.id === 'string'
+    && (value.type === undefined || value.type === 'day')
+    && typeof value.date === 'string'
+    && typeof value.title === 'string'
+    && typeof value.shortLabel === 'string'
+    && typeof value.code === 'string'
+    && isOptionalString(value, 'note')
+}
+
+function hasTripDocumentSnapshotEnvelope(value: unknown): value is TripDocumentSnapshotEnvelope {
+  return isLegacyState(value)
+    && (value.id === undefined || typeof value.id === 'string')
+    && (value.title === undefined || typeof value.title === 'string')
+    && typeof value.selectedPage === 'string'
+    && isEntitySelection(value.selection)
+    && isStringRecord(value.pageNotes)
+    && isJsonObjectRecord(value.pageNoteMeta)
+    && isTripUiState(value.ui)
+    && Array.isArray(value.families)
+    && Array.isArray(value.locations)
+    && Array.isArray(value.routes)
+    && Array.isArray(value.itineraryItems)
+    && Array.isArray(value.meals)
+    && Array.isArray(value.activities)
+    && Array.isArray(value.stayItems)
+    && Array.isArray(value.expenses)
+    && Array.isArray(value.tasks)
+}
+
+function validOrSeeded<T>(items: T[], seeded: T[], allowEmpty = false): T[] {
+  return allowEmpty || items.length > 0 ? items : seeded
+}
+
+function normalizeTripDocumentSnapshot(value: unknown): TripDocument | null {
+  if (!hasTripDocumentSnapshotEnvelope(value)) return null
+
+  const seeded = createInitialTripDocument()
+  const templateKind = isTripTemplateKind(value.templateKind) ? value.templateKind : undefined
+  const isGuided = templateKind === 'guided'
+  const days = Array.isArray(value.days)
+    ? value.days.filter(isTripDay).map((day) => ({ ...day, type: 'day' as const }))
+    : undefined
+  const normalized: TripDocument = {
+    ...seeded,
+    ...(typeof value.id === 'string' ? { id: value.id } : {}),
+    ...(typeof value.title === 'string' ? { title: value.title } : {}),
+    ...(templateKind ? { templateKind } : {}),
+    ...(isGuided && days ? { days } : {}),
+    selectedPage: value.selectedPage,
+    selection: value.selection,
+    pageNotes: value.pageNotes,
+    pageNoteMeta: value.pageNoteMeta,
+    ui: value.ui,
+    families: validOrSeeded(value.families.filter(isFamilyEntity), seeded.families, isGuided),
+    locations: validOrSeeded(value.locations.filter(isLocationEntity), seeded.locations, isGuided),
+    routes: validOrSeeded(value.routes.filter(isRouteEntity), seeded.routes, isGuided),
+    itineraryItems: validOrSeeded(value.itineraryItems.filter(isItineraryItemEntity), seeded.itineraryItems, isGuided),
+    meals: validOrSeeded(value.meals.filter(isMealEntity), seeded.meals, isGuided),
+    activities: validOrSeeded(value.activities.filter(isActivityEntity), seeded.activities, isGuided),
+    stayItems: validOrSeeded(value.stayItems.filter(isStayItemEntity), seeded.stayItems, isGuided),
+    expenses: validOrSeeded(value.expenses.filter(isExpenseEntity), seeded.expenses, isGuided),
+    tasks: validOrSeeded(value.tasks.filter(isTaskEntity), seeded.tasks, isGuided),
+  }
+
+  return isGuided ? normalized : refreshSeededDoc(normalized)
+}
+
+export const COLLECTION_BY_TYPE: Record<TripEntityType, TripCollectionName> = {
+  day: 'days',
   family: 'families',
   location: 'locations',
   route: 'routes',
@@ -13,6 +428,7 @@ export const COLLECTION_BY_TYPE = {
 }
 
 export const ENTITY_PAGE = {
+  day: 'itinerary',
   family: 'families',
   location: 'stay',
   route: 'itinerary',
@@ -24,7 +440,7 @@ export const ENTITY_PAGE = {
   task: 'itinerary',
 }
 
-const DEFAULT_SELECTION = { type: 'activity', id: 'thu-transit' }
+const DEFAULT_SELECTION: EntitySelection = { type: 'activity', id: 'thu-transit' }
 export const TRIP_DOCUMENT_STORAGE_KEY = 'trip-command-center/v4-public'
 export const VIEWER_PROFILE_STORAGE_KEY = 'trip-command-center/viewer/v4-public'
 const LEGACY_TRIP_DOCUMENT_STORAGE_KEYS = ['trip-command-center/v3-public', 'trip-command-center/v2', 'trip-command-center/v1']
@@ -53,11 +469,21 @@ const SHARED_CONVOY_WINDOWS = {
   satDinnerReturn: { startSlot: 11.2, endSlot: 11.3 },
 }
 
-function getConvoyWindowSpan(window) {
+function getConvoyWindowSpan(window: { startSlot: number; endSlot: number }) {
   return Number((window.endSlot - window.startSlot).toFixed(2))
 }
 
-const PUBLIC_FAMILY_PROFILES = {
+const PUBLIC_FAMILY_PROFILES: Record<string, {
+  title: string
+  name: string
+  shortOrigin: string
+  origin: string
+  originAddress: string
+  originCoordinates: { lat: number; lng: number }
+  responsibility: string
+  routeSummary: string
+  note: string
+}> = {
   'north-star': {
     title: 'Parkers',
     name: 'Parkers',
@@ -129,14 +555,14 @@ const PUBLIC_BASECAMP = {
   ],
 }
 
-const PUBLIC_STAY_SUMMARIES = {
+const PUBLIC_STAY_SUMMARIES: Record<string, string> = {
   'stay-basecamp': 'Basecamp operations run through the public Groveland-area staging house.',
   'stay-gate-access': 'Arrival logistics are intentionally generalized in the public version.',
   'stay-room-assignments': 'Sleeping assignments are intentionally generalized in the public version.',
   'stay-beach-parking': 'Parking guidance is intentionally simplified in the public version.',
 }
 
-const PUBLIC_STAY_NOTES = {
+const PUBLIC_STAY_NOTES: Record<string, string> = {
   'stay-basecamp': 'Arrival details are intentionally kept high level in the public version.',
   'stay-gate-access': 'Specific gate and entry instructions are not published.',
   'stay-room-assignments': 'Family-specific room assignments are not published.',
@@ -231,44 +657,56 @@ const LEGACY_FAMILY_TASKS = {
   },
 }
 
-export function makeEntityKey(type, id) {
+export function makeEntityKey(type: TripEntityType | string, id: string) {
   return `${type}:${id}`
 }
 
-export function parseEntityKey(key) {
+export function parseEntityKey(key: string): EntitySelection {
   const [type, ...rest] = key.split(':')
-  return { type, id: rest.join(':') }
+  return { type: type as TripEntityType, id: rest.join(':') }
 }
 
-export function getCollection(doc, type) {
+export function getCollection(doc: TripDocument, type: TripEntityType): TripEntity[] {
   const collectionName = COLLECTION_BY_TYPE[type]
-  return collectionName ? doc[collectionName] || [] : []
+  return collectionName ? (doc[collectionName] as TripEntity[]) || [] : []
 }
 
-export function getEntityById(doc, type, id) {
+export function getEntityById(doc: TripDocument, type: TripEntityType, id: string): TripEntity | null {
   return getCollection(doc, type).find((item) => item.id === id) || null
 }
 
-export function getEntityBySelection(doc, selection) {
+export function getEntityBySelection(doc: TripDocument, selection: EntitySelection) {
   if (!selection?.type || !selection?.id) return null
   return getEntityById(doc, selection.type, selection.id)
 }
 
-export function getEntityTitle(entity) {
+export function getEntityTitle(entity: (Partial<TripEntity> & { label?: string; meal?: string }) | null | undefined) {
   if (!entity) return 'No selection'
   return entity.title || entity.name || entity.label || entity.meal || entity.id
 }
 
-export function getDayMeta(dayId) {
+export function getTripDays(document: Pick<TripDocument, 'days'> | null | undefined): TripDayShell[] {
+  return (document?.days?.length ? document.days : DAYS).map(toTripDayShell)
+}
+
+export function getTripDayMeta(
+  document: Pick<TripDocument, 'days'> | null | undefined,
+  dayId: string,
+): TripDayShell | undefined {
+  return getTripDays(document).find((day) => day.id === dayId)
+}
+
+export function getDayMeta(dayId: string | undefined) {
   return DAYS.find((day) => day.id === dayId) || null
 }
 
-export function getSlotLabel(slotIndex) {
+export function getSlotLabel(slotIndex: number, document?: Pick<TripDocument, 'days'> | null) {
+  const days = getTripDays(document)
   const safeSlotIndex = Number.isFinite(slotIndex) ? Math.max(slotIndex, 0) : 0
   const dayIndex = Math.floor(safeSlotIndex / TIME_SLOTS.length)
   const slotIndexWithinDay = Math.floor(safeSlotIndex % TIME_SLOTS.length)
   const slot = TIME_SLOTS[slotIndexWithinDay]
-  const day = DAYS[dayIndex]
+  const day = days[dayIndex]
   if (!day) return `${slot}:00`
 
   const fractionalSlot = safeSlotIndex - Math.floor(safeSlotIndex)
@@ -282,7 +720,7 @@ export function getSlotLabel(slotIndex) {
   return `${day.shortLabel} ${String(hour12).padStart(2, '0')}:${String(minute).padStart(2, '0')} ${meridiem}`
 }
 
-export function getRouteSimulationWindow(doc, route) {
+export function getRouteSimulationWindow(doc: TripDocument, route: RouteEntity | null | undefined) {
   if (!route) {
     return { start: 0, end: 1 }
   }
@@ -292,7 +730,8 @@ export function getRouteSimulationWindow(doc, route) {
     if (linked.type === 'itineraryItem') {
       const linkedItem = doc?.itineraryItems?.find((item) => item.id === linked.id)
       if (linkedItem && Number.isFinite(linkedItem.startSlot)) {
-        const fallbackSpan = Number.isFinite(linkedItem.span) && linkedItem.span > 0 ? linkedItem.span : 1
+        const linkedSpan = linkedItem.span
+        const fallbackSpan = typeof linkedSpan === 'number' && Number.isFinite(linkedSpan) && linkedSpan > 0 ? linkedSpan : 1
         const span = getRouteDurationSlotSpan(route, fallbackSpan)
         return {
           start: linkedItem.startSlot,
@@ -302,16 +741,17 @@ export function getRouteSimulationWindow(doc, route) {
     }
   }
 
-  const start = Number.isFinite(route.simulationStartSlot) ? route.simulationStartSlot : 0
+  const start = Number.isFinite(route.simulationStartSlot) ? Number(route.simulationStartSlot) : 0
+  const simulationEndSlot = route.simulationEndSlot
   const fallbackSpan =
-    Number.isFinite(route.simulationEndSlot) && route.simulationEndSlot > start
-      ? route.simulationEndSlot - start
+    Number.isFinite(simulationEndSlot) && Number(simulationEndSlot) > start
+      ? Number(simulationEndSlot) - start
       : 1
   const end = start + getRouteDurationSlotSpan(route, fallbackSpan)
   return { start, end }
 }
 
-export function getRouteDurationSlotSpan(route, fallbackSpan = 1) {
+export function getRouteDurationSlotSpan(route: RouteEntity | null | undefined, fallbackSpan = 1) {
   const simulationStartSlot = Number(route?.simulationStartSlot)
   const simulationEndSlot = Number(route?.simulationEndSlot)
   if (
@@ -329,17 +769,18 @@ export function getRouteDurationSlotSpan(route, fallbackSpan = 1) {
   return fallbackSpan
 }
 
-export function getItineraryItemEffectiveSpan(doc, item) {
+export function getItineraryItemEffectiveSpan(doc: TripDocument, item: TimelineEntity | null | undefined) {
   if (!item) return 1
 
-  const fallbackSpan = Number.isFinite(item.span) && item.span > 0 ? item.span : 1
+  const itemSpan = item.span
+  const fallbackSpan = typeof itemSpan === 'number' && Number.isFinite(itemSpan) && itemSpan > 0 ? itemSpan : 1
   if (!item.routeId) return fallbackSpan
 
   const route = doc?.routes?.find((candidate) => candidate.id === item.routeId)
   return getRouteDurationSlotSpan(route, fallbackSpan)
 }
 
-export function isEntityOnPage(entity, pageId) {
+export function isEntityOnPage(entity: TripEntity | null | undefined, pageId: string) {
   if (!entity) return false
   if (entity.type === 'location') {
     return ['stay', 'meals', 'activities', 'itinerary'].includes(pageId)
@@ -347,8 +788,8 @@ export function isEntityOnPage(entity, pageId) {
   return ENTITY_PAGE[entity.type] === pageId
 }
 
-function buildLocations() {
-  return [
+function buildLocations(): LocationEntity[] {
+  const locations: LocationEntity[] = [
     {
       id: 'pine-airbnb',
       type: 'location',
@@ -575,9 +1016,10 @@ function buildLocations() {
       photos: [],
     },
   ]
+  return locations.map(ownLocationNestedData)
 }
 
-function buildFamilies() {
+function buildFamilies(): FamilyEntity[] {
   return [
     {
       id: 'north-star',
@@ -667,7 +1109,7 @@ function buildFamilies() {
   ]
 }
 
-function buildItineraryItems() {
+function buildItineraryItems(): ItineraryItemEntity[] {
   return [
     {
       id: 'north-star-drive',
@@ -1152,7 +1594,7 @@ function buildItineraryItems() {
   ]
 }
 
-function buildMeals() {
+function buildMeals(): MealEntity[] {
   return [
     {
       id: 'thu-dinner',
@@ -1262,7 +1704,7 @@ function buildMeals() {
   ]
 }
 
-function buildActivities() {
+function buildActivities(): ActivityEntity[] {
   return [
     {
       id: 'thu-transit',
@@ -1348,7 +1790,7 @@ function buildActivities() {
   ]
 }
 
-function buildStayItems() {
+function buildStayItems(): StayItemEntity[] {
   return [
     {
       id: 'stay-basecamp',
@@ -1417,7 +1859,7 @@ function buildStayItems() {
   ]
 }
 
-function buildExpenses() {
+function buildExpenses(): ExpenseEntity[] {
   return [
     {
       id: 'airbnb',
@@ -1488,7 +1930,7 @@ function buildExpenses() {
   ]
 }
 
-function buildTasks() {
+function buildTasks(): TaskEntity[] {
   return [
     {
       id: 'task-car-pack',
@@ -1730,8 +2172,8 @@ function buildTasks() {
   ]
 }
 
-function buildRoutes() {
-  return [
+function buildRoutes(): RouteEntity[] {
+  const routes: RouteEntity[] = [
     {
       id: 'route-sf-silver-peak',
       type: 'route',
@@ -2090,12 +2532,13 @@ function buildRoutes() {
       linkedEntityKey: makeEntityKey('itineraryItem', 'desert-bloom-homebound'),
     },
   ]
+  return routes.map(ownRouteNestedData)
 }
 
-export function createInitialTripDocument() {
+export function createInitialTripDocument(): TripDocument {
   return {
     selectedPage: 'itinerary',
-    selection: DEFAULT_SELECTION,
+    selection: { ...DEFAULT_SELECTION },
     pageNotes: {
       itinerary: 'Mission priority: reduce Friday arrival chaos and make Saturday easy on the kids.',
       stay: 'Need one clean arrival protocol so the first family is not doing all the setup work.',
@@ -2131,7 +2574,7 @@ export function createInitialTripDocument() {
   }
 }
 
-export function synchronizeRoutePaths(routes = [], locations = []) {
+export function synchronizeRoutePaths(routes: RouteEntity[] = [], locations: LocationEntity[] = []): RouteEntity[] {
   const locationById = new Map(locations.map((location) => [location.id, location]))
 
   return routes.map((route) => {
@@ -2140,78 +2583,89 @@ export function synchronizeRoutePaths(routes = [], locations = []) {
     const destination = locationById.get(route.destinationLocationId)?.coordinates
     const stopPoints = (route.stopLocationIds || [])
       .map((locationId) => locationById.get(locationId)?.coordinates)
-      .filter(Boolean)
+      .filter((point): point is NonNullable<typeof point> => Boolean(point))
 
     if (!destination) return route
 
     return {
       ...route,
-      path: [route.originCoordinates, ...stopPoints, destination],
+      path: [route.originCoordinates, ...stopPoints, destination].map(cloneCoordinates),
     }
   })
 }
 
-export function migrateLegacyState(raw) {
+export function migrateLegacyState(raw: unknown): TripDocument {
   const doc = createInitialTripDocument()
-  if (!raw || typeof raw !== 'object') return doc
+  if (!isLegacyState(raw)) return doc
 
   if (typeof raw.selectedPage === 'string') {
     doc.selectedPage = raw.selectedPage
   }
 
-  if (raw.notes && typeof raw.notes === 'object') {
-    doc.pageNotes = { ...doc.pageNotes, ...raw.notes }
+  if (raw.notes) {
+    doc.pageNotes = { ...doc.pageNotes, ...legacyStringRecord(raw.notes) }
   }
 
-  if (Array.isArray(raw.meals)) {
+  const legacyMeals = legacyArray(raw.meals)
+  if (legacyMeals.length) {
     doc.meals = doc.meals.map((meal) => {
-      const existing = raw.meals.find((item) => item.id === meal.id)
-      return existing ? { ...meal, status: existing.status || meal.status, note: existing.note || meal.note } : meal
+      const existing = legacyMeals.find((item) => item.id === meal.id)
+      return existing
+        ? {
+            ...meal,
+            status: legacyString(existing.status, meal.status || ''),
+            note: legacyString(existing.note, meal.note || ''),
+          }
+        : meal
     })
   }
 
-  if (Array.isArray(raw.expenses)) {
+  const legacyExpenses = legacyArray(raw.expenses)
+  if (legacyExpenses.length) {
     doc.expenses = doc.expenses.map((expense) => {
-      const existing = raw.expenses.find((item) => item.id === expense.id)
+      const existing = legacyExpenses.find((item) => item.id === expense.id)
       return existing
         ? {
             ...expense,
             settled: typeof existing.settled === 'boolean' ? existing.settled : expense.settled,
-            title: existing.title || expense.title,
-            payer: existing.payer || expense.payer,
+            title: legacyString(existing.title, expense.title),
+            payer: legacyString(existing.payer, expense.payer),
             amount: typeof existing.amount === 'number' ? existing.amount : expense.amount,
-            split: existing.split || expense.split,
-            allocationMode: existing.allocationMode || expense.allocationMode,
-            allocations: existing.allocations && typeof existing.allocations === 'object'
-              ? existing.allocations
-              : expense.allocations,
-            note: existing.note || expense.note,
+            split: legacyString(existing.split, expense.split),
+            allocationMode:
+              existing.allocationMode === 'equal' || existing.allocationMode === 'manual' || existing.allocationMode === 'individual'
+                ? existing.allocationMode
+                : expense.allocationMode,
+            allocations: legacyNumberRecord(existing.allocations) || expense.allocations,
+            note: legacyString(existing.note, expense.note || ''),
           }
         : expense
     })
   }
 
-  if (Array.isArray(raw.families)) {
+  const legacyFamilies = legacyArray(raw.families)
+  if (legacyFamilies.length) {
     doc.families = doc.families.map((family) => {
-      const existing = raw.families.find((item) => item.id === family.id)
+      const existing = legacyFamilies.find((item) => item.id === family.id)
       return existing
         ? {
             ...family,
             readiness: typeof existing.readiness === 'number' ? existing.readiness : family.readiness,
-            status: existing.status || family.status,
-            responsibility: existing.responsibility || family.responsibility,
-            routeSummary: existing.routeSummary || family.routeSummary,
+            status: legacyString(existing.status, family.status || ''),
+            responsibility: legacyString(existing.responsibility, family.responsibility || ''),
+            routeSummary: legacyString(existing.routeSummary, family.routeSummary || ''),
           }
         : family
     })
 
-    const taskStatusById = {}
-    raw.families.forEach((family) => {
-      const mapping = LEGACY_FAMILY_TASKS[family.id] || {}
-      ;(family.checklist || []).forEach((item) => {
-        const taskId = mapping[item.id]
+    const taskStatusById: Record<string, string> = {}
+    legacyFamilies.forEach((family) => {
+      const familyId = legacyString(family.id, '')
+      const mapping: Record<string, string> = LEGACY_FAMILY_TASKS[familyId as keyof typeof LEGACY_FAMILY_TASKS] || {}
+      legacyArray(family.checklist).forEach((item) => {
+        const taskId = mapping[legacyString(item.id, '')]
         if (taskId) {
-          taskStatusById[taskId] = item.done ? 'done' : 'open'
+          taskStatusById[taskId] = item.done === true ? 'done' : 'open'
         }
       })
     })
@@ -2228,14 +2682,18 @@ export function migrateLegacyState(raw) {
   return doc
 }
 
-function refreshSeededCollection(existing = [], seeded = [], preserveFields = []) {
+function refreshSeededCollection<T extends { id: string }>(
+  existing: T[] = [],
+  seeded: T[] = [],
+  preserveFields: (keyof T)[] = [],
+): T[] {
   const existingById = new Map(existing.map((item) => [item.id, item]))
 
   return seeded.map((item) => {
     const current = existingById.get(item.id)
     if (!current) return item
 
-    const preserved = preserveFields.reduce((acc, field) => {
+    const preserved = preserveFields.reduce<Partial<T>>((acc, field) => {
       if (current[field] !== undefined) acc[field] = current[field]
       return acc
     }, {})
@@ -2247,7 +2705,7 @@ function refreshSeededCollection(existing = [], seeded = [], preserveFields = []
   })
 }
 
-function routeStructureMatches(currentRoute, seededRoute) {
+function routeStructureMatches(currentRoute: RouteEntity | undefined, seededRoute: RouteEntity | undefined) {
   if (!currentRoute || !seededRoute) return false
 
   const currentOrigin = currentRoute.originCoordinates || null
@@ -2265,26 +2723,26 @@ function routeStructureMatches(currentRoute, seededRoute) {
   return sameOrigin && sameStops && currentRoute.destinationLocationId === seededRoute.destinationLocationId
 }
 
-function refreshSeededDoc(doc) {
+function refreshSeededDoc(doc: TripDocument): TripDocument {
   const seeded = createInitialTripDocument()
   const locations = refreshSeededCollection(doc.locations, seeded.locations, [
     'note',
     'lastEditedByFamilyId',
     'lastEditedAt',
     'title',
-    'placesQuery',
-    'placeId',
-    'address',
-    'coordinates',
-    'externalUrl',
-    'phoneNumber',
-    'websiteUrl',
-    'rating',
-    'userRatingsTotal',
-    'openingHours',
-    'livePhotos',
-    'basecampDrive',
-  ])
+      'placesQuery',
+      'placeId',
+      'address',
+      'coordinates',
+      'externalUrl',
+      'phoneNumber',
+      'websiteUrl',
+      'rating',
+      'userRatingsTotal',
+      'openingHours',
+      'livePhotos',
+      'basecampDrive',
+  ] as (keyof LocationEntity)[])
 
   const currentRoutesById = new Map(doc.routes.map((route) => [route.id, route]))
   const routes = seeded.routes.map((route) => {
@@ -2319,7 +2777,7 @@ function refreshSeededDoc(doc) {
       'note',
       'lastEditedByFamilyId',
       'lastEditedAt',
-    ]),
+    ] as (keyof FamilyEntity)[]),
     locations,
     itineraryItems: refreshSeededCollection(doc.itineraryItems, seeded.itineraryItems),
     stayItems: refreshSeededCollection(doc.stayItems, seeded.stayItems, ['note', 'lastEditedByFamilyId', 'lastEditedAt']),
@@ -2336,19 +2794,34 @@ function refreshSeededDoc(doc) {
       'createdAt',
       'lastEditedByFamilyId',
       'lastEditedAt',
-    ]),
+    ] as (keyof ExpenseEntity)[]),
     routes: synchronizeRoutePaths(routes, locations),
   }
 }
 
-export function getInitialTripDocument() {
-  if (typeof window === 'undefined') return createInitialTripDocument()
+function getBrowserStorageHost(): BrowserStorageHost | null {
+  return typeof globalThis === 'object' && 'window' in globalThis
+    ? (globalThis as { window?: BrowserStorageHost }).window || null
+    : null
+}
+
+export function parsePersistedTripDocument(raw: string, fallback: TripDocument = createInitialTripDocument()): TripDocument {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return normalizeTripDocumentSnapshot(parsed) || migrateLegacyState(parsed)
+  } catch {
+    return fallback
+  }
+}
+
+export function getInitialTripDocument(): TripDocument {
+  const browser = getBrowserStorageHost()
+  if (!browser?.localStorage) return createInitialTripDocument()
 
   try {
-    const rawCurrent = window.localStorage.getItem(TRIP_DOCUMENT_STORAGE_KEY)
+    const rawCurrent = browser.localStorage.getItem(TRIP_DOCUMENT_STORAGE_KEY)
     if (rawCurrent) {
-      const parsed = JSON.parse(rawCurrent)
-      if (parsed?.locations && parsed?.selection) return refreshSeededDoc(parsed)
+      return parsePersistedTripDocument(rawCurrent)
     }
   } catch {
     return createInitialTripDocument()
@@ -2358,19 +2831,21 @@ export function getInitialTripDocument() {
 }
 
 export function clearLegacyTripStorage() {
-  if (typeof window === 'undefined') return
-  LEGACY_TRIP_DOCUMENT_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key))
-  LEGACY_VIEWER_PROFILE_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key))
+  const browser = getBrowserStorageHost()
+  if (!browser?.localStorage) return
+  LEGACY_TRIP_DOCUMENT_STORAGE_KEYS.forEach((key) => browser.localStorage?.removeItem(key))
+  LEGACY_VIEWER_PROFILE_STORAGE_KEYS.forEach((key) => browser.localStorage?.removeItem(key))
 }
 
-export function getLocationForEntity(doc, entity) {
+export function getLocationForEntity(doc: TripDocument, entity: TripEntity | null | undefined): LocationEntity | null {
   if (!entity) return null
   if (entity.type === 'location') return entity
-  if (!entity.locationId) return null
-  return getEntityById(doc, 'location', entity.locationId)
+  const locationId = getEntityLocationId(entity)
+  if (!locationId) return null
+  return getEntityById(doc, 'location', locationId) as LocationEntity | null
 }
 
-export function getTasksForEntity(doc, entity) {
+export function getTasksForEntity(doc: TripDocument, entity: TripEntity | null | undefined) {
   if (!entity) return []
   const entityKey = makeEntityKey(entity.type, entity.id)
   return doc.tasks.filter((task) => {
@@ -2379,13 +2854,13 @@ export function getTasksForEntity(doc, entity) {
   })
 }
 
-export function getLinkedEntities(doc, entity) {
+export function getLinkedEntities(doc: TripDocument, entity: TripEntity | null | undefined): TripEntity[] {
   if (!entity) return []
 
-  const seen = new Set()
-  const linked = []
+  const seen = new Set<string>()
+  const linked: TripEntity[] = []
 
-  const pushEntity = (item) => {
+  const pushEntity = (item: TripEntity | null) => {
     if (!item) return
     const key = makeEntityKey(item.type, item.id)
     if (key === makeEntityKey(entity.type, entity.id) || seen.has(key)) return
@@ -2398,8 +2873,9 @@ export function getLinkedEntities(doc, entity) {
     pushEntity(getEntityById(doc, ref.type, ref.id))
   })
 
-  if (entity.locationId) {
-    pushEntity(getEntityById(doc, 'location', entity.locationId))
+  const locationId = getEntityLocationId(entity)
+  if (locationId) {
+    pushEntity(getEntityById(doc, 'location', locationId))
   }
 
   getTasksForEntity(doc, entity).forEach(pushEntity)
@@ -2407,40 +2883,53 @@ export function getLinkedEntities(doc, entity) {
   return linked
 }
 
-export function getEntitySummary(entity) {
+export function getEntitySummary(
+  entity: TripEntity | null | undefined,
+  document?: Pick<TripDocument, 'days'> | null,
+) {
   if (!entity) return ''
+  if (entity.type === 'day') return entity.date
   if (entity.type === 'family') return `${entity.origin} inbound, ${entity.headcount}`
-  if (entity.type === 'meal') return `${getDayMeta(entity.dayId)?.shortLabel || entity.dayId} at ${entity.timeLabel}`
+  if (entity.type === 'meal') {
+    const day = entity.dayId
+      ? document
+        ? getTripDayMeta(document, entity.dayId)
+        : getDayMeta(entity.dayId)
+      : null
+    return `${day?.shortLabel || entity.dayId || 'Unscheduled'} at ${entity.timeLabel}`
+  }
   if (entity.type === 'activity') return entity.window
   if (entity.type === 'location') return entity.address
   if (entity.type === 'stayItem') return entity.category
   if (entity.type === 'expense') return `${entity.payer} · $${entity.amount}`
-  if (entity.type === 'itineraryItem') return getSlotLabel(entity.startSlot)
+  if (entity.type === 'itineraryItem') return getSlotLabel(entity.startSlot, document)
   if (entity.type === 'task') return entity.status
   return ''
 }
 
-export function getSearchResults(doc, query) {
+export function getSearchResults(doc: TripDocument, query: string): (TripEntity & { searchText: string })[] {
   if (!query?.trim()) return []
   const normalized = query.trim().toLowerCase()
-  const types = ['family', 'meal', 'activity', 'location', 'stayItem', 'expense', 'itineraryItem', 'task']
+  const types: TripEntityType[] = ['day', 'family', 'meal', 'activity', 'location', 'stayItem', 'expense', 'itineraryItem', 'task']
   const items = types.flatMap((type) =>
-    getCollection(doc, type).map((item) => ({
-      ...item,
-      type,
-      searchText: [
-        item.title,
-        item.name,
-        item.summary,
-        item.note,
-        item.address,
-        item.description,
-        item.backup,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase(),
-    })),
+    getCollection(doc, type).map((item) => {
+      const searchable = item as TripEntity & { address?: string; description?: string; backup?: string }
+      return {
+        ...item,
+        searchText: [
+          item.title,
+          item.name,
+          item.summary,
+          item.note,
+          searchable.address,
+          searchable.description,
+          searchable.backup,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase(),
+      } as TripEntity & { searchText: string }
+    }),
   )
 
   return items
@@ -2448,14 +2937,17 @@ export function getSearchResults(doc, query) {
     .slice(0, 8)
 }
 
-export function getTimelineContext(doc, overrideCursorSlot = doc.ui.timeline.cursorSlot) {
+export function getTimelineContext(doc: TripDocument, overrideCursorSlot = doc.ui.timeline.cursorSlot) {
   const cursorSlot = overrideCursorSlot
-  const liveEntities = [...doc.itineraryItems, ...doc.meals].filter((item) => {
+  const timelineEntities = [...doc.itineraryItems, ...doc.meals].filter(
+    (item): item is TimelineEntity => Number.isFinite(item.startSlot),
+  )
+  const liveEntities = timelineEntities.filter((item) => {
     const span = getItineraryItemEffectiveSpan(doc, item)
-    return cursorSlot >= item.startSlot && cursorSlot < item.startSlot + span
+    return cursorSlot >= item.startSlot && cursorSlot < item.startSlot + Number(span)
   })
 
-  const nextEntities = [...doc.itineraryItems, ...doc.meals]
+  const nextEntities = timelineEntities
     .filter((item) => item.startSlot > cursorSlot)
     .sort((a, b) => a.startSlot - b.startSlot)
     .slice(0, 4)
@@ -2472,7 +2964,7 @@ export function getTimelineContext(doc, overrideCursorSlot = doc.ui.timeline.cur
 
   return {
     cursorSlot,
-    cursorLabel: getSlotLabel(cursorSlot),
+    cursorLabel: getSlotLabel(cursorSlot, doc),
     liveEntities,
     nextEntities,
     prepSoon,
@@ -2480,7 +2972,7 @@ export function getTimelineContext(doc, overrideCursorSlot = doc.ui.timeline.cur
   }
 }
 
-export function getDependencyPrompts(doc, entity) {
+export function getDependencyPrompts(doc: TripDocument, entity: TripEntity) {
   const tasks = getTasksForEntity(doc, entity).filter((task) => task.status !== 'done')
   return tasks.slice(0, 3).map((task) => ({
     id: `prompt-${entity.type}-${entity.id}-${task.id}`,
@@ -2491,9 +2983,10 @@ export function getDependencyPrompts(doc, entity) {
   }))
 }
 
-export function getRouteForEntity(doc, entity) {
+export function getRouteForEntity(doc: TripDocument, entity: TripEntity | null | undefined): RouteEntity | null {
   if (!entity) return null
-  if (entity.routeId) return getEntityById(doc, 'route', entity.routeId)
+  const routeId = getEntityRouteId(entity)
+  if (routeId) return getEntityById(doc, 'route', routeId) as RouteEntity | null
   const entityKey = makeEntityKey(entity.type, entity.id)
   const directRoute = doc.routes.find((route) => route.linkedEntityKey === entityKey)
   if (directRoute) return directRoute
@@ -2506,44 +2999,52 @@ export function getRouteForEntity(doc, entity) {
   return null
 }
 
-export function updateEntityInCollection(collection, id, updater) {
+export function updateEntityInCollection<T extends { id: string }>(collection: T[], id: string, updater: (item: T) => T) {
   return collection.map((item) => (item.id === id ? updater(item) : item))
 }
 
-function replacePublicStrings(value) {
+function replacePublicStrings(value: string): string {
   if (typeof value !== 'string' || !value) return value
   return value
 }
 
-function sanitizePublicText(value, fallback = '') {
+function sanitizePublicText(value: unknown, fallback = ''): string {
   if (typeof value !== 'string') return fallback
   return replacePublicStrings(value)
 }
 
-function sanitizeFamilyEntity(family) {
+function sanitizeFamilyEntity(family: FamilyEntity): FamilyEntity {
+  const { originAddress, originCoordinates, ...safeFamily } = family
   const profile = PUBLIC_FAMILY_PROFILES[family.id]
   if (!profile) {
     return {
-      ...family,
+      ...safeFamily,
       note: '',
     }
   }
 
   return {
-    ...family,
+    ...safeFamily,
     title: profile.title,
     name: profile.name,
     shortOrigin: profile.shortOrigin,
     origin: profile.origin,
-    originAddress: profile.originAddress,
-    originCoordinates: profile.originCoordinates,
     responsibility: profile.responsibility,
     routeSummary: profile.routeSummary,
     note: profile.note,
   }
 }
 
-function sanitizeLocationEntity(location) {
+function sanitizeRouteEntity(route: RouteEntity): RouteEntity {
+  const { originCoordinates, path, ...safeRoute } = route
+  return {
+    ...safeRoute,
+    title: sanitizePublicText(route.title),
+    note: '',
+  }
+}
+
+function sanitizeLocationEntity(location: LocationEntity): LocationEntity {
   if (location.id === 'pine-airbnb') {
     return {
       ...location,
@@ -2585,7 +3086,7 @@ function sanitizeLocationEntity(location) {
   }
 }
 
-function sanitizeStayItemEntity(item) {
+function sanitizeStayItemEntity(item: StayItemEntity): StayItemEntity {
   return {
     ...item,
     title: sanitizePublicText(item.title),
@@ -2594,7 +3095,7 @@ function sanitizeStayItemEntity(item) {
   }
 }
 
-function sanitizeExpenseEntity(expense) {
+function sanitizeExpenseEntity(expense: ExpenseEntity): ExpenseEntity {
   return {
     ...expense,
     title: sanitizePublicText(expense.title),
@@ -2604,22 +3105,29 @@ function sanitizeExpenseEntity(expense) {
   }
 }
 
-function sanitizeGenericEntity(entity) {
+function sanitizeGenericEntity<T extends TripEntity>(entity: T): T {
+  const editable = entity as T & {
+    description?: string
+    backup?: string
+    routeSummary?: string
+    owner?: string
+    payer?: string
+  }
   return {
     ...entity,
     title: sanitizePublicText(entity.title),
     name: sanitizePublicText(entity.name),
     summary: sanitizePublicText(entity.summary),
     note: '',
-    description: sanitizePublicText(entity.description),
-    backup: sanitizePublicText(entity.backup),
-    routeSummary: sanitizePublicText(entity.routeSummary),
-    owner: sanitizePublicText(entity.owner),
-    payer: sanitizePublicText(entity.payer),
+    description: sanitizePublicText(editable.description),
+    backup: sanitizePublicText(editable.backup),
+    routeSummary: sanitizePublicText(editable.routeSummary),
+    owner: sanitizePublicText(editable.owner),
+    payer: sanitizePublicText(editable.payer),
   }
 }
 
-export function projectTripDocument(doc, visibilityMode = 'public') {
+export function projectTripDocument(doc: TripDocument, visibilityMode = 'public'): TripDocument {
   if (visibilityMode !== 'public') return doc
 
   const sanitizedFamilies = doc.families.map(sanitizeFamilyEntity)
@@ -2638,40 +3146,15 @@ export function projectTripDocument(doc, visibilityMode = 'public') {
     tasks: doc.tasks.map(sanitizeGenericEntity),
   }
 
-  projected.routes = synchronizeRoutePaths(
-    doc.routes.map((route) => {
-      const nextRoute = {
-        ...route,
-        title: sanitizePublicText(route.title),
-        note: '',
-      }
-
-      if (route.id === 'route-sf-desert-bloom') {
-        nextRoute.originCoordinates = PUBLIC_FAMILY_PROFILES['desert-bloom'].originCoordinates
-        if (route.path?.length) {
-          nextRoute.path = [PUBLIC_FAMILY_PROFILES['desert-bloom'].originCoordinates, ...route.path.slice(1)]
-        }
-      }
-
-      if (route.id === 'route-sun-home-desert-bloom' && route.path?.length) {
-        nextRoute.path = [
-          ...route.path.slice(0, -1),
-          PUBLIC_FAMILY_PROFILES['desert-bloom'].originCoordinates,
-        ]
-      }
-
-      return nextRoute
-    }),
-    projected.locations,
-  )
+  projected.routes = doc.routes.map(sanitizeRouteEntity)
 
   return projected
 }
 
-export function getSelectablePageEntities(doc, pageId) {
+export function getSelectablePageEntities(doc: TripDocument, pageId: string): TripEntity[] {
   switch (pageId) {
     case 'itinerary':
-      return [...doc.activities, ...doc.itineraryItems]
+      return [...(doc.days || []), ...doc.routes, ...doc.activities, ...doc.itineraryItems]
     case 'stay':
       return [...doc.stayItems, ...doc.locations.filter((location) => location.category === 'stay')]
     case 'meals':
@@ -2687,33 +3170,33 @@ export function getSelectablePageEntities(doc, pageId) {
   }
 }
 
-export function ensureSelectionForPage(doc, pageId) {
+export function ensureSelectionForPage(doc: TripDocument, pageId: string): EntitySelection {
   const selected = getEntityBySelection(doc, doc.selection)
   if (selected && isEntityOnPage(selected, pageId)) return doc.selection
   const fallback = getSelectablePageEntities(doc, pageId)[0]
   return fallback ? { type: fallback.type, id: fallback.id } : DEFAULT_SELECTION
 }
 
-export function getTasksByFamily(doc, familyId) {
+export function getTasksByFamily(doc: TripDocument, familyId: string) {
   return doc.tasks.filter((task) => task.ownerFamilyId === familyId)
 }
 
-export function getFamilyReadiness(doc, familyId) {
+export function getFamilyReadiness(doc: TripDocument, familyId: string) {
   const tasks = getTasksByFamily(doc, familyId)
   if (!tasks.length) return 100
   const doneCount = tasks.filter((task) => task.status === 'done').length
   return Math.round((doneCount / tasks.length) * 100)
 }
 
-export function getTasksForDay(doc, dayId) {
+export function getTasksForDay(doc: TripDocument, dayId: string) {
   return doc.tasks.filter((task) => task.dayId === dayId)
 }
 
-export function getPageNote(doc, pageId) {
+export function getPageNote(doc: TripDocument, pageId: string) {
   return doc.pageNotes[pageId] || ''
 }
 
-export function getFamilyFilterOptions(doc) {
+export function getFamilyFilterOptions(doc: TripDocument) {
   return [
     { id: 'all', label: 'All Families' },
     ...doc.families.map((family) => ({ id: family.id, label: family.title })),
