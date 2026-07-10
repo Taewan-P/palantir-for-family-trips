@@ -128,6 +128,43 @@ describe('TripRoom command handling', () => {
     expect(sent).toEqual([{ type: 'event.rejected', reason: 'forbidden' }])
     expect(db.batch).not.toHaveBeenCalled()
   })
+
+  it('rejects family account assignment from an editor member', async () => {
+    const db = {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({
+          first: vi.fn(async () => ({ role: 'editor' })),
+        })),
+      })),
+      batch: vi.fn(async () => {
+        throw new Error('editor assignment reached persistence')
+      }),
+    }
+    const room = new TripRoom({} as DurableObjectState, { DB: db } as never)
+    const sent: unknown[] = []
+    const socket = {
+      send: vi.fn((message: string) => sent.push(JSON.parse(message))),
+    } as unknown as WebSocket
+
+    ;(room as unknown as { document: TripDocument; version: number }).document = baseDoc()
+    ;(room as unknown as { document: TripDocument; version: number }).version = 2
+
+    await (room as unknown as {
+      handleMessage(socket: WebSocket, tripId: string, actorUserId: string, data: unknown): Promise<void>
+    }).handleMessage(socket, 'trip_1', 'user_editor', JSON.stringify({
+      id: 'cmd_assign',
+      baseVersion: 2,
+      type: 'entity.update',
+      payload: {
+        entityType: 'family',
+        id: 'family_1',
+        patch: { assignedUserId: 'user_2', assignedUserEmail: 'member@example.com' },
+      },
+    }))
+
+    expect(sent).toEqual([{ type: 'event.rejected', reason: 'forbidden' }])
+    expect(db.batch).not.toHaveBeenCalled()
+  })
 })
 
 function updateTaskCommand(): TripCommand {
@@ -152,7 +189,7 @@ function baseDoc(): TripDocument {
       timeline: { mode: 'scenario', cursorSlot: 0 },
       map: { showRoutes: true, showFacilities: true, showTraffic: false, focusFamilyId: 'all', focusDayId: 'all' },
     },
-    families: [],
+    families: [{ id: 'family_1', type: 'family', title: 'Family' }],
     locations: [],
     routes: [],
     itineraryItems: [],

@@ -31,7 +31,7 @@ describe('createGuidedTripDocument', () => {
     expect(doc.title).toBe('Japan Summer 2026')
     expect(doc.templateKind).toBe('guided')
     expect(doc.selectedPage).toBe('families')
-    expect(doc.selection).toEqual({ type: 'family', id: 'family_1' })
+    expect(doc.selection).toEqual({ type: 'family', id: doc.families[0]?.id })
     expect(doc.days).toHaveLength(3)
     expect(doc.days?.map((day) => day.date)).toEqual([
       '2026-07-10',
@@ -54,20 +54,18 @@ describe('createGuidedTripDocument', () => {
       headcount: '1 adult, 2 kids',
       origin: 'Busan',
     })
-    expect(doc.locations).toEqual([{
-      id: 'location_destination',
-      type: 'location',
-      title: 'Tokyo',
-      category: 'destination',
-    }])
-    expect(doc.stayItems).toEqual([{
-      id: 'stay_basecamp',
-      type: 'stayItem',
-      title: 'Tokyo Basecamp',
-      category: 'basecamp',
-      address: '1 Chome Marunouchi, Tokyo',
-      locationId: 'location_destination',
-    }])
+    expect(doc.locations).toEqual([
+      expect.objectContaining({ type: 'location', title: 'Tokyo', category: 'destination' }),
+    ])
+    expect(doc.stayItems).toEqual([
+      expect.objectContaining({
+        type: 'stayItem',
+        title: 'Tokyo Basecamp',
+        category: 'basecamp',
+        address: '1 Chome Marunouchi, Tokyo',
+        locationId: doc.locations[0]?.id,
+      }),
+    ])
     expect(doc.routes).toEqual([])
     expect(doc.itineraryItems).toEqual([])
     expect(doc.meals).toEqual([])
@@ -92,6 +90,24 @@ describe('createGuidedTripDocument', () => {
     expect(serialized).not.toContain('Riveras')
     expect(serialized).not.toContain('Duckfat')
     expect(serialized).not.toContain('Portland Head Light')
+  })
+
+  it('generates distinct entity ids and preserves numeric family counts for each trip', () => {
+    const input = {
+      title: 'Real Trip',
+      startDate: '2026-08-01',
+      endDate: '2026-08-02',
+      destinationName: 'Osaka',
+      families: [{ displayName: 'Lee Family', adults: 2, kids: 1 }],
+    }
+    const first = createGuidedTripDocument(input)
+    const second = createGuidedTripDocument(input)
+
+    expect(first.families[0]).toEqual(expect.objectContaining({ adults: 2, kids: 1 }))
+    expect(first.families[0]?.id).not.toBe(second.families[0]?.id)
+    expect(first.days?.[0]?.id).not.toBe(second.days?.[0]?.id)
+    expect(first.locations[0]?.id).not.toBe(second.locations[0]?.id)
+    expect(first.stayItems[0]?.id).not.toBe(second.stayItems[0]?.id)
   })
 
   it('throws when destination is blank', () => {

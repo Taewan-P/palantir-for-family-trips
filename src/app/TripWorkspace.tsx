@@ -30,10 +30,17 @@ type TripResponse = {
   members: TripMember[]
 }
 
+type MeResponse = {
+  user: {
+    id: string
+  }
+}
+
 export function TripWorkspace({ tripId, initialDocument, readOnly = false }: TripWorkspaceProps) {
   const [document, setDocument] = useState<TripDocument | null>(initialDocument ?? null)
   const [role, setRole] = useState<TripRole>('owner')
   const [members, setMembers] = useState<TripMember[]>([])
+  const [viewerUserId, setViewerUserId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -41,6 +48,7 @@ export function TripWorkspace({ tripId, initialDocument, readOnly = false }: Tri
       setDocument(initialDocument ?? null)
       setRole('owner')
       setMembers([])
+      setViewerUserId(null)
       setError(null)
       return undefined
     }
@@ -49,16 +57,20 @@ export function TripWorkspace({ tripId, initialDocument, readOnly = false }: Tri
     setDocument(null)
     setError(null)
 
-    apiGet<TripResponse>(`/api/trips/${encodeURIComponent(tripId)}`).then((result) => {
+    Promise.all([
+      apiGet<TripResponse>(`/api/trips/${encodeURIComponent(tripId)}`),
+      apiGet<MeResponse>('/api/me'),
+    ]).then(([result, meResult]) => {
       if (cancelled) return
-      if (result.ok) {
+      if (result.ok && meResult.ok) {
         setDocument(result.data.trip)
         setRole(result.data.role)
         setMembers(result.data.members)
-      } else if (result.error.code === 'unauthorized') {
+        setViewerUserId(meResult.data.user.id)
+      } else if ((!result.ok && result.error.code === 'unauthorized') || (!meResult.ok && meResult.error.code === 'unauthorized')) {
         navigate(loginRoute(`/trips/${tripId}`))
       } else {
-        setError(result.error.message)
+        setError(!result.ok ? result.error.message : meResult.ok ? 'Unable to load account' : meResult.error.message)
       }
     })
 
@@ -79,5 +91,15 @@ export function TripWorkspace({ tripId, initialDocument, readOnly = false }: Tri
     return <main className="min-h-screen bg-[#0d1117] p-6 text-[#8B949E]">Loading trip...</main>
   }
 
-  return <App serviceTripId={tripId} tripRole={role} serviceTripMembers={members} initialServiceDocument={document} readOnly={readOnly} />
+  return (
+    <App
+      key={tripId || 'shared'}
+      serviceTripId={tripId}
+      tripRole={role}
+      serviceTripMembers={members}
+      viewerUserId={viewerUserId || undefined}
+      initialServiceDocument={document}
+      readOnly={readOnly}
+    />
+  )
 }

@@ -131,12 +131,8 @@ export function useTripRoom(tripId: string | null | undefined): TripRoomState {
         return
       }
 
-      const rejectedCommand = inFlightCommandRef.current
       inFlightCommandRef.current = null
       versionRef.current = message.version
-      if (rejectedCommand) {
-        pendingCommandsRef.current.unshift(rejectedCommand)
-      }
       setDocument(normalizeMemberTripCopy(message.document))
       setVersion(message.version)
       flushCommandQueue()

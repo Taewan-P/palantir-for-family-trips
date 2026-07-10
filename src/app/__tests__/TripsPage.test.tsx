@@ -135,6 +135,49 @@ describe('TripsPage', () => {
     expect(host?.textContent).toContain('Editor Trip')
     expect(host?.textContent).not.toContain('Archive')
   })
+
+  it('keeps guided input and shows create failures inside the setup form', async () => {
+    globalThis.fetch = jsonFetch([
+      { ok: true, data: { trips: [] } },
+      { ok: false, error: { code: 'bad_request', message: 'Destination is unavailable' } },
+    ])
+
+    await render()
+    await act(async () => {
+      findButton('New trip')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    setInputValue(input('title'), 'Retained trip')
+    setInputValue(input('startDate'), '2026-07-10')
+    setInputValue(input('endDate'), '2026-07-12')
+    setInputValue(input('destinationName'), 'Tokyo')
+    setInputValue(input('families.0.displayName'), 'Park Household')
+
+    await act(async () => {
+      host?.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(host?.querySelector('form [role="alert"]')?.textContent).toContain('Destination is unavailable')
+    expect(input('title')?.value).toBe('Retained trip')
+  })
+
+  it('signs out from the trip list', async () => {
+    globalThis.fetch = jsonFetch([
+      { ok: true, data: { trips: [] } },
+      { ok: true, data: { loggedOut: true } },
+    ])
+
+    await render()
+    await act(async () => {
+      findButton('Sign out')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/auth/logout', expect.objectContaining({ method: 'POST' }))
+    expect(window.location.pathname).toBe('/login')
+  })
 })
 
 async function render(): Promise<void> {

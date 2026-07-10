@@ -22,7 +22,7 @@ function routeUsesLocation(route: RouteEntity, locationId: string): boolean {
 export function applyTripEvent(document: TripDocument, event: TripEvent): TripDocument {
   if (event.type === 'entity.create') {
     const collectionName = COLLECTION_BY_ENTITY_TYPE[event.payload.entityType]
-    const collection = document[collectionName] as TripEntity[]
+    const collection = (document[collectionName] || []) as TripEntity[]
     return {
       ...document,
       [collectionName]: [...collection, event.payload.entity],
@@ -31,7 +31,7 @@ export function applyTripEvent(document: TripDocument, event: TripEvent): TripDo
 
   if (event.type === 'entity.update') {
     const collectionName = COLLECTION_BY_ENTITY_TYPE[event.payload.entityType]
-    const collection = document[collectionName] as TripEntity[]
+    const collection = (document[collectionName] || []) as TripEntity[]
     const nextDocument = {
       ...document,
       [collectionName]: collection.map((entity) =>
@@ -58,7 +58,7 @@ export function applyTripEvent(document: TripDocument, event: TripEvent): TripDo
 
   if (event.type === 'entity.delete') {
     const collectionName = COLLECTION_BY_ENTITY_TYPE[event.payload.entityType]
-    const collection = document[collectionName] as TripEntity[]
+    const collection = (document[collectionName] || []) as TripEntity[]
     return {
       ...document,
       [collectionName]: collection.filter((entity) => entity.id !== event.payload.id),

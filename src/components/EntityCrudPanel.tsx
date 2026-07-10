@@ -14,7 +14,7 @@ type EntityCrudPanelProps = {
 
 export function EntityCrudPanel({ document, entityType, readOnly, canDelete, onCreate, onDelete }: EntityCrudPanelProps) {
   const collectionName = COLLECTION_BY_ENTITY_TYPE[entityType]
-  const entities = document[collectionName]
+  const entities = document[collectionName] || []
 
   return (
     <section className="border border-[#30363D] bg-[#161B22] p-3">

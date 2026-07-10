@@ -6,9 +6,9 @@ import { createTripFromTemplate } from '../../shared/trip-template'
 import { TripWorkspace } from '../TripWorkspace'
 
 vi.mock('../../App', () => ({
-  default: ({ serviceTripId, initialServiceDocument, tripRole, serviceTripMembers }: { serviceTripId: string; initialServiceDocument: { title: string }; tripRole?: string; serviceTripMembers?: { name: string }[] }) => (
+  default: ({ serviceTripId, initialServiceDocument, tripRole, serviceTripMembers, viewerUserId }: { serviceTripId: string; initialServiceDocument: { title: string }; tripRole?: string; serviceTripMembers?: { name: string }[]; viewerUserId?: string }) => (
     <div data-testid="workspace">
-      {serviceTripId} / {initialServiceDocument.title} / {tripRole} / {serviceTripMembers?.[0]?.name}
+      {serviceTripId} / {initialServiceDocument.title} / {tripRole} / {serviceTripMembers?.[0]?.name} / {viewerUserId}
     </div>
   ),
 }))
@@ -59,11 +59,12 @@ describe('TripWorkspace', () => {
           members: [{ userId: 'user_1', email: 'editor@example.com', name: 'Editor User', avatarUrl: null, role: 'editor', createdAt: '2026-07-01T00:00:00.000Z' }],
         },
       },
+      { ok: true, data: { user: { id: 'user_1', email: 'editor@example.com', name: 'Editor User', avatarUrl: null } } },
     ])
 
     await render(<TripWorkspace tripId="trip_123" />)
 
-    expect(host?.textContent).toContain('trip_123 / Member Trip / editor / Editor User')
+    expect(host?.textContent).toContain('trip_123 / Member Trip / editor / Editor User / user_1')
   })
 })
 

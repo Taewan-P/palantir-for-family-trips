@@ -15,6 +15,7 @@ export type SelectedItemEditorProps = {
   entity: TripEntity | null
   members: SelectedItemMember[]
   readOnly: boolean
+  canAssignMembers?: boolean
   onPatchEntity: <Type extends TripEntityType>(
     type: Type,
     id: string,
@@ -24,7 +25,7 @@ export type SelectedItemEditorProps = {
 
 type Option = { value: string; label: string }
 
-export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPatchEntity }: SelectedItemEditorProps) {
+export function SelectedItemEditor({ doc, days, entity, members, readOnly, canAssignMembers = true, onPatchEntity }: SelectedItemEditorProps) {
   if (!entity) return null
 
   const locationOptions = doc.locations.map((location) => ({ value: location.id, label: location.title }))
@@ -121,24 +122,72 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
       </select>
     </Field>
   )
+  const familyCount = (
+    label: 'Adults' | 'Kids',
+    id: string,
+    key: 'adults' | 'kids',
+    value: number,
+    adults: number,
+    kids: number,
+  ) => (
+    <Field label={label}>
+      <input
+        aria-label={label}
+        type="number"
+        min={0}
+        value={value}
+        readOnly={readOnly}
+        disabled={readOnly}
+        onChange={(event) => {
+          if (event.target.value === '') return
+          const nextValue = Number(event.target.value)
+          if (!Number.isInteger(nextValue) || nextValue < 0) return
+          const nextAdults = key === 'adults' ? nextValue : adults
+          const nextKids = key === 'kids' ? nextValue : kids
+          patch('family', id, {
+            [key]: nextValue,
+            headcount: formatHeadcount(nextAdults, nextKids),
+          })
+        }}
+        className={controlClass}
+      />
+    </Field>
+  )
 
   let fields: ReactNode = null
 
   switch (entity.type) {
+    case 'day':
+      fields = (
+        <>
+          {text('Label', 'day', entity.id, 'title', entity.title)}
+          {text('Short label', 'day', entity.id, 'shortLabel', entity.shortLabel)}
+          {text('Date', 'day', entity.id, 'date', entity.date, 'date')}
+          {textarea('Note', 'day', entity.id, 'note', entity.note)}
+        </>
+      )
+      break
     case 'family':
+      {
+      const counts = readHeadcount(entity)
       fields = (
         <>
           {text('Display name', 'family', entity.id, 'title', entity.title)}
           {text('Origin', 'family', entity.id, 'origin', entity.origin)}
-          {text('Headcount', 'family', entity.id, 'headcount', entity.headcount)}
+          {text('Short origin', 'family', entity.id, 'shortOrigin', entity.shortOrigin)}
+          <div className="grid grid-cols-2 gap-2">
+            {familyCount('Adults', entity.id, 'adults', counts.adults, counts.adults, counts.kids)}
+            {familyCount('Kids', entity.id, 'kids', counts.kids, counts.adults, counts.kids)}
+          </div>
           {text('Responsibility', 'family', entity.id, 'responsibility', entity.responsibility)}
           {number('Readiness', 'family', entity.id, 'readiness', entity.readiness)}
           <Field label="Assigned account">
             <select
               aria-label="Assigned account"
               value={entity.assignedUserId || ''}
-              disabled={readOnly}
+              disabled={readOnly || !canAssignMembers}
               onChange={(event) => {
+                if (!canAssignMembers) return
                 const member = members.find((item) => item.userId === event.target.value)
                 patch('family', entity.id, {
                   assignedUserId: member?.userId || null,
@@ -158,6 +207,7 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
         </>
       )
       break
+      }
     case 'stayItem':
       fields = (
         <>
@@ -167,6 +217,9 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
           {text('End day', 'stayItem', entity.id, 'checkOut', entity.checkOut)}
           {text('Category', 'stayItem', entity.id, 'category', entity.category)}
           {text('Confirmation', 'stayItem', entity.id, 'confirmationCode', entity.confirmationCode)}
+          {text('Address', 'stayItem', entity.id, 'address', entity.address)}
+          {textarea('Access note', 'stayItem', entity.id, 'accessNote', entity.accessNote)}
+          {textarea('Parking note', 'stayItem', entity.id, 'parkingNote', entity.parkingNote)}
           {textarea('Summary', 'stayItem', entity.id, 'summary', entity.summary)}
           {textarea('Note', 'stayItem', entity.id, 'note', entity.note)}
         </>
@@ -187,10 +240,28 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
         <>
           {text('Title', 'route', entity.id, 'title', entity.title)}
           {select('Family', 'route', entity.id, 'familyId', entity.familyId, familyOptions)}
+          {text('Origin', 'route', entity.id, 'origin', entity.origin)}
+          <Field label="Stops">
+            <select
+              aria-label="Stops"
+              multiple
+              value={entity.stopLocationIds || []}
+              disabled={readOnly}
+              onChange={(event) => patch('route', entity.id, {
+                stopLocationIds: Array.from(event.currentTarget.selectedOptions, (option) => option.value),
+              })}
+              className={`${controlClass} min-h-20`}
+            >
+              {locationOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </Field>
           {select('Destination', 'route', entity.id, 'destinationLocationId', entity.destinationLocationId, locationOptions)}
           {select('Day', 'route', entity.id, 'dayId', entity.dayId, dayOptions)}
           {text('Distance', 'route', entity.id, 'distanceText', entity.distanceText)}
           {text('Duration', 'route', entity.id, 'durationText', entity.durationText)}
+          {textarea('Note', 'route', entity.id, 'note', entity.note)}
         </>
       )
       break
@@ -204,6 +275,23 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
           {select('Location', 'itineraryItem', entity.id, 'locationId', entity.locationId, locationOptions)}
           {text('Status', 'itineraryItem', entity.id, 'status', entity.status)}
           {text('Risk level', 'itineraryItem', entity.id, 'riskLevel', entity.riskLevel)}
+          <Field label="Linked family">
+            <select
+              aria-label="Linked family"
+              value={entity.familyIds?.[0] || ''}
+              disabled={readOnly}
+              onChange={(event) => patch('itineraryItem', entity.id, {
+                familyIds: event.target.value ? [event.target.value] : [],
+              })}
+              className={controlClass}
+            >
+              <option value="">None</option>
+              {familyOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </Field>
+          {textarea('Note', 'itineraryItem', entity.id, 'note', entity.note)}
         </>
       )
       break
@@ -213,6 +301,7 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
           {text('Title', 'meal', entity.id, 'title', entity.title)}
           {select('Day', 'meal', entity.id, 'dayId', entity.dayId, dayOptions)}
           {text('Time label', 'meal', entity.id, 'timeLabel', entity.timeLabel)}
+          {text('Owner', 'meal', entity.id, 'owner', entity.owner)}
           {select('Location', 'meal', entity.id, 'locationId', entity.locationId, locationOptions)}
           {text('Status', 'meal', entity.id, 'status', entity.status)}
           {text('Reservation type', 'meal', entity.id, 'reservationType', entity.reservationType)}
@@ -228,7 +317,9 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
           {text('Window', 'activity', entity.id, 'window', entity.window)}
           {select('Location', 'activity', entity.id, 'locationId', entity.locationId, locationOptions)}
           {text('Status', 'activity', entity.id, 'status', entity.status)}
+          {text('Risk level', 'activity', entity.id, 'riskLevel', entity.riskLevel)}
           {textarea('Description', 'activity', entity.id, 'description', entity.description)}
+          {textarea('Fallback', 'activity', entity.id, 'backup', entity.backup)}
           {textarea('Note', 'activity', entity.id, 'note', entity.note)}
         </>
       )
@@ -240,6 +331,42 @@ export function SelectedItemEditor({ doc, days, entity, members, readOnly, onPat
           {number('Amount', 'expense', entity.id, 'amount', entity.amount)}
           {text('Payer', 'expense', entity.id, 'payer', entity.payer)}
           {text('Split', 'expense', entity.id, 'split', entity.split)}
+          <Field label="Allocation mode">
+            <select
+              aria-label="Allocation mode"
+              value={entity.allocationMode}
+              disabled={readOnly}
+              onChange={(event) => patch('expense', entity.id, {
+                allocationMode: event.target.value as EntityByType['expense']['allocationMode'],
+              })}
+              className={controlClass}
+            >
+              <option value="equal">Equal</option>
+              <option value="manual">Manual</option>
+              <option value="individual">Individual</option>
+            </select>
+          </Field>
+          {doc.families.map((family) => (
+            <Field key={family.id} label={`${family.title} allocation`}>
+              <input
+                aria-label={`${family.title} allocation`}
+                type="number"
+                min={0}
+                value={entity.allocations[family.id] ?? 0}
+                readOnly={readOnly}
+                disabled={readOnly}
+                onChange={(event) => {
+                  if (event.target.value === '') return
+                  const nextValue = Number(event.target.value)
+                  if (!Number.isFinite(nextValue) || nextValue < 0) return
+                  patch('expense', entity.id, {
+                    allocations: { ...entity.allocations, [family.id]: nextValue },
+                  })
+                }}
+                className={controlClass}
+              />
+            </Field>
+          ))}
           <label className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-[0.14em] text-[#8B949E]">
             Settled
             <input
@@ -301,3 +428,15 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 const controlClass =
   'w-full border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] font-medium text-[#C9D1D9] outline-none focus:border-[#58A6FF] disabled:cursor-default disabled:opacity-70'
+
+function readHeadcount(family: EntityByType['family']): { adults: number; kids: number } {
+  if (family.adults !== undefined || family.kids !== undefined) {
+    return { adults: family.adults || 0, kids: family.kids || 0 }
+  }
+  const match = /^(\d+) adults?, (\d+) kids?$/.exec(family.headcount || '')
+  return match ? { adults: Number(match[1]), kids: Number(match[2]) } : { adults: 0, kids: 0 }
+}
+
+function formatHeadcount(adults: number, kids: number): string {
+  return `${adults} ${adults === 1 ? 'adult' : 'adults'}, ${kids} ${kids === 1 ? 'kid' : 'kids'}`
+}

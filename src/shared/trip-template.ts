@@ -1,4 +1,5 @@
 import { createInitialTripDocument } from '../tripModel'
+import { createId } from './ids'
 import type {
   CreateGuidedTripRequest,
   FamilyEntity,
@@ -62,11 +63,13 @@ function buildTripDays(startDate: string, endDate: string): TripDay[] {
     const dateText = formatDate(date)
     const index = days.length + 1
     days.push({
-      id: `day_${dateText.replaceAll('-', '_')}`,
+      id: createId('day'),
+      type: 'day',
       date: dateText,
       title: `Day ${index}`,
       shortLabel: `${WEEKDAYS[date.getUTCDay()]} ${date.getUTCMonth() + 1}/${date.getUTCDate()}`,
       code: `D${index}`,
+      note: '',
     })
   }
 
@@ -81,18 +84,38 @@ function isHeadcountValue(value: number): boolean {
   return Number.isFinite(value) && Number.isInteger(value) && value >= 0
 }
 
-export function normalizeMemberTripCopy(document: TripDocument): TripDocument {
+function familyCounts(family: FamilyEntity): { adults?: number; kids?: number } {
+  if (family.adults !== undefined || family.kids !== undefined) {
+    return { adults: family.adults, kids: family.kids }
+  }
+  const match = /^(\d+) adults?, (\d+) kids?$/.exec(family.headcount || '')
+  return match ? { adults: Number(match[1]), kids: Number(match[2]) } : {}
+}
+
+export function normalizeTripDocumentEntityTypes(document: TripDocument): TripDocument {
   return {
     ...document,
-    families: document.families.map((family) => ({ ...family, note: repairMemberCopy(family.note) })),
-    locations: document.locations.map((location) => ({
+    days: document.days?.map((day) => ({ ...day, type: 'day' })),
+  }
+}
+
+export function normalizeMemberTripCopy(document: TripDocument): TripDocument {
+  const normalized = normalizeTripDocumentEntityTypes(document)
+  return {
+    ...normalized,
+    families: normalized.families.map((family) => ({
+      ...family,
+      ...familyCounts(family),
+      note: repairMemberCopy(family.note),
+    })),
+    locations: normalized.locations.map((location) => ({
       ...location,
       accessNote: repairMemberCopy(location.accessNote),
       directionsNote: repairMemberCopy(location.directionsNote),
       parkingNote: repairMemberCopy(location.parkingNote),
       vehicleFee: repairMemberCopy(location.vehicleFee),
     })),
-    stayItems: document.stayItems.map((item) => ({
+    stayItems: normalized.stayItems.map((item) => ({
       ...item,
       summary: repairMemberCopy(item.summary),
       note: repairMemberCopy(item.note),
@@ -122,7 +145,7 @@ export function createGuidedTripDocument(input: CreateGuidedTripRequest): TripDo
   if (input.families.length === 0) throw new Error('At least one family is required')
 
   const days = buildTripDays(input.startDate, input.endDate)
-  const families: FamilyEntity[] = input.families.map((family, index) => {
+  const families: FamilyEntity[] = input.families.map((family) => {
     const familyTitle = family.displayName.trim()
     if (!familyTitle) throw new Error('Family display name is required')
     if (!isHeadcountValue(family.adults) || !isHeadcountValue(family.kids)) {
@@ -132,7 +155,7 @@ export function createGuidedTripDocument(input: CreateGuidedTripRequest): TripDo
       throw new Error('Family headcount must include at least one person')
     }
     return {
-      id: `family_${index + 1}`,
+      id: createId('family'),
       type: 'family',
       title: familyTitle,
       name: familyTitle,
@@ -141,6 +164,8 @@ export function createGuidedTripDocument(input: CreateGuidedTripRequest): TripDo
       origin: family.origin?.trim() || 'Unspecified origin',
       arrivalDayId: days[0]?.id,
       headcount: formatHeadcount(family.adults, family.kids),
+      adults: family.adults,
+      kids: family.kids,
       plannedStopIds: [],
       taskIds: [],
       linkedEntityKeys: [],
@@ -148,13 +173,13 @@ export function createGuidedTripDocument(input: CreateGuidedTripRequest): TripDo
   })
   const basecampAddress = input.basecampAddress?.trim()
   const destination: LocationEntity = {
-    id: 'location_destination',
+    id: createId('location'),
     type: 'location',
     title: destinationName,
     category: 'destination',
   }
   const stayItems: StayItemEntity[] = [{
-    id: 'stay_basecamp',
+    id: createId('stay'),
     type: 'stayItem',
     title: `${destinationName} Basecamp`,
     category: 'basecamp',

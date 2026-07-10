@@ -140,6 +140,43 @@ describe('App guided trip day shells', () => {
     expect(firstDayButton?.className).toContain('border-[#58A6FF]')
   })
 
+  it('selects a guided day shell for right-rail editing', async () => {
+    const document = createBlankGuidedDocument()
+    document.selectedPage = 'itinerary'
+
+    await renderEditableDocument(document)
+    const firstDayButton = Array.from(host?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === document.days?.[0]?.shortLabel,
+    )
+
+    await act(async () => {
+      firstDayButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(host?.querySelector<HTMLInputElement>('input[aria-label="Label"]')?.value).toBe('Day 1')
+    expect(host?.querySelector<HTMLInputElement>('input[aria-label="Date"]')?.value).toBe('2026-07-10')
+  })
+
+  it('repairs stored guided days created before day entities had a type', async () => {
+    const document = createBlankGuidedDocument()
+    document.selectedPage = 'itinerary'
+    delete (document.days?.[0] as { type?: string }).type
+
+    await renderEditableDocument(document)
+    const firstDayButton = Array.from(host?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === document.days?.[0]?.shortLabel,
+    )
+
+    await act(async () => {
+      firstDayButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(host?.querySelector<HTMLInputElement>('input[aria-label="Label"]')?.value).toBe('Day 1')
+    expect(host?.querySelector<HTMLInputElement>('input[aria-label="Date"]')?.value).toBe('2026-07-10')
+  })
+
   it('falls back to seeded day labels when the document has no days', async () => {
     const document = createTripFromTemplate({ id: 'trip_seed', title: 'Seed Trip' })
     document.selectedPage = 'itinerary'
@@ -151,6 +188,29 @@ describe('App guided trip day shells', () => {
 
     expect(host?.textContent).toContain('Thu 4/09')
     expect(host?.textContent).toContain('Transit Day')
+  })
+
+  it('renders the guided basecamp on the stay page', async () => {
+    const document = createGuidedTripDocument({
+      title: 'Japan Summer 2026',
+      startDate: '2026-07-10',
+      endDate: '2026-07-12',
+      destinationName: 'Tokyo',
+      basecampAddress: '1 Chome Marunouchi',
+      families: [{ displayName: 'Park Household', origin: 'Seoul', adults: 2, kids: 1 }],
+    })
+    document.selectedPage = 'stay'
+    document.selection = { type: 'stayItem', id: document.stayItems[0]!.id }
+
+    await act(async () => {
+      root?.render(<App initialServiceDocument={document} />)
+      await Promise.resolve()
+    })
+
+    expect(host?.textContent).toContain('Tokyo Basecamp')
+    expect(host?.textContent).toContain('1 Chome Marunouchi')
+    expect(host?.textContent).toContain('Basecamp Intel')
+    expect(host?.textContent).not.toContain('Pine Mountain')
   })
 
   it('does not backfill seeded demo content into guided documents', async () => {
@@ -235,6 +295,8 @@ describe('App guided trip day shells', () => {
     })
 
     expect(selectedEditorTitle()?.value).toBe('New itinerary item')
+    expect(host?.textContent).toContain('Fri 7/10 12:00 AM')
+    expect(host?.textContent).not.toContain('Thu 4/09 12:00 AM')
   })
 
   it('adds and selects a meal from the blank meals page', async () => {
@@ -282,6 +344,40 @@ describe('App guided trip day shells', () => {
     expect(selectedEditorTitle()?.value).toBe('New expense')
   })
 
+  it('keeps an uncommitted amount draft when another expense field updates', async () => {
+    const document = createBlankGuidedDocument()
+    document.selectedPage = 'expenses'
+    document.expenses = [{
+      id: 'expense_transfer',
+      type: 'expense',
+      title: 'Airport transfer',
+      payer: document.families[0]!.title,
+      amount: 0,
+      split: 'Equal split',
+      allocationMode: 'equal',
+      allocations: {},
+      settled: false,
+    }]
+    document.selection = { type: 'expense', id: 'expense_transfer' }
+
+    await renderEditableDocument(document)
+    const amountInput = host?.querySelector<HTMLInputElement>('input[placeholder="0"]')
+    const payerSelect = Array.from(host?.querySelectorAll('select') ?? []).find((select) => (
+      Array.from(select.options).some((option) => option.textContent === 'Unassigned')
+    ))
+
+    await act(async () => {
+      setNativeInputValue(amountInput!, '120')
+      amountInput?.dispatchEvent(new Event('input', { bubbles: true }))
+      payerSelect!.value = 'Unassigned'
+      payerSelect?.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(amountInput?.value).toBe('120')
+    expect(host?.textContent).toContain('$120')
+  })
+
   it('adds and selects a route from the blank map routes state', async () => {
     const document = createBlankGuidedDocument()
     document.selectedPage = 'itinerary'
@@ -295,6 +391,33 @@ describe('App guided trip day shells', () => {
     })
 
     expect(selectedEditorTitle()?.value).toBe('New route')
+  })
+
+  it('keeps a route selectable when it has no map coordinates', async () => {
+    const document = createBlankGuidedDocument()
+    document.selectedPage = 'itinerary'
+    document.selection = { type: 'day', id: document.days![0]!.id }
+    document.routes = [{
+      id: 'route_haneda',
+      type: 'route',
+      title: 'Haneda to Tokyo',
+      familyId: document.families[0]!.id,
+      origin: 'Haneda Airport',
+      destinationLocationId: document.locations[0]!.id,
+    }]
+
+    await renderEditableDocument(document)
+    const routeButton = Array.from(host?.querySelectorAll('button') ?? []).find((button) => (
+      button.textContent?.includes('Haneda to Tokyo')
+    ))
+
+    expect(routeButton).toBeTruthy()
+    await act(async () => {
+      routeButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(selectedEditorTitle()?.value).toBe('Haneda to Tokyo')
   })
 
   it('adds and selects a task from the blank task state', async () => {
@@ -317,3 +440,8 @@ describe('App guided trip day shells', () => {
     expect(host?.textContent).toContain('New task')
   })
 })
+
+function setNativeInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+  setter?.call(input, value)
+}

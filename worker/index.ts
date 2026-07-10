@@ -6,23 +6,22 @@ import type { CreateGuidedTripRequest } from '../src/shared/trip-types'
 import { buildGoogleAuthUrl, clearOauthNextCookie, clearOauthStateCookie, clearSessionCookie, exchangeGoogleCode, hashToken, oauthNextCookie, oauthStateCookie, sessionCookie, verifyGoogleIdToken } from './auth'
 import {
   archiveTrip,
-  claimActiveInvite,
+  claimInviteAndCreateMembership,
   createInvite,
-  createMembership,
   createSession,
-  createTrip,
+  createTripWithOwnerAndInitialSnapshot,
   disableShareLinks,
   findActiveInvite,
   findActiveShareLink,
   findMembership,
   findSessionUser,
   getTripAccess,
-  insertSnapshot,
   listTripMembers,
   listVisibleTrips,
   loadHydratedTripSnapshot,
   loadHydratedTripSnapshotWithVersion,
   rotateShareLink,
+  revokeSession,
   upsertGoogleUser,
 } from './db'
 import type { Env } from './env'
@@ -339,6 +338,10 @@ const worker = {
     }
 
     if (request.method === 'POST' && path === '/api/auth/logout') {
+      const token = parseCookie(request.headers.get('cookie'), env.SESSION_COOKIE_NAME)
+      if (token) {
+        await revokeSession(env.DB, await hashToken(token, env.SESSION_SECRET))
+      }
       return jsonOk({ loggedOut: true }, {
         headers: { 'set-cookie': clearSessionCookie(env.SESSION_COOKIE_NAME, cookieOptions(request)) },
       })
@@ -380,26 +383,14 @@ const worker = {
       const tripId = createId('trip')
       const snapshotId = createId('snapshot')
       const document = { ...createGuidedTripDocument(input), id: tripId }
-      await createTrip(env.DB, {
-        id: tripId,
+      await createTripWithOwnerAndInitialSnapshot(env.DB, {
+        tripId,
         title,
         slug: slugify(title, tripId),
         ownerUserId: user.id,
-        now: createdAt,
-      })
-      await createMembership(env.DB, {
-        tripId,
-        userId: user.id,
-        role: 'owner',
-        createdAt,
-      })
-      await insertSnapshot(env.DB, {
-        id: snapshotId,
-        tripId,
-        version: 0,
+        snapshotId,
         document,
-        userId: user.id,
-        createdAt,
+        now: createdAt,
       })
 
       return jsonOk({ trip: { id: tripId, title, role: 'owner', currentVersion: 0 } }, { status: 201 })
@@ -482,19 +473,12 @@ const worker = {
         return jsonError(409, 'conflict', 'User is already a trip member')
       }
 
-      const claimedInvite = await claimActiveInvite(env.DB, {
+      const claimedInvite = await claimInviteAndCreateMembership(env.DB, {
         tokenHash,
         userId: user.id,
         now: acceptedAt,
       })
       if (!claimedInvite) return jsonError(404, 'not_found', 'Invite not found')
-
-      await createMembership(env.DB, {
-        tripId: claimedInvite.trip_id,
-        userId: user.id,
-        role: claimedInvite.role,
-        createdAt: acceptedAt,
-      })
 
       return jsonOk({ tripId: claimedInvite.trip_id, role: claimedInvite.role })
     }

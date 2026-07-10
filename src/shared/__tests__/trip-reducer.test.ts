@@ -95,6 +95,40 @@ describe('applyTripEvent', () => {
     expect(applyTripEvent(doc, event).tasks[0]?.status).toBe('done')
   })
 
+  it('updates a guided day shell through the entity event path', () => {
+    const doc = baseDoc()
+    doc.days = [{
+      id: 'day_1',
+      type: 'day',
+      date: '2026-07-10',
+      title: 'Day 1',
+      shortLabel: 'Fri 7/10',
+      code: 'D1',
+      note: '',
+    }]
+
+    const event: TripEvent = {
+      id: 'event_day_1',
+      tripId: 'trip_1',
+      version: 2,
+      previousVersion: 1,
+      actorUserId: 'user_1',
+      createdAt: '2026-07-01T00:01:00.000Z',
+      type: 'entity.update',
+      payload: {
+        entityType: 'day',
+        id: 'day_1',
+        patch: { title: 'Arrival day', date: '2026-07-11', note: 'Meet at noon' },
+      },
+    }
+
+    expect(applyTripEvent(doc, event).days?.[0]).toEqual(expect.objectContaining({
+      title: 'Arrival day',
+      date: '2026-07-11',
+      note: 'Meet at noon',
+    }))
+  })
+
   it('clears stale route path when a route destination changes', () => {
     const doc = baseDoc()
     const origin = { lat: 0, lng: 0 }

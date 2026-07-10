@@ -63,6 +63,7 @@ type InspectorRailProps = {
   members: SelectedItemMember[]
   days: Array<Pick<TripDay, 'id' | 'title' | 'shortLabel'>>
   readOnly: boolean
+  canAssignMembers: boolean
   showCrudPanel: boolean
   onSelectEntity: (type: TripEntityType, id: string) => void
   onCreateEntity: (entityType: TripEntityType) => void
@@ -399,6 +400,7 @@ export default function InspectorRail({
   members,
   days,
   readOnly,
+  canAssignMembers,
   showCrudPanel,
   onSelectEntity,
   onCreateEntity,
@@ -417,7 +419,7 @@ export default function InspectorRail({
     if (!selection) return null
     const collectionName = COLLECTION_BY_ENTITY_TYPE[selection.type]
 
-    return collectionName ? doc[collectionName].find((item) => item.id === selection.id) || null : null
+    return collectionName ? (doc[collectionName] || []).find((item) => item.id === selection.id) || null : null
   }, [doc, selection])
 
   const [quickTask, setQuickTask] = useState('')
@@ -576,7 +578,7 @@ export default function InspectorRail({
             <h2 className="text-[15px] font-black uppercase tracking-[0.12em] text-[#C9D1D9]">
               {getEntityTitle(entity)}
             </h2>
-            <div className="mt-1 text-[11px] text-[#8B949E]">{getEntitySummary(entity)}</div>
+            <div className="mt-1 text-[11px] text-[#8B949E]">{getEntitySummary(entity, doc)}</div>
           </div>
           {status ? <StatusPill label={String(status)} /> : null}
         </div>
@@ -619,10 +621,11 @@ export default function InspectorRail({
           entity={entity}
           members={members}
           readOnly={readOnly}
+          canAssignMembers={canAssignMembers}
           onPatchEntity={onPatchEntity}
         />
 
-        {showCrudPanel ? (
+        {showCrudPanel && entity.type !== 'day' ? (
           <EntityCrudPanel
             document={doc}
             entityType={entity.type}

@@ -35,6 +35,7 @@ export type TripMemberRow = {
 }
 
 const TRIP_ENTITY_TYPES = new Set<TripEntityType>([
+  'day',
   'family',
   'location',
   'route',
@@ -195,6 +196,10 @@ export async function createSession(db: D1Database, input: {
   `).bind(input.id, input.userId, input.tokenHash, input.expiresAt, input.createdAt).run()
 }
 
+export async function revokeSession(db: D1Database, tokenHash: string): Promise<void> {
+  await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
+}
+
 export async function listVisibleTrips(db: D1Database, userId: string): Promise<TripListRow[]> {
   const result = await db.prepare(`
     SELECT trips.id, trips.title, trips.slug, trips.current_version, memberships.role, trips.created_at, trips.updated_at
@@ -250,6 +255,41 @@ export async function createMembership(db: D1Database, input: {
   `).bind(input.tripId, input.userId, input.role, input.createdAt).run()
 }
 
+export async function createTripWithOwnerAndInitialSnapshot(db: D1Database, input: {
+  tripId: string
+  title: string
+  slug: string
+  ownerUserId: string
+  snapshotId: string
+  document: TripDocument
+  now: string
+}): Promise<void> {
+  await db.batch([
+    db.prepare(`
+      INSERT INTO trips (id, title, slug, owner_user_id, current_version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, ?, ?)
+    `).bind(input.tripId, input.title, input.slug, input.ownerUserId, input.now, input.now),
+    db.prepare(`
+      INSERT INTO memberships (trip_id, user_id, role, created_at)
+      VALUES (?, ?, ?, ?)
+    `).bind(input.tripId, input.ownerUserId, 'owner', input.now),
+    db.prepare(`
+      INSERT INTO trip_snapshots (id, trip_id, version, document_json, created_by_user_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      input.snapshotId,
+      input.tripId,
+      0,
+      JSON.stringify(input.document),
+      input.ownerUserId,
+      input.now,
+    ),
+    db.prepare(`
+      UPDATE trips SET latest_snapshot_id = ? WHERE id = ?
+    `).bind(input.snapshotId, input.tripId),
+  ])
+}
+
 export async function createInvite(db: D1Database, input: {
   id: string
   tripId: string
@@ -288,6 +328,39 @@ export async function claimActiveInvite(db: D1Database, input: {
       )
     RETURNING id, trip_id, role
   `).bind(input.userId, input.now, input.tokenHash, input.now).first<{ id: string; trip_id: string; role: 'editor' }>()
+}
+
+export async function claimInviteAndCreateMembership(db: D1Database, input: {
+  tokenHash: string
+  userId: string
+  now: string
+}) {
+  const results = await db.batch([
+    db.prepare(`
+      UPDATE invites
+      SET accepted_by_user_id = ?, accepted_at = ?
+      WHERE token_hash = ? AND expires_at > ? AND accepted_at IS NULL
+        AND EXISTS (
+          SELECT 1 FROM trips
+          WHERE trips.id = invites.trip_id AND trips.archived_at IS NULL
+        )
+      RETURNING id, trip_id, role
+    `).bind(input.userId, input.now, input.tokenHash, input.now),
+    db.prepare(`
+      INSERT INTO memberships (trip_id, user_id, role, created_at)
+      SELECT invites.trip_id, ?, invites.role, ?
+      FROM invites
+      WHERE invites.token_hash = ?
+        AND invites.accepted_by_user_id = ?
+        AND invites.accepted_at = ?
+        AND EXISTS (
+          SELECT 1 FROM trips
+          WHERE trips.id = invites.trip_id AND trips.archived_at IS NULL
+        )
+    `).bind(input.userId, input.now, input.tokenHash, input.userId, input.now),
+  ]) as Array<D1Result<{ id: string; trip_id: string; role: 'editor' }>>
+
+  return results[0]?.results?.[0] ?? null
 }
 
 export async function disableShareLinks(db: D1Database, tripId: string, now: string): Promise<void> {
@@ -674,6 +747,12 @@ const BASE_FIELD_VALIDATORS: Record<string, ValueValidator> = {
 }
 
 const ENTITY_FIELD_VALIDATORS: Record<TripEntityType, Record<string, ValueValidator>> = {
+  day: {
+    ...BASE_FIELD_VALIDATORS,
+    date: isString,
+    shortLabel: isString,
+    code: isString,
+  },
   family: {
     ...BASE_FIELD_VALIDATORS,
     origin: isString,
@@ -685,6 +764,10 @@ const ENTITY_FIELD_VALIDATORS: Record<TripEntityType, Record<string, ValueValida
     eta: isString,
     driveTime: isString,
     headcount: isString,
+    adults: isFiniteNumber,
+    kids: isFiniteNumber,
+    assignedUserId: isStringOrNull,
+    assignedUserEmail: isStringOrNull,
     vehicle: isString,
     vehicleLabel: isString,
     responsibility: isString,
@@ -697,19 +780,38 @@ const ENTITY_FIELD_VALIDATORS: Record<TripEntityType, Record<string, ValueValida
     category: isString,
     address: isString,
     coordinates: isCoordinates,
+    checkIn: isStringOrNull,
+    checkOut: isStringOrNull,
+    reservationNote: isStringOrNull,
     accessNote: isStringOrNull,
     directionsNote: isStringOrNull,
     parkingNote: isStringOrNull,
     lockNote: isStringOrNull,
     wifiNetwork: isStringOrNull,
     wifiPassword: isStringOrNull,
+    hostName: isStringOrNull,
+    coHostName: isStringOrNull,
+    guestSummary: isStringOrNull,
+    confirmationCode: isStringOrNull,
+    vehicleFee: isStringOrNull,
+    manualUrl: isStringOrNull,
     externalUrl: isStringOrNull,
     websiteUrl: isStringOrNull,
     phoneNumber: isStringOrNull,
+    stopType: isString,
+    placesQuery: isString,
+    placeId: isStringOrNull,
+    rating: isFiniteNumber,
+    userRatingsTotal: isFiniteNumber,
+    openingHours: isStringArray,
+    photos: isLocationPhotoArray,
+    livePhotos: isLocationMediaArray,
+    basecampDrive: isBasecampDrive,
   },
   route: {
     ...BASE_FIELD_VALIDATORS,
     familyId: isString,
+    origin: isString,
     tone: isString,
     dashed: isBoolean,
     originCoordinates: isCoordinates,
@@ -760,6 +862,20 @@ const ENTITY_FIELD_VALIDATORS: Record<TripEntityType, Record<string, ValueValida
     ...BASE_FIELD_VALIDATORS,
     category: isString,
     locationId: isStringOrNull,
+    address: isString,
+    checkIn: isStringOrNull,
+    checkOut: isStringOrNull,
+    confirmationCode: isStringOrNull,
+    accessNote: isStringOrNull,
+    parkingNote: isStringOrNull,
+    directionsNote: isStringOrNull,
+    lockNote: isStringOrNull,
+    wifiNetwork: isStringOrNull,
+    wifiPassword: isStringOrNull,
+    hostName: isStringOrNull,
+    coHostName: isStringOrNull,
+    guestSummary: isStringOrNull,
+    reservationNote: isStringOrNull,
   },
   expense: {
     ...BASE_FIELD_VALIDATORS,
@@ -778,6 +894,7 @@ const ENTITY_FIELD_VALIDATORS: Record<TripEntityType, Record<string, ValueValida
 }
 
 const REQUIRED_ENTITY_FIELDS: Record<TripEntityType, readonly string[]> = {
+  day: ['id', 'type', 'title', 'date', 'shortLabel', 'code'],
   family: ['id', 'type', 'title'],
   location: ['id', 'type', 'title', 'category'],
   route: ['id', 'type', 'title'],
@@ -813,9 +930,6 @@ function isValidEntityShape(entityType: TripEntityType, values: JsonObject): boo
   for (const [key, value] of Object.entries(values)) {
     const validator = validators[key]
     if (!validator) {
-      if (entityType === 'location') {
-        continue
-      }
       return false
     }
     if (!validator(value)) {
@@ -832,6 +946,34 @@ function isCoordinates(value: JsonValue): boolean {
 
 function isCoordinatesArray(value: JsonValue): boolean {
   return Array.isArray(value) && value.every(isCoordinates)
+}
+
+function isLocationPhotoArray(value: JsonValue): boolean {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string' || isLocationMedia(item))
+}
+
+function isLocationMediaArray(value: JsonValue): boolean {
+  return Array.isArray(value) && value.every(isLocationMedia)
+}
+
+function isLocationMedia(value: JsonValue): boolean {
+  if (!isJsonObject(value)) return false
+  const validators: Record<string, ValueValidator> = {
+    id: isString,
+    label: isString,
+    imageUrl: isString,
+    sourceUrl: isStringOrNull,
+  }
+  return Object.entries(value).every(([key, item]) => Boolean(validators[key]?.(item)))
+}
+
+function isBasecampDrive(value: JsonValue): boolean {
+  if (!isJsonObject(value)) return false
+  const validators: Record<string, ValueValidator> = {
+    durationText: isString,
+    distanceText: isString,
+  }
+  return Object.entries(value).every(([key, item]) => Boolean(validators[key]?.(item)))
 }
 
 function isSimulationMilestones(value: JsonValue): boolean {

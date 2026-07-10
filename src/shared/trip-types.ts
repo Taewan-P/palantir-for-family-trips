@@ -1,6 +1,7 @@
 import type { JsonObject, JsonValue } from './json'
 
 export type TripEntityType =
+  | 'day'
   | 'family'
   | 'location'
   | 'route'
@@ -22,14 +23,6 @@ export type Coordinates = JsonObject & {
 }
 
 export type TripTemplateKind = 'seeded' | 'guided'
-
-export type TripDay = {
-  id: string
-  date: string
-  title: string
-  shortLabel: string
-  code: string
-}
 
 export type GuidedTripFamilyInput = {
   displayName: string
@@ -94,6 +87,14 @@ export type BaseEntity = {
   lastEditedAt?: string
 }
 
+export type TripDay = BaseEntity & {
+  type: 'day'
+  title: string
+  date: string
+  shortLabel: string
+  code: string
+}
+
 export type FamilyEntity = BaseEntity & {
   type: 'family'
   title: string
@@ -108,6 +109,8 @@ export type FamilyEntity = BaseEntity & {
   eta?: string
   driveTime?: string
   headcount?: string
+  adults?: number
+  kids?: number
   vehicle?: string
   vehicleLabel?: string
   responsibility?: string
@@ -156,6 +159,7 @@ export type RouteEntity = BaseEntity & {
   title: string
   dayId?: string
   familyId?: string
+  origin?: string
   tone?: string
   dashed?: boolean
   originCoordinates?: Coordinates
@@ -236,6 +240,7 @@ export type TaskEntity = BaseEntity & {
 }
 
 export type TripEntity =
+  | TripDay
   | FamilyEntity
   | LocationEntity
   | RouteEntity
@@ -247,6 +252,7 @@ export type TripEntity =
   | TaskEntity
 
 export type EntityByType = {
+  day: TripDay
   family: FamilyEntity
   location: LocationEntity
   route: RouteEntity
@@ -298,6 +304,7 @@ export type TripDocument = {
 }
 
 export type TripCollectionName =
+  | 'days'
   | 'families'
   | 'locations'
   | 'routes'
@@ -309,6 +316,7 @@ export type TripCollectionName =
   | 'tasks'
 
 export const COLLECTION_BY_ENTITY_TYPE: Record<TripEntityType, TripCollectionName> = {
+  day: 'days',
   family: 'families',
   location: 'locations',
   route: 'routes',

@@ -18,8 +18,8 @@ import type {
   TripEntityType,
 } from './shared/trip-types'
 
-export type TripDayShell = Pick<TripDay, 'id' | 'title' | 'shortLabel'> &
-  Partial<Pick<TripDay, 'date' | 'code'>> & {
+export type TripDayShell = Pick<TripDay, 'id' | 'type' | 'title' | 'shortLabel'> &
+  Partial<Pick<TripDay, 'date' | 'code' | 'note'>> & {
     weather: string
     temperature: string
     caution: string
@@ -68,6 +68,7 @@ function getEntityRouteId(entity: TripEntity): string | null {
 
 function toTripDayShell(day: TripDay | (typeof DAYS)[number]): TripDayShell {
   return {
+    type: 'day',
     weather: 'Forecast pending',
     temperature: '--',
     caution: 'Low',
@@ -211,6 +212,8 @@ function isFamilyEntity(value: unknown): value is FamilyEntity {
     && isOptionalString(value, 'eta')
     && isOptionalString(value, 'driveTime')
     && isOptionalString(value, 'headcount')
+    && isOptionalNumber(value, 'adults')
+    && isOptionalNumber(value, 'kids')
     && isOptionalString(value, 'vehicle')
     && isOptionalString(value, 'vehicleLabel')
     && isOptionalString(value, 'responsibility')
@@ -240,6 +243,7 @@ function isRouteEntity(value: unknown): value is RouteEntity {
   return hasBaseEntityFields(value, 'route')
     && typeof value.title === 'string'
     && isOptionalString(value, 'familyId')
+    && isOptionalString(value, 'origin')
     && isOptionalString(value, 'tone')
     && isOptionalBoolean(value, 'dashed')
     && isOptionalCoordinates(value, 'originCoordinates')
@@ -344,10 +348,12 @@ function isTripTemplateKind(value: unknown): value is NonNullable<TripDocument['
 function isTripDay(value: unknown): value is TripDay {
   return isLegacyState(value)
     && typeof value.id === 'string'
+    && (value.type === undefined || value.type === 'day')
     && typeof value.date === 'string'
     && typeof value.title === 'string'
     && typeof value.shortLabel === 'string'
     && typeof value.code === 'string'
+    && isOptionalString(value, 'note')
 }
 
 function hasTripDocumentSnapshotEnvelope(value: unknown): value is TripDocumentSnapshotEnvelope {
@@ -380,7 +386,9 @@ function normalizeTripDocumentSnapshot(value: unknown): TripDocument | null {
   const seeded = createInitialTripDocument()
   const templateKind = isTripTemplateKind(value.templateKind) ? value.templateKind : undefined
   const isGuided = templateKind === 'guided'
-  const days = Array.isArray(value.days) ? value.days.filter(isTripDay) : undefined
+  const days = Array.isArray(value.days)
+    ? value.days.filter(isTripDay).map((day) => ({ ...day, type: 'day' as const }))
+    : undefined
   const normalized: TripDocument = {
     ...seeded,
     ...(typeof value.id === 'string' ? { id: value.id } : {}),
@@ -407,6 +415,7 @@ function normalizeTripDocumentSnapshot(value: unknown): TripDocument | null {
 }
 
 export const COLLECTION_BY_TYPE: Record<TripEntityType, TripCollectionName> = {
+  day: 'days',
   family: 'families',
   location: 'locations',
   route: 'routes',
@@ -419,6 +428,7 @@ export const COLLECTION_BY_TYPE: Record<TripEntityType, TripCollectionName> = {
 }
 
 export const ENTITY_PAGE = {
+  day: 'itinerary',
   family: 'families',
   location: 'stay',
   route: 'itinerary',
@@ -2873,15 +2883,26 @@ export function getLinkedEntities(doc: TripDocument, entity: TripEntity | null |
   return linked
 }
 
-export function getEntitySummary(entity: TripEntity | null | undefined) {
+export function getEntitySummary(
+  entity: TripEntity | null | undefined,
+  document?: Pick<TripDocument, 'days'> | null,
+) {
   if (!entity) return ''
+  if (entity.type === 'day') return entity.date
   if (entity.type === 'family') return `${entity.origin} inbound, ${entity.headcount}`
-  if (entity.type === 'meal') return `${getDayMeta(entity.dayId)?.shortLabel || entity.dayId} at ${entity.timeLabel}`
+  if (entity.type === 'meal') {
+    const day = entity.dayId
+      ? document
+        ? getTripDayMeta(document, entity.dayId)
+        : getDayMeta(entity.dayId)
+      : null
+    return `${day?.shortLabel || entity.dayId || 'Unscheduled'} at ${entity.timeLabel}`
+  }
   if (entity.type === 'activity') return entity.window
   if (entity.type === 'location') return entity.address
   if (entity.type === 'stayItem') return entity.category
   if (entity.type === 'expense') return `${entity.payer} · $${entity.amount}`
-  if (entity.type === 'itineraryItem') return getSlotLabel(entity.startSlot)
+  if (entity.type === 'itineraryItem') return getSlotLabel(entity.startSlot, document)
   if (entity.type === 'task') return entity.status
   return ''
 }
@@ -2889,7 +2910,7 @@ export function getEntitySummary(entity: TripEntity | null | undefined) {
 export function getSearchResults(doc: TripDocument, query: string): (TripEntity & { searchText: string })[] {
   if (!query?.trim()) return []
   const normalized = query.trim().toLowerCase()
-  const types: TripEntityType[] = ['family', 'meal', 'activity', 'location', 'stayItem', 'expense', 'itineraryItem', 'task']
+  const types: TripEntityType[] = ['day', 'family', 'meal', 'activity', 'location', 'stayItem', 'expense', 'itineraryItem', 'task']
   const items = types.flatMap((type) =>
     getCollection(doc, type).map((item) => {
       const searchable = item as TripEntity & { address?: string; description?: string; backup?: string }
@@ -3133,7 +3154,7 @@ export function projectTripDocument(doc: TripDocument, visibilityMode = 'public'
 export function getSelectablePageEntities(doc: TripDocument, pageId: string): TripEntity[] {
   switch (pageId) {
     case 'itinerary':
-      return [...doc.activities, ...doc.itineraryItems]
+      return [...(doc.days || []), ...doc.routes, ...doc.activities, ...doc.itineraryItems]
     case 'stay':
       return [...doc.stayItems, ...doc.locations.filter((location) => location.category === 'stay')]
     case 'meals':

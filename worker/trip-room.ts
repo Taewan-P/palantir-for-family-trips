@@ -16,10 +16,14 @@ import { parseCookie } from './http'
 
 const SNAPSHOT_INTERVAL = 25
 
-export type TripCommand = Omit<TripEvent, 'id' | 'tripId' | 'version' | 'previousVersion' | 'actorUserId' | 'createdAt'> & {
-  id: string
-  baseVersion: number
-}
+type TripCommandFor<Event extends TripEvent> = Event extends TripEvent
+  ? Omit<Event, 'id' | 'tripId' | 'version' | 'previousVersion' | 'actorUserId' | 'createdAt'> & {
+      id: string
+      baseVersion: number
+    }
+  : never
+
+export type TripCommand = TripCommandFor<TripEvent>
 
 export type AcceptCommandInput = {
   tripId: string
@@ -129,7 +133,7 @@ export class TripRoom implements DurableObject {
     }
 
     const access = await getTripAccess(this.env.DB, tripId, actorUserId)
-    if (!access.exists || !canWriteTrip(access.role)) {
+    if (!access.exists || !canRunTripCommand(access.role, command)) {
       this.send(socket, { type: 'event.rejected', reason: 'forbidden' })
       return
     }
@@ -243,4 +247,17 @@ function isTripEventType(type: string): type is TripEvent['type'] {
 
 function canWriteTrip(role: 'owner' | 'editor' | null): boolean {
   return role === 'owner' || role === 'editor'
+}
+
+function canRunTripCommand(role: 'owner' | 'editor' | null, command: TripCommand): boolean {
+  if (!canWriteTrip(role)) return false
+  if (
+    role !== 'owner'
+    && command.type === 'entity.update'
+    && command.payload.entityType === 'family'
+    && ('assignedUserId' in command.payload.patch || 'assignedUserEmail' in command.payload.patch)
+  ) {
+    return false
+  }
+  return true
 }

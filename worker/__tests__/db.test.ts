@@ -1,4 +1,4 @@
-import { claimActiveInvite, commitTripEvent, decodeTripEventRow, encodeTripEventPayload, findActiveInvite, findActiveShareLink, getTripAccess, loadHydratedTripSnapshot, rotateShareLink } from '../db'
+import { claimActiveInvite, claimInviteAndCreateMembership, commitTripEvent, createTripWithOwnerAndInitialSnapshot, decodeTripEventRow, encodeTripEventPayload, findActiveInvite, findActiveShareLink, getTripAccess, loadHydratedTripSnapshot, rotateShareLink } from '../db'
 import { replayTripEvents } from '../../src/shared/trip-reducer'
 import type { TripDocument } from '../../src/shared/trip-types'
 
@@ -80,6 +80,62 @@ describe('db event codecs', () => {
       ['share_2', 'trip_1', 'token_hash', 'user_1', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'],
     ])
     expect(batched).toHaveLength(2)
+  })
+
+  it('creates a trip, owner membership, initial snapshot, and latest snapshot pointer in one D1 batch', async () => {
+    const calls: unknown[][] = []
+    const batched: unknown[] = []
+    const document = baseDoc()
+
+    await createTripWithOwnerAndInitialSnapshot(dbWithBatch(calls, batched), {
+      tripId: 'trip_1',
+      title: 'Trip',
+      slug: 'trip-trip_1',
+      ownerUserId: 'user_1',
+      snapshotId: 'snapshot_1',
+      document,
+      now: '2026-07-01T00:00:00.000Z',
+    })
+
+    expect(calls).toEqual([
+      ['trip_1', 'Trip', 'trip-trip_1', 'user_1', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'],
+      ['trip_1', 'user_1', 'owner', '2026-07-01T00:00:00.000Z'],
+      ['snapshot_1', 'trip_1', 0, JSON.stringify(document), 'user_1', '2026-07-01T00:00:00.000Z'],
+      ['snapshot_1', 'trip_1'],
+    ])
+    expect(batched).toHaveLength(4)
+  })
+
+  it('claims an active invite and creates editor membership in one D1 batch', async () => {
+    const calls: unknown[][] = []
+    const batched: unknown[] = []
+    const claimed = { id: 'invite_1', trip_id: 'trip_1', role: 'editor' }
+
+    await expect(claimInviteAndCreateMembership(dbWithBatch(calls, batched, [
+      { results: [claimed] },
+      { meta: { changes: 1 } },
+    ]), {
+      tokenHash: 'token_hash',
+      userId: 'user_1',
+      now: '2026-07-01T00:00:00.000Z',
+    })).resolves.toEqual(claimed)
+
+    expect(calls).toEqual([
+      ['user_1', '2026-07-01T00:00:00.000Z', 'token_hash', '2026-07-01T00:00:00.000Z'],
+      ['user_1', '2026-07-01T00:00:00.000Z', 'token_hash', 'user_1', '2026-07-01T00:00:00.000Z'],
+    ])
+    expect(batched).toHaveLength(2)
+  })
+
+  it('returns no invite when the atomic invite claim does not update a row', async () => {
+    await expect(claimInviteAndCreateMembership(dbWithBatch([], [], [
+      { results: [] },
+      { meta: { changes: 0 } },
+    ]), {
+      tokenHash: 'token_hash',
+      userId: 'user_1',
+      now: '2026-07-01T00:00:00.000Z',
+    })).resolves.toBeNull()
   })
 
   it('commits accepted events and snapshots in one D1 batch', async () => {
@@ -276,6 +332,7 @@ describe('db event codecs', () => {
       { entityType: 'task', patch: '{"status":false}' },
       { entityType: 'expense', patch: '{"amount":"42"}' },
       { entityType: 'task', patch: '{"mystery":true}' },
+      { entityType: 'location', patch: '{"privateDoorCode":"4455"}' },
     ]) {
       expect(() => decodeTripEventRow({
         id: 'event_1',
@@ -287,6 +344,26 @@ describe('db event codecs', () => {
         payload_json: `{"entityType":"${entityType}","id":"task_1","patch":${patch}}`,
         created_at: '2026-07-01T00:00:00.000Z',
       })).toThrow('Trip event event_1 payload does not match entity.update')
+    }
+  })
+
+  it('accepts day, family assignment, stay access, and route origin patches', () => {
+    for (const { entityType, id, patch } of [
+      { entityType: 'day', id: 'day_1', patch: { title: 'Arrival day', date: '2026-07-11', note: 'Meet at noon' } },
+      { entityType: 'family', id: 'family_1', patch: { adults: 3, kids: 1, assignedUserId: 'user_2', assignedUserEmail: 'editor@example.com' } },
+      { entityType: 'stayItem', id: 'stay_1', patch: { address: '1 Basecamp Way', accessNote: 'Gate 2', parkingNote: 'Driveway' } },
+      { entityType: 'route', id: 'route_1', patch: { origin: 'Seoul Station', stopLocationIds: ['loc_1'] } },
+    ]) {
+      expect(() => decodeTripEventRow({
+        id: `event_${entityType}`,
+        trip_id: 'trip_1',
+        version: 1,
+        previous_version: 0,
+        actor_user_id: 'user_1',
+        type: 'entity.update',
+        payload_json: JSON.stringify({ entityType, id, patch }),
+        created_at: '2026-07-01T00:00:00.000Z',
+      })).not.toThrow()
     }
   })
 
@@ -375,7 +452,7 @@ function dbWithResults(results: Array<{ first?: unknown; all?: unknown[] }>, cal
   } as unknown as D1Database
 }
 
-function dbWithBatch(calls: unknown[][], batched: unknown[]): D1Database {
+function dbWithBatch(calls: unknown[][], batched: unknown[], results: unknown[] = []): D1Database {
   return {
     prepare() {
       return {
@@ -388,7 +465,7 @@ function dbWithBatch(calls: unknown[][], batched: unknown[]): D1Database {
     },
     async batch(statements: unknown[]) {
       batched.push(...statements)
-      return []
+      return results
     },
   } as unknown as D1Database
 }

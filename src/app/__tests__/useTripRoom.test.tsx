@@ -208,7 +208,7 @@ describe('useTripRoom', () => {
     expect(JSON.parse(socket.sent[1] ?? '{}')).toMatchObject({ id: 'cmd_2', baseVersion: 8 })
   })
 
-  it('retries a stale in-flight command after applying the current room snapshot', () => {
+  it('drops a stale in-flight command after applying the current room snapshot', () => {
     act(() => root?.render(<Probe tripId="trip_123" />))
     const socket = sockets[0]
     const document = tripDocument()
@@ -238,8 +238,15 @@ describe('useTripRoom', () => {
     )
 
     expect(latestState?.document?.ui.searchQuery).toBe('other editor')
+    expect(latestState?.version).toBe(8)
+    expect(socket.sent).toHaveLength(1)
+
+    act(() => {
+      latestState?.sendCommand({ id: 'cmd_2', baseVersion: 0, type: 'uiState.update', payload: { searchQuery: 'explicit' } })
+    })
+
     expect(socket.sent).toHaveLength(2)
-    expect(JSON.parse(socket.sent[1] ?? '{}')).toMatchObject({ id: 'cmd_1', baseVersion: 8 })
+    expect(JSON.parse(socket.sent[1] ?? '{}')).toMatchObject({ id: 'cmd_2', baseVersion: 8 })
   })
 })
 

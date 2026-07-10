@@ -13,11 +13,14 @@ import {
   Globe,
   Home,
   LayoutGrid,
+  List,
+  LogOut,
   Map as MapIcon,
   MapPin,
   Pause,
   Phone,
   Play,
+  Plus,
   Receipt,
   RotateCcw,
   Route,
@@ -34,11 +37,13 @@ import palantirLogo from './assets/palantir-logo.svg'
 import CommandMap from './CommandMap'
 import InspectorRail from './InspectorRail'
 import { TripSettingsPanel } from './app/TripSettingsPanel'
+import { apiPost } from './app/api-client'
+import { navigate } from './app/router'
 import type { TripMember } from './app/TripWorkspace'
 import { useTripRoom, type TripRoomState } from './app/useTripRoom'
 import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
 import { createId } from './shared/ids'
-import { normalizeMemberTripCopy } from './shared/trip-template'
+import { normalizeMemberTripCopy, normalizeTripDocumentEntityTypes } from './shared/trip-template'
 import { usePersistedTripState } from './usePersistedTripState'
 import { DAYS, NAV_ITEMS, TIME_SLOTS, TRIP_META } from './tripData'
 import {
@@ -199,6 +204,7 @@ type AppProps = {
   serviceTripId?: string
   tripRole?: 'owner' | 'editor'
   serviceTripMembers?: TripMember[]
+  viewerUserId?: string
   initialServiceDocument?: TripDocument
   readOnly?: boolean
 }
@@ -299,6 +305,19 @@ function routeUsesLocationId(route: RouteEntity, locationId: string): boolean {
 }
 
 function createDefaultEntity(entityType: TripEntityType): TripEntity {
+  if (entityType === 'day') {
+    const date = new Date().toISOString().slice(0, 10)
+    return {
+      id: createId('day'),
+      type: 'day',
+      title: 'New day',
+      shortLabel: 'New day',
+      code: 'DAY',
+      date,
+      note: '',
+    }
+  }
+
   if (entityType === 'family') {
     const entity: FamilyEntity = {
       id: createId('family'),
@@ -455,6 +474,8 @@ function pageForEntityType(entityType: TripEntityType): PageId {
 
 function appendEntityToDocument(document: TripDocument, entity: TripEntity): TripDocument {
   switch (entity.type) {
+    case 'day':
+      return { ...document, days: [...(document.days || []), entity] }
     case 'family':
       return { ...document, families: [...document.families, entity] }
     case 'location':
@@ -480,6 +501,8 @@ function appendEntityToDocument(document: TripDocument, entity: TripEntity): Tri
 
 function removeEntityFromDocument(document: TripDocument, entityType: TripEntityType, id: string): TripDocument {
   switch (entityType) {
+    case 'day':
+      return { ...document, days: (document.days || []).filter((entity) => entity.id !== id) }
     case 'family':
       return { ...document, families: document.families.filter((entity) => entity.id !== id) }
     case 'location':
@@ -505,6 +528,7 @@ function removeEntityFromDocument(document: TripDocument, entityType: TripEntity
 
 function allTripEntities(document: TripDocument): TripEntity[] {
   return [
+    ...(document.days || []),
     ...document.families,
     ...document.locations,
     ...document.routes,
@@ -518,6 +542,7 @@ function allTripEntities(document: TripDocument): TripEntity[] {
 }
 
 function canDeleteEntity(document: TripDocument, entityType: TripEntityType, id: string): boolean {
+  if (entityType === 'day') return false
   const entityKey = makeEntityKey(entityType, id)
 
   return !allTripEntities(document).some((entity) => {
@@ -1157,7 +1182,7 @@ function buildOperationGateContext(doc: TripDocument, gate: TimelineGate | null,
         ? 'All families'
         : formatNameList(families.map((family) => family.title))
   const targetTitle = targetLocation?.title || gate.title
-  const targetMeta = targetLocation ? getEntitySummary(targetLocation) : primaryItem.status || gate.subtitle
+  const targetMeta = targetLocation ? getEntitySummary(targetLocation, doc) : primaryItem.status || gate.subtitle
   const routeCount = relatedRoutes.length || Math.max(relatedTravelItems.length, 1)
   const deploymentLabel = targetLocation
     ? `${participantLabel} deploying to ${targetTitle}.`
@@ -1357,6 +1382,8 @@ function AppShell({
   families,
   activeFamily,
   onSetActiveFamily,
+  onOpenTrips,
+  onSignOut,
   readOnly,
   syncStatus,
   children,
@@ -1370,6 +1397,8 @@ function AppShell({
   families: FamilyEntity[]
   activeFamily: FamilyEntity | null
   onSetActiveFamily: (familyId: string) => void
+  onOpenTrips: () => void
+  onSignOut: () => void
   readOnly: boolean
   syncStatus: SyncStatusView
   children: ReactNode
@@ -1489,7 +1518,7 @@ function AppShell({
                     >
                       <div>
                         <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
-                        <div className="text-[10px] text-[#8B949E]">{getEntitySummary(item)}</div>
+                        <div className="text-[10px] text-[#8B949E]">{getEntitySummary(item, doc)}</div>
                       </div>
                       <div className="text-[9px] font-black uppercase tracking-wider text-[#58A6FF]">
                         {item.type}
@@ -1499,6 +1528,28 @@ function AppShell({
                 </div>
               ) : null}
             </div>
+            {!readOnly ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="All trips"
+                  title="All trips"
+                  onClick={onOpenTrips}
+                  className="inline-flex h-8 w-8 items-center justify-center border border-[#30363D] bg-[#0d1117] text-[#8B949E] transition-colors hover:border-[#58A6FF]/50 hover:text-[#58A6FF]"
+                >
+                  <List size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Sign out"
+                  title="Sign out"
+                  onClick={onSignOut}
+                  className="inline-flex h-8 w-8 items-center justify-center border border-[#30363D] bg-[#0d1117] text-[#8B949E] transition-colors hover:border-[#F85149]/50 hover:text-[#F85149]"
+                >
+                  <LogOut size={14} />
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -1577,7 +1628,7 @@ function FamilyList({ doc, selection, onSelectEntity }: { doc: TripDocument; sel
   )
 }
 
-function ScenarioControls({ doc, days, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor }: { doc: TripDocument; days: Day[]; cursorSlot?: number; onSetCursor: (cursorSlot: number) => void }) {
+function ScenarioControls({ doc, days, selection, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor, onSelectDay }: { doc: TripDocument; days: Day[]; selection: EntitySelection; cursorSlot?: number; onSetCursor: (cursorSlot: number) => void; onSelectDay: (dayId: string) => void }) {
   const clampedCursor = clampTimelineCursor(cursorSlot, days.length)
   const cursorDayIndex = Math.min(Math.max(Math.floor(clampedCursor / TIME_SLOTS.length), 0), days.length - 1)
   const selectedDay = days[cursorDayIndex] || days[0]
@@ -1607,10 +1658,13 @@ function ScenarioControls({ doc, days, cursorSlot = doc.ui.timeline.cursorSlot, 
           <button
             key={day.id}
             type="button"
-            onClick={() => onSetCursor(dayIndex * TIME_SLOTS.length + selectedHour / TIMELINE_HOURS_PER_SLOT)}
+            onClick={() => {
+              onSetCursor(dayIndex * TIME_SLOTS.length + selectedHour / TIMELINE_HOURS_PER_SLOT)
+              onSelectDay(day.id)
+            }}
             className={cn(
               'border px-2.5 py-1 text-[9px] font-black uppercase tracking-wider',
-              day.id === selectedDay?.id
+              day.id === selectedDay?.id || (selection.type === 'day' && selection.id === day.id)
                 ? 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#58A6FF]'
                 : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
             )}
@@ -1643,7 +1697,7 @@ function ScenarioControls({ doc, days, cursorSlot = doc.ui.timeline.cursorSlot, 
   )
 }
 
-function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: DailyBriefing | null; onClose: () => void; onOpenEntity: OpenEntityHandler }) {
+function DailyBriefingModal({ doc, briefing, onClose, onOpenEntity }: { doc: TripDocument; briefing: DailyBriefing | null; onClose: () => void; onOpenEntity: OpenEntityHandler }) {
   if (!briefing) return null
 
   const toneStyles: Record<string, string> = {
@@ -1672,7 +1726,7 @@ function DailyBriefingModal({ briefing, onClose, onOpenEntity }: { briefing: Dai
                 >
                   <div className="min-w-0">
                     <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
-                    <div className="mt-1 text-[10px] leading-relaxed text-[#8B949E]">{getEntitySummary(item)}</div>
+                    <div className="mt-1 text-[10px] leading-relaxed text-[#8B949E]">{getEntitySummary(item, doc)}</div>
                   </div>
                   {status ? <StatusPill tone={status}>{status}</StatusPill> : null}
                 </button>
@@ -2061,7 +2115,7 @@ function MissionFeedTray({ items, onActivateItem }: { items: FeedItem[]; onActiv
   )
 }
 
-function SituationBoard({ context, onOpenEntity, onOpenBriefing }: { context: TimelineContext; onOpenEntity: OpenEntityHandler; onOpenBriefing: () => void }) {
+function SituationBoard({ doc, context, onOpenEntity, onOpenBriefing }: { doc: TripDocument; context: TimelineContext; onOpenEntity: OpenEntityHandler; onOpenBriefing: () => void }) {
   const sections = [
     { title: 'Live now', items: context.liveEntities, emptyLabel: 'Nothing active in this window.' },
     { title: 'Coming up', items: [...context.nextEntities, ...context.prepSoon].slice(0, 4), emptyLabel: 'No immediate follow-ups.' },
@@ -2117,7 +2171,7 @@ function SituationBoard({ context, onOpenEntity, onOpenBriefing }: { context: Ti
                   <div className="min-w-0">
                     <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
                     <div className="mt-1 text-[10px] leading-relaxed text-[#8B949E]">
-                      {getEntitySummary(item)}
+                      {getEntitySummary(item, doc)}
                     </div>
                   </div>
                   {'status' in item && item.status ? <StatusPill tone={item.status}>{item.status}</StatusPill> : null}
@@ -3199,13 +3253,20 @@ function ItineraryPage({
       <div className="grid h-full min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] overflow-hidden">
         <div className="min-h-0 overflow-y-auto border-r border-[#30363D] bg-[#0d1117]">
           <div className="space-y-4 p-4">
-            <SituationBoard context={context} onOpenEntity={onOpenEntity} onOpenBriefing={handleOpenBriefing} />
+            <SituationBoard doc={doc} context={context} onOpenEntity={onOpenEntity} onOpenBriefing={handleOpenBriefing} />
             <div>
               <SectionTitle eyebrow="Response Plans" title="Travel units" meta={`${doc.families.length} families`} />
               <FamilyList doc={doc} selection={selection} onSelectEntity={onSelectEntity} />
             </div>
             <div>
-              <ScenarioControls doc={doc} days={tripDays} cursorSlot={effectiveCursorSlot} onSetCursor={handleTimelineCursorChange} />
+              <ScenarioControls
+                doc={doc}
+                days={tripDays}
+                selection={selection}
+                cursorSlot={effectiveCursorSlot}
+                onSetCursor={handleTimelineCursorChange}
+                onSelectDay={(dayId) => onSelectEntity('day', dayId)}
+              />
             </div>
             {!doc.itineraryItems.length ? (
               <EmptyStateAction
@@ -3215,14 +3276,54 @@ function ItineraryPage({
                 onClick={() => onCreateEntity('itineraryItem', { patch: { dayId: firstDayId } })}
               />
             ) : null}
-            {!doc.routes.length ? (
+            {doc.routes.length ? (
+              <div>
+                <div className="mb-2 flex items-end justify-between gap-3">
+                  <SectionTitle eyebrow="Routes" title="Route plans" meta={`${doc.routes.length}`} />
+                  <button
+                    type="button"
+                    disabled={readOnly}
+                    onClick={() => onCreateEntity('route', { patch: { familyId: activeFamilyId || undefined } })}
+                    className="mb-3 inline-flex items-center gap-1.5 border border-[#30363D] bg-[#161b22] px-2.5 py-1.5 text-[9px] font-black uppercase text-[#C9D1D9] hover:border-[#58A6FF]/50 hover:text-[#58A6FF] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Plus size={12} />
+                    Add route
+                  </button>
+                </div>
+                <div className="overflow-hidden border border-[#30363D] bg-[#161b22]">
+                  {doc.routes.map((route) => {
+                    const destination = route.destinationLocationId
+                      ? doc.locations.find((location) => location.id === route.destinationLocationId)
+                      : null
+                    const selected = selection.type === 'route' && selection.id === route.id
+
+                    return (
+                      <button
+                        key={route.id}
+                        type="button"
+                        onClick={() => onSelectEntity('route', route.id)}
+                        className={cn(
+                          'w-full border-b border-[#30363D]/50 px-3 py-2.5 text-left last:border-b-0 hover:bg-[#1f2a34]/60',
+                          selected ? 'bg-[#24313d] shadow-[inset_3px_0_0_#58A6FF]' : '',
+                        )}
+                      >
+                        <div className="text-[10px] font-bold text-[#C9D1D9]">{route.title}</div>
+                        <div className="mt-1 text-[9px] text-[#8B949E]">
+                          {route.origin || 'Origin unset'} to {destination?.title || 'Destination unset'}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
               <EmptyStateAction
                 label="No routes planned"
                 actionLabel="Add route"
                 disabled={readOnly}
                 onClick={() => onCreateEntity('route', { patch: { familyId: activeFamilyId || undefined } })}
               />
-            ) : null}
+            )}
             <div>
               <PageNotesCard
                 title="Planner note"
@@ -3283,6 +3384,7 @@ function ItineraryPage({
       </div>
       {briefingOpen ? (
         <DailyBriefingModal
+          doc={doc}
           briefing={dailyBriefing}
           onClose={() => setBriefingOpen(false)}
           onOpenEntity={(type, id) => {
@@ -3305,8 +3407,38 @@ function ItineraryPage({
 }
 
 function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, readOnly }: CommonPageProps) {
-  const airbnb = getTypedEntityById(doc, 'location', 'pine-airbnb')
-  if (!airbnb) return null
+  const selectedStay = selection.type === 'stayItem'
+    ? getTypedEntityById(doc, 'stayItem', selection.id)
+    : null
+  const stay = selectedStay || doc.stayItems[0] || null
+  const location = (stay?.locationId ? getTypedEntityById(doc, 'location', stay.locationId) : null)
+    || getTypedEntityById(doc, 'location', 'pine-airbnb')
+    || doc.locations.find((item) => item.category === 'destination')
+    || doc.locations[0]
+    || null
+
+  if (!stay && !location) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center bg-[#0d1117] p-6 text-[11px] text-[#8B949E]">
+        No basecamp configured
+      </div>
+    )
+  }
+
+  const airbnb: LocationEntity = {
+    ...(location || {}),
+    id: location?.id || stay?.id || 'basecamp',
+    type: 'location',
+    title: stay?.title || location?.title || 'Basecamp',
+    category: location?.category || stay?.category || 'stay',
+    address: stay?.address || location?.address,
+    checkIn: stay?.checkIn || location?.checkIn,
+    checkOut: stay?.checkOut || location?.checkOut,
+    accessNote: stay?.accessNote || location?.accessNote,
+    parkingNote: stay?.parkingNote || location?.parkingNote,
+    confirmationCode: stay?.confirmationCode || location?.confirmationCode,
+    summary: stay?.summary || location?.summary,
+  }
 
   const showExternalListing = Boolean(airbnb?.externalUrl)
   const showManual = Boolean(airbnb?.manualUrl)
@@ -3315,10 +3447,12 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[minmax(380px,440px)_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
-        <SectionTitle eyebrow="Basecamp" title={airbnb?.title || 'Basecamp'} meta={TRIP_META.subtitle} />
+        <SectionTitle eyebrow="Basecamp" title={airbnb.title} meta={doc.title || TRIP_META.subtitle} />
         <SelectableCard
-          selected={selection.type === 'location' && selection.id === airbnb.id}
-          onClick={() => onSelectEntity('location', airbnb.id)}
+          selected={stay
+            ? selection.type === 'stayItem' && selection.id === stay.id
+            : selection.type === 'location' && selection.id === airbnb.id}
+          onClick={() => stay ? onSelectEntity('stayItem', stay.id) : onSelectEntity('location', airbnb.id)}
           className="mb-6 p-4"
         >
           <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-[#8B949E]">Location</div>
@@ -3385,15 +3519,19 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
                   <div className="mt-1 text-[10px] text-[#8B949E]">{airbnb.guestSummary}</div>
                 </div>
               ) : null}
-              <div className="border border-[#30363D] bg-[#0d1117] p-3">
-                <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">
-                  {isSanitizedStay ? 'Sanitized demo mode' : 'Gate fee'}
+              {airbnb.vehicleFee ? (
+                <div className="border border-[#30363D] bg-[#0d1117] p-3">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">
+                    {isSanitizedStay ? 'Sanitized stay' : 'Vehicle access'}
+                  </div>
+                  <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">{airbnb.vehicleFee}</div>
+                  {isSanitizedStay ? (
+                    <div className="mt-1 text-[10px] text-[#8B949E]">
+                      Operational access details are intentionally withheld.
+                    </div>
+                  ) : null}
                 </div>
-                <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">{airbnb.vehicleFee}</div>
-                <div className="mt-1 text-[10px] text-[#8B949E]">
-                  {isSanitizedStay ? 'Operational access details are intentionally withheld.' : 'Per vehicle at Pine Mountain Dr entrance'}
-                </div>
-              </div>
+              ) : null}
             </div>
 
             <div className="mt-4 space-y-3 border-t border-[#30363D]/50 pt-4 text-[11px] leading-relaxed text-[#8B949E]">
@@ -4039,6 +4177,7 @@ function ExpensesPage({
       : doc.expenses[0]?.id
   const activeExpense = doc.expenses.find((expense) => expense.id === activeExpenseId) || null
   const [amountDraft, setAmountDraft] = useState('')
+  const amountEditingRef = useRef(false)
   const [manualAllocationDrafts, setManualAllocationDrafts] = useState<Record<string, string>>({})
   const [customPayerDraft, setCustomPayerDraft] = useState('')
   const total = useMemo(() => doc.expenses.reduce((sum, expense) => sum + expense.amount, 0), [doc.expenses])
@@ -4069,11 +4208,24 @@ function ExpensesPage({
   const payerMode = activeExpense && payerOptions.includes(activeExpense.payer) ? activeExpense.payer : '__custom__'
 
   useEffect(() => {
-    if (!activeExpense) return
+    if (!activeExpense) {
+      setAmountDraft('')
+      return
+    }
 
-    setAmountDraft(activeExpense.amount === 0 ? '' : String(activeExpense.amount))
+    if (!amountEditingRef.current) {
+      setAmountDraft(activeExpense.amount === 0 ? '' : String(activeExpense.amount))
+    }
+  }, [activeExpense?.amount, activeExpense?.id])
+
+  useEffect(() => {
+    if (!activeExpense) {
+      setCustomPayerDraft('')
+      return
+    }
+
     setCustomPayerDraft(payerMode === '__custom__' ? activeExpense.payer || '' : '')
-  }, [activeExpense, payerMode])
+  }, [activeExpense?.id, activeExpense?.payer, payerMode])
 
   useEffect(() => {
     if (!activeExpense || activeExpense.allocationMode !== 'manual') {
@@ -4089,7 +4241,7 @@ function ExpensesPage({
         ]),
       ),
     )
-  }, [activeExpense, doc.families])
+  }, [activeExpense?.allocationMode, activeExpense?.allocations, activeExpense?.id, doc.families])
 
   const commitAmountDraft = useCallback(() => {
     if (!activeExpense) return
@@ -4187,6 +4339,7 @@ function ExpensesPage({
               <div className="font-mono text-[12px] text-[#C9D1D9]">{formatCurrency(expense.amount)}</div>
               <button
                 type="button"
+                disabled={readOnly}
                 onClick={(event) => {
                   event.stopPropagation()
                   onToggleExpenseSettled(expense.id)
@@ -4228,6 +4381,8 @@ function ExpensesPage({
                   <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense title</span>
                   <input
                     value={activeExpense.title || ''}
+                    readOnly={readOnly}
+                    disabled={readOnly}
                     onChange={(event) => onUpdateExpenseFields(activeExpense.id, { title: event.target.value })}
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
@@ -4237,6 +4392,7 @@ function ExpensesPage({
                   <div className="grid gap-2">
                     <select
                       value={payerMode}
+                      disabled={readOnly}
                       onChange={(event) => {
                         const value = event.target.value
                         if (value === '__custom__') {
@@ -4257,6 +4413,8 @@ function ExpensesPage({
                     {payerMode === '__custom__' ? (
                       <input
                         value={customPayerDraft}
+                        readOnly={readOnly}
+                        disabled={readOnly}
                         onChange={(event) => setCustomPayerDraft(event.target.value)}
                         onBlur={() => onUpdateExpenseFields(activeExpense.id, { payer: customPayerDraft.trim() || 'Unassigned' })}
                         placeholder="Custom payer label"
@@ -4270,9 +4428,21 @@ function ExpensesPage({
                   <input
                     inputMode="decimal"
                     value={amountDraft}
-                    onChange={(event) => setAmountDraft(event.target.value)}
-                    onBlur={commitAmountDraft}
-                    onFocus={(event) => event.target.select()}
+                    readOnly={readOnly}
+                    disabled={readOnly}
+                    onChange={(event) => {
+                      const value = event.target.value
+                      setAmountDraft(value)
+                      onUpdateExpenseFields(activeExpense.id, { amount: parseCurrencyInput(value) })
+                    }}
+                    onBlur={() => {
+                      amountEditingRef.current = false
+                      commitAmountDraft()
+                    }}
+                    onFocus={(event) => {
+                      amountEditingRef.current = true
+                      event.target.select()
+                    }}
                     placeholder="0"
                     className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
                   />
@@ -4281,6 +4451,7 @@ function ExpensesPage({
                   <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Settlement</span>
                   <button
                     type="button"
+                    disabled={readOnly}
                     onClick={() => onToggleExpenseSettled(activeExpense.id)}
                     className={cn(
                       'border px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-left',
@@ -4305,6 +4476,7 @@ function ExpensesPage({
                     <button
                       key={mode.id}
                       type="button"
+                      disabled={readOnly}
                       onClick={() => onSetExpenseAllocationMode(activeExpense.id, mode.id)}
                       className={cn(
                         'border px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em]',
@@ -4339,6 +4511,8 @@ function ExpensesPage({
                           <input
                             inputMode="decimal"
                             value={manualAllocationDrafts[allocation.familyId] ?? ''}
+                            readOnly={readOnly}
+                            disabled={readOnly}
                             onChange={(event) =>
                               setManualAllocationDrafts((current) => ({
                                 ...current,
@@ -4367,6 +4541,7 @@ function ExpensesPage({
                           </div>
                           <button
                             type="button"
+                            disabled={readOnly}
                             onClick={() => onResetExpenseAllocationsToEqual(activeExpense.id)}
                             className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#C9D1D9]"
                           >
@@ -4394,6 +4569,8 @@ function ExpensesPage({
                 <span className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Expense note</span>
                 <textarea
                   value={activeExpense.note || ''}
+                  readOnly={readOnly}
+                  disabled={readOnly}
                   onChange={(event) => onUpdateExpenseFields(activeExpense.id, { note: event.target.value })}
                   rows={4}
                   className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
@@ -4537,14 +4714,21 @@ function syncStatusView(status: TripRoomState['status'], hasServiceTrip: boolean
   return { label: 'sync offline', className: 'text-[#D29922]' }
 }
 
-function App({ serviceTripId, tripRole = 'owner', serviceTripMembers = [], initialServiceDocument, readOnly = false }: AppProps) {
+function App({ serviceTripId, tripRole = 'owner', serviceTripMembers = [], viewerUserId, initialServiceDocument, readOnly = false }: AppProps) {
   const [persistedDoc, setPersistedDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument(), {
     deserialize: parsePersistedTripDocument,
   })
   const [serviceDoc, setServiceDoc] = useState<TripDocument>(() =>
-    initialServiceDocument && !readOnly ? normalizeMemberTripCopy(initialServiceDocument) : initialServiceDocument || getInitialTripDocument(),
+    initialServiceDocument
+      ? readOnly
+        ? normalizeTripDocumentEntityTypes(initialServiceDocument)
+        : normalizeMemberTripCopy(initialServiceDocument)
+      : getInitialTripDocument(),
   )
-  const [viewerProfile, setViewerProfile] = usePersistedTripState<ViewerProfile>(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
+  const viewerProfileStorageKey = serviceTripId
+    ? `${VIEWER_PROFILE_STORAGE_KEY}:${serviceTripId}:${viewerUserId || 'anonymous'}`
+    : VIEWER_PROFILE_STORAGE_KEY
+  const [viewerProfile, setViewerProfile] = usePersistedTripState<ViewerProfile>(viewerProfileStorageKey, { familyId: null })
   const liveExternalData = isLiveExternalDataEnabled()
   const {
     document: roomDocument,
@@ -4600,7 +4784,11 @@ function App({ serviceTripId, tripRole = 'owner', serviceTripMembers = [], initi
 
   useEffect(() => {
     if (initialServiceDocument) {
-      setServiceDoc(readOnly ? initialServiceDocument : normalizeMemberTripCopy(initialServiceDocument))
+      setServiceDoc(
+        readOnly
+          ? normalizeTripDocumentEntityTypes(initialServiceDocument)
+          : normalizeMemberTripCopy(initialServiceDocument),
+      )
     }
   }, [initialServiceDocument, readOnly])
 
@@ -4608,9 +4796,20 @@ function App({ serviceTripId, tripRole = 'owner', serviceTripMembers = [], initi
     clearOldTripStorage()
   }, [])
 
+  useEffect(() => {
+    if (readOnly || !viewerUserId || currentFamily) return
+    const assignedFamily = displayDoc.families.find((family) => family.assignedUserId === viewerUserId)
+    if (assignedFamily) setViewerProfile({ familyId: assignedFamily.id })
+  }, [currentFamily, displayDoc.families, readOnly, setViewerProfile, viewerUserId])
+
   const setActiveFamilyProfile = useCallback((familyId: string) => {
     setViewerProfile({ familyId })
   }, [setViewerProfile])
+
+  const signOut = useCallback(async () => {
+    const result = await apiPost<{ loggedOut: true }>('/api/auth/logout')
+    if (result.ok) navigate('/login')
+  }, [])
 
   const sendTripCommand = useCallback(<Type extends TripEvent['type']>(
     type: Type,
@@ -5901,6 +6100,7 @@ function App({ serviceTripId, tripRole = 'owner', serviceTripMembers = [], initi
             members={serviceTripMembers}
             days={tripDays}
             readOnly={readOnly}
+            canAssignMembers={tripRole === 'owner'}
             showCrudPanel={Boolean(serviceTripId)}
             onSelectEntity={selectEntity}
             onCreateEntity={createEntity}
@@ -5943,6 +6143,8 @@ function App({ serviceTripId, tripRole = 'owner', serviceTripMembers = [], initi
       families={displayDoc.families}
       activeFamily={currentFamily}
       onSetActiveFamily={setActiveFamilyProfile}
+      onOpenTrips={() => navigate('/trips')}
+      onSignOut={() => void signOut()}
       readOnly={readOnly}
       syncStatus={syncStatus}
     >

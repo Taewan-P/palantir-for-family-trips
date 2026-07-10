@@ -161,4 +161,29 @@ describe('App read-only mode', () => {
     await renderReadOnlyPage('families')
     expectButtonsDisabled('Add task')
   })
+
+  it('disables every expense mutation control in read-only mode', async () => {
+    const document = createTripFromTemplate({ id: 'trip_public', title: 'Shared Trip' })
+    const expense = document.expenses[0]!
+    document.selectedPage = 'expenses'
+    document.selection = { type: 'expense', id: expense.id }
+
+    await act(async () => {
+      root?.render(<App initialServiceDocument={document} readOnly />)
+      await Promise.resolve()
+    })
+
+    const mutationLabels = new Set(['Equal split', 'Manual allocation', 'Individual', 'Settled', 'Open'])
+    const mutationButtons = Array.from(host?.querySelectorAll('button') ?? []).filter((button) => (
+      mutationLabels.has(button.textContent?.trim() || '')
+    ))
+    expect(mutationButtons.length).toBeGreaterThan(0)
+    expect(mutationButtons.every((button) => button.disabled)).toBe(true)
+
+    const expenseControls = Array.from(host?.querySelectorAll('input, select') ?? []).filter((element) => (
+      element.getAttribute('placeholder') !== 'Search...'
+    ))
+    expect(expenseControls.length).toBeGreaterThan(0)
+    expect(expenseControls.every((element) => element.hasAttribute('readonly') || element.hasAttribute('disabled'))).toBe(true)
+  })
 })

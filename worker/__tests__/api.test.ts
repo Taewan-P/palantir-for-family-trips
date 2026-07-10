@@ -11,7 +11,7 @@ const authEnv = {
 }
 
 type DbCall = {
-  method: 'first' | 'all' | 'run' | 'batch'
+  method: 'first' | 'all' | 'run' | 'batch' | 'batch-statement'
   sql: string
   args: readonly unknown[]
 }
@@ -21,12 +21,22 @@ type QueuedDbResponse = {
   all?: readonly unknown[]
 }
 
-function dbWithResponses(responses: QueuedDbResponse[] = [], calls: DbCall[] = []): D1Database {
+type FakeDbOptions = {
+  batchResults?: unknown[]
+  batchError?: Error
+}
+
+function dbWithResponses(responses: QueuedDbResponse[] = [], calls: DbCall[] = [], options: FakeDbOptions = {}): D1Database {
   return {
     prepare(sql: string) {
       return {
         bind(...args: unknown[]) {
+          const statement = {
+            __sql: sql,
+            __args: args,
+          }
           return {
+            ...statement,
             async first<T>() {
               calls.push({ method: 'first', sql, args })
               return (responses.shift()?.first ?? null) as T | null
@@ -45,7 +55,11 @@ function dbWithResponses(responses: QueuedDbResponse[] = [], calls: DbCall[] = [
     },
     async batch(statements: D1PreparedStatement[]) {
       calls.push({ method: 'batch', sql: 'batch', args: [statements.length] })
-      return []
+      for (const statement of statements as Array<{ __sql?: string; __args?: readonly unknown[] }>) {
+        calls.push({ method: 'batch-statement', sql: statement.__sql ?? '', args: statement.__args ?? [] })
+      }
+      if (options.batchError) throw options.batchError
+      return (options.batchResults ?? []) as D1Result[]
     },
   } as unknown as D1Database
 }
@@ -207,6 +221,20 @@ describe('worker api', () => {
     await expect(response.json()).resolves.toMatchObject({ data: { loggedOut: true } })
   })
 
+  it('revokes the presented server session on logout', async () => {
+    const calls: DbCall[] = []
+    const response = await worker.fetch(
+      signedRequest('/api/auth/logout', { method: 'POST' }),
+      envWithDb(dbWithResponses([], calls)) as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(200)
+    const revokeCall = calls.find((call) => call.method === 'run' && call.sql.includes('DELETE FROM sessions'))
+    expect(revokeCall?.args).toEqual([await hashToken('session-token', authEnv.SESSION_SECRET)])
+    expect(response.headers.get('set-cookie')).toContain('trip_session=;')
+  })
+
   it.each([
     ['GET', '/api/me'],
     ['GET', '/api/trips'],
@@ -322,6 +350,21 @@ describe('worker api', () => {
     expect(JSON.stringify(snapshot)).not.toContain('Portland Head Light')
   })
 
+  it('creates guided trips through one atomic batch', async () => {
+    const calls: DbCall[] = []
+    const response = await worker.fetch(
+      jsonPost('/api/trips', guidedTripPayload()),
+      envWithDb(dbWithResponses([{ first: userRow }], calls, { batchError: new Error('batch failed') })) as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(500)
+    expect(calls.filter((call) => call.method === 'batch')).toHaveLength(1)
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO trips'))).toBe(false)
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO memberships'))).toBe(false)
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO trip_snapshots'))).toBe(false)
+  })
+
   it.each([
     { label: 'missing title', payload: { ...guidedTripPayload(), title: '   ' }, message: 'Trip title is required' },
     { label: 'invalid date order', payload: { ...guidedTripPayload(), startDate: '2026-07-12', endDate: '2026-07-10' }, message: 'End date must be on or after start date' },
@@ -404,12 +447,35 @@ describe('worker api', () => {
       { first: { id: 'invite_1', trip_id: 'trip_1', role: 'editor' } },
       { first: null },
       { first: { id: 'invite_1', trip_id: 'trip_1', role: 'editor' } },
-    ])) as never, {} as never)
+    ], [], {
+      batchResults: [
+        { results: [{ id: 'invite_1', trip_id: 'trip_1', role: 'editor' }] },
+        { meta: { changes: 1 } },
+      ],
+    })) as never, {} as never)
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({
       data: { tripId: 'trip_1', role: 'editor' },
     })
+  })
+
+  it('accepts invites through one atomic claim and membership batch', async () => {
+    const calls: DbCall[] = []
+    const response = await worker.fetch(
+      signedRequest('/api/invites/invite_token/accept', { method: 'POST' }),
+      envWithDb(dbWithResponses([
+        { first: userRow },
+        { first: { id: 'invite_1', trip_id: 'trip_1', role: 'editor' } },
+        { first: null },
+        { first: { id: 'invite_1', trip_id: 'trip_1', role: 'editor' } },
+      ], calls, { batchError: new Error('batch failed') })) as never,
+      {} as never,
+    )
+
+    expect(response.status).toBe(500)
+    expect(calls.filter((call) => call.method === 'batch')).toHaveLength(1)
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO memberships'))).toBe(false)
   })
 
   it('creates and disables sanitized share links for owners', async () => {

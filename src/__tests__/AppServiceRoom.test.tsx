@@ -151,6 +151,48 @@ describe('App service room wiring', () => {
     }))
     expect(host?.textContent).toContain('Select any timeline block')
   })
+
+  it('defaults an invited editor to the family assigned to their account', async () => {
+    const document = createGuidedTripDocument({
+      title: 'Assigned Trip',
+      startDate: '2026-07-10',
+      endDate: '2026-07-12',
+      destinationName: 'Tokyo',
+      families: [
+        { displayName: 'Owner Household', adults: 2, kids: 0 },
+        { displayName: 'Editor Household', adults: 1, kids: 0 },
+      ],
+    })
+    document.families[1] = {
+      ...document.families[1]!,
+      assignedUserId: 'user_editor',
+      assignedUserEmail: 'editor@example.com',
+    }
+    window.localStorage.setItem(
+      `${VIEWER_PROFILE_STORAGE_KEY}:trip_assigned`,
+      JSON.stringify({ familyId: document.families[0]!.id }),
+    )
+
+    await act(async () => {
+      root?.render(
+        <App
+          serviceTripId="trip_assigned"
+          viewerUserId="user_editor"
+          initialServiceDocument={document}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(host?.textContent).not.toContain('Choose your family')
+    expect(host?.textContent).toContain('Working as')
+    expect(host?.textContent).toContain('Editing as Editor Household')
+    const workingButton = Array.from(host?.querySelectorAll('button') ?? []).find((button) => (
+      button.textContent?.trim() === 'Editor Household'
+    ))
+    expect(workingButton).toBeTruthy()
+  })
 })
 
 function setNativeInputValue(input: HTMLInputElement, value: string): void {

@@ -1,4 +1,4 @@
-import { Archive, ArrowRight, Plus } from 'lucide-react'
+import { Archive, ArrowRight, LogOut, Plus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import type { CreateGuidedTripRequest } from '../shared/trip-types'
@@ -84,6 +84,12 @@ export function TripsPage() {
     }
   }
 
+  async function signOut() {
+    const result = await apiPost<{ loggedOut: true }>('/api/auth/logout')
+    if (result.ok) navigate('/login')
+    else setError(result.error.message)
+  }
+
   return (
     <main className="min-h-screen bg-[#0d1117] p-6 text-[#C9D1D9]">
       <header className="mb-5 flex items-center justify-between gap-4 border-b border-[#30363D] pb-4">
@@ -93,18 +99,30 @@ export function TripsPage() {
           </div>
           <h1 className="mt-2 text-[18px] font-black uppercase tracking-[0.08em]">Trips</h1>
         </div>
-        <button
-          className="inline-flex items-center gap-2 border border-[#58A6FF]/50 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-[#58A6FF] transition-colors hover:bg-[#58A6FF]/10 disabled:opacity-50"
-          disabled={creating || setupOpen}
-          onClick={() => {
-            setSetupOpen(true)
-            setError(null)
-          }}
-          type="button"
-        >
-          <Plus size={13} />
-          New trip
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex items-center gap-2 border border-[#58A6FF]/50 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-[#58A6FF] transition-colors hover:bg-[#58A6FF]/10 disabled:opacity-50"
+            disabled={creating || setupOpen}
+            onClick={() => {
+              setSetupOpen(true)
+              setError(null)
+            }}
+            type="button"
+          >
+            <Plus size={13} />
+            New trip
+          </button>
+          <button
+            aria-label="Sign out"
+            title="Sign out"
+            className="inline-flex h-8 w-8 items-center justify-center border border-[#30363D] text-[#8B949E] transition-colors hover:border-[#F85149]/50 hover:text-[#F85149]"
+            onClick={() => void signOut()}
+            type="button"
+          >
+            <LogOut size={14} />
+            <span className="sr-only">Sign out</span>
+          </button>
+        </div>
       </header>
 
       {error ? <div className="mb-4 border border-[#F85149] p-3 text-[11px] text-[#F85149]">{error}</div> : null}
@@ -112,7 +130,7 @@ export function TripsPage() {
       {setupOpen ? (
         <GuidedTripSetupForm
           busy={creating}
-          error={null}
+          error={error}
           onCancel={() => setSetupOpen(false)}
           onSubmit={createTrip}
         />

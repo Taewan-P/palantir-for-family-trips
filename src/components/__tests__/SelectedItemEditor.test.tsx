@@ -30,7 +30,7 @@ describe('SelectedItemEditor', () => {
     host = null
   })
 
-  it('updates family display name, origin, headcount, responsibility, readiness, and assigned account', async () => {
+  it('updates family identity, headcount fields, responsibility, readiness, and assigned account', async () => {
     const onPatchEntity = vi.fn()
     const doc = testDoc()
     const family = doc.families[0]!
@@ -39,14 +39,18 @@ describe('SelectedItemEditor', () => {
 
     setText(control('Display name'), 'Park Crew')
     setText(control('Origin'), 'Tokyo')
-    setText(control('Headcount'), '5 travelers')
+    setText(control('Short origin'), 'TYO')
+    setText(control('Adults'), '3')
+    setText(control('Kids'), '2')
     setText(control('Responsibility'), 'Tickets')
     setText(control('Readiness'), '85')
     setSelect(control('Assigned account'), 'user_2')
 
     expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, { title: 'Park Crew' })
     expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, { origin: 'Tokyo' })
-    expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, { headcount: '5 travelers' })
+    expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, { shortOrigin: 'TYO' })
+    expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, expect.objectContaining({ adults: 3, headcount: '3 adults, 1 kid' }))
+    expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, expect.objectContaining({ kids: 2, headcount: '2 adults, 2 kids' }))
     expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, { responsibility: 'Tickets' })
     expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, { readiness: 85 })
     expect(onPatchEntity).toHaveBeenCalledWith('family', family.id, {
@@ -55,7 +59,7 @@ describe('SelectedItemEditor', () => {
     })
   })
 
-  it('updates stay title, location, start and end day, category, confirmation, summary, and note', async () => {
+  it('updates stay title, location, dates, access details, summary, and note', async () => {
     const onPatchEntity = vi.fn()
     const doc = testDoc()
     const stay = {
@@ -73,6 +77,9 @@ describe('SelectedItemEditor', () => {
     setText(control('End day'), 'Sunday departure')
     setText(control('Category'), 'backup')
     setText(control('Confirmation'), 'XYZ789')
+    setText(control('Address'), '100 New Basecamp Way')
+    setTextarea(control('Access note'), 'Use the east entrance')
+    setTextarea(control('Parking note'), 'Two vehicles maximum')
     setTextarea(control('Summary'), 'New stay summary')
     setTextarea(control('Note'), 'Pack towels')
 
@@ -82,11 +89,14 @@ describe('SelectedItemEditor', () => {
     expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { checkOut: 'Sunday departure' })
     expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { category: 'backup' })
     expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { confirmationCode: 'XYZ789' })
+    expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { address: '100 New Basecamp Way' })
+    expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { accessNote: 'Use the east entrance' })
+    expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { parkingNote: 'Two vehicles maximum' })
     expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { summary: 'New stay summary' })
     expect(onPatchEntity).toHaveBeenCalledWith('stayItem', stay.id, { note: 'Pack towels' })
   })
 
-  it('updates meal title, day, time label, location, status, reservation type, and note', async () => {
+  it('updates meal title, day, time, owner, location, status, reservation type, and note', async () => {
     const onPatchEntity = vi.fn()
     const doc = testDoc()
     const meal = doc.meals[0]!
@@ -96,6 +106,7 @@ describe('SelectedItemEditor', () => {
     setText(control('Title'), 'Dinner shift')
     setSelect(control('Day'), 'sat')
     setText(control('Time label'), '7:30 PM')
+    setText(control('Owner'), 'Park Family')
     setSelect(control('Location'), doc.locations[1]!.id)
     setText(control('Status'), 'Reserved')
     setText(control('Reservation type'), 'Table service')
@@ -104,13 +115,14 @@ describe('SelectedItemEditor', () => {
     expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { title: 'Dinner shift' })
     expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { dayId: 'sat' })
     expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { timeLabel: '7:30 PM' })
+    expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { owner: 'Park Family' })
     expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { locationId: doc.locations[1]!.id })
     expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { status: 'Reserved' })
     expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { reservationType: 'Table service' })
     expect(onPatchEntity).toHaveBeenCalledWith('meal', meal.id, { note: 'Ask for patio' })
   })
 
-  it('updates activity title, day, window, location, status, description, and note', async () => {
+  it('updates activity timing, location, status, risk, fallback, description, and note', async () => {
     const onPatchEntity = vi.fn()
     const doc = testDoc()
     const activity = doc.activities[0]!
@@ -122,7 +134,9 @@ describe('SelectedItemEditor', () => {
     setText(control('Window'), '09:00-11:00')
     setSelect(control('Location'), doc.locations[1]!.id)
     setText(control('Status'), 'Go')
+    setText(control('Risk level'), 'Medium')
     setTextarea(control('Description'), 'Short loop')
+    setTextarea(control('Fallback'), 'Museum visit')
     setTextarea(control('Note'), 'Bring layers')
 
     expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { title: 'Trail plan' })
@@ -130,11 +144,13 @@ describe('SelectedItemEditor', () => {
     expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { window: '09:00-11:00' })
     expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { locationId: doc.locations[1]!.id })
     expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { status: 'Go' })
+    expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { riskLevel: 'Medium' })
     expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { description: 'Short loop' })
+    expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { backup: 'Museum visit' })
     expect(onPatchEntity).toHaveBeenCalledWith('activity', activity.id, { note: 'Bring layers' })
   })
 
-  it('updates expense title, amount, payer, split, settled flag, and note', async () => {
+  it('updates expense title, amount, payer, allocation mode, allocation, settled flag, and note', async () => {
     const onPatchEntity = vi.fn()
     const doc = testDoc()
     const expense = doc.expenses[0]!
@@ -145,6 +161,8 @@ describe('SelectedItemEditor', () => {
     setText(control('Amount'), '42.5')
     setText(control('Payer'), 'Park')
     setText(control('Split'), 'Manual')
+    setSelect(control('Allocation mode'), 'manual')
+    setText(control('Park Family allocation'), '21.25')
     toggle(control('Settled'))
     setTextarea(control('Note'), 'Receipt uploaded')
 
@@ -152,6 +170,10 @@ describe('SelectedItemEditor', () => {
     expect(onPatchEntity).toHaveBeenCalledWith('expense', expense.id, { amount: 42.5 })
     expect(onPatchEntity).toHaveBeenCalledWith('expense', expense.id, { payer: 'Park' })
     expect(onPatchEntity).toHaveBeenCalledWith('expense', expense.id, { split: 'Manual' })
+    expect(onPatchEntity).toHaveBeenCalledWith('expense', expense.id, { allocationMode: 'manual' })
+    expect(onPatchEntity).toHaveBeenCalledWith('expense', expense.id, {
+      allocations: { ...expense.allocations, fam_1: 21.25 },
+    })
     expect(onPatchEntity).toHaveBeenCalledWith('expense', expense.id, { settled: !expense.settled })
     expect(onPatchEntity).toHaveBeenCalledWith('expense', expense.id, { note: 'Receipt uploaded' })
   })
@@ -166,6 +188,38 @@ describe('SelectedItemEditor', () => {
     setText(control('Amount'), '')
 
     expect(onPatchEntity).not.toHaveBeenCalled()
+  })
+
+  it('updates itinerary family linkage and note', async () => {
+    const onPatchEntity = vi.fn()
+    const doc = testDoc()
+    const item = doc.itineraryItems[0]!
+
+    await renderEditor(item, doc, onPatchEntity)
+
+    setSelect(control('Linked family'), 'fam_2')
+    setTextarea(control('Note'), 'Meet at the station')
+
+    expect(onPatchEntity).toHaveBeenCalledWith('itineraryItem', item.id, { familyIds: ['fam_2'] })
+    expect(onPatchEntity).toHaveBeenCalledWith('itineraryItem', item.id, { note: 'Meet at the station' })
+  })
+
+  it('updates route origin, stops, destination, and note', async () => {
+    const onPatchEntity = vi.fn()
+    const doc = testDoc()
+    const route = doc.routes[0]!
+
+    await renderEditor(route, doc, onPatchEntity)
+
+    setText(control('Origin'), 'Seoul Station')
+    setMultiSelect(control('Stops'), ['loc_1', 'loc_2'])
+    setSelect(control('Destination'), 'loc_2')
+    setTextarea(control('Note'), 'Avoid toll roads')
+
+    expect(onPatchEntity).toHaveBeenCalledWith('route', route.id, { origin: 'Seoul Station' })
+    expect(onPatchEntity).toHaveBeenCalledWith('route', route.id, { stopLocationIds: ['loc_1', 'loc_2'] })
+    expect(onPatchEntity).toHaveBeenCalledWith('route', route.id, { destinationLocationId: 'loc_2' })
+    expect(onPatchEntity).toHaveBeenCalledWith('route', route.id, { note: 'Avoid toll roads' })
   })
 
   it('updates task title, status, owner family, day, and note', async () => {
@@ -188,6 +242,22 @@ describe('SelectedItemEditor', () => {
     expect(onPatchEntity).toHaveBeenCalledWith('task', task.id, { note: 'Call by Friday' })
   })
 
+  it('updates a day shell label, date, and note', async () => {
+    const onPatchEntity = vi.fn()
+    const doc = testDoc()
+    const day = doc.days![0]!
+
+    await renderEditor(day, doc, onPatchEntity)
+
+    setText(control('Label'), 'Arrival day')
+    setText(control('Date'), '2026-07-11')
+    setTextarea(control('Note'), 'Meet at noon')
+
+    expect(onPatchEntity).toHaveBeenCalledWith('day', day.id, { title: 'Arrival day' })
+    expect(onPatchEntity).toHaveBeenCalledWith('day', day.id, { date: '2026-07-11' })
+    expect(onPatchEntity).toHaveBeenCalledWith('day', day.id, { note: 'Meet at noon' })
+  })
+
   it('renders values and disables controls in read-only mode', async () => {
     const onPatchEntity = vi.fn()
     const doc = testDoc()
@@ -205,6 +275,31 @@ describe('SelectedItemEditor', () => {
 
     setText(control('Origin'), 'Blocked edit')
     expect(onPatchEntity).not.toHaveBeenCalled()
+  })
+
+  it('disables account assignment for non-owner editors', async () => {
+    const onPatchEntity = vi.fn()
+    const doc = testDoc()
+    const family = doc.families[0]!
+
+    await act(async () => {
+      root?.render(
+        <SelectedItemEditor
+          doc={doc}
+          days={doc.days || []}
+          entity={family}
+          members={members}
+          readOnly={false}
+          canAssignMembers={false}
+          onPatchEntity={onPatchEntity as SelectedItemEditorProps['onPatchEntity']}
+        />,
+      )
+      await Promise.resolve()
+    })
+
+    expect(control('Assigned account')).toHaveProperty('disabled', true)
+    setSelect(control('Assigned account'), 'user_2')
+    expect(onPatchEntity).not.toHaveBeenCalledWith('family', family.id, expect.objectContaining({ assignedUserId: 'user_2' }))
   })
 })
 
@@ -234,9 +329,9 @@ function testDoc(): TripDocument {
   return {
     ...doc,
     days: [
-      { id: 'fri', date: '2026-07-03', title: 'Friday', shortLabel: 'Fri', code: 'D1' },
-      { id: 'sat', date: '2026-07-04', title: 'Saturday', shortLabel: 'Sat', code: 'D2' },
-      { id: 'sun', date: '2026-07-05', title: 'Sunday', shortLabel: 'Sun', code: 'D3' },
+      { id: 'fri', type: 'day', date: '2026-07-03', title: 'Friday', shortLabel: 'Fri', code: 'D1' },
+      { id: 'sat', type: 'day', date: '2026-07-04', title: 'Saturday', shortLabel: 'Sat', code: 'D2' },
+      { id: 'sun', type: 'day', date: '2026-07-05', title: 'Sunday', shortLabel: 'Sun', code: 'D3' },
     ],
     families: [
       {
@@ -244,7 +339,10 @@ function testDoc(): TripDocument {
         type: 'family',
         title: 'Park Family',
         origin: 'Seoul',
-        headcount: '4 travelers',
+        shortOrigin: 'SEL',
+        adults: 2,
+        kids: 1,
+        headcount: '2 adults, 1 kid',
         responsibility: 'Meals',
         readiness: 50,
         assignedUserId: 'user_1',
@@ -264,7 +362,34 @@ function testDoc(): TripDocument {
         locationId: 'loc_1',
         category: 'primary',
         summary: 'Main cabin',
+        address: '1 Pine Road',
+        accessNote: 'Gate code pending',
+        parkingNote: 'Driveway parking',
         note: 'Door code pending',
+      },
+    ],
+    routes: [
+      {
+        id: 'route_1',
+        type: 'route',
+        title: 'Arrival route',
+        familyId: 'fam_1',
+        origin: 'Seoul',
+        destinationLocationId: 'loc_1',
+        stopLocationIds: [],
+        note: '',
+      },
+    ],
+    itineraryItems: [
+      {
+        id: 'itinerary_1',
+        type: 'itineraryItem',
+        title: 'Arrival',
+        dayId: 'fri',
+        startSlot: 1,
+        span: 2,
+        familyIds: ['fam_1'],
+        note: '',
       },
     ],
     meals: [
@@ -302,7 +427,7 @@ function testDoc(): TripDocument {
         amount: 30,
         split: 'Equal',
         allocationMode: 'equal',
-        allocations: {},
+        allocations: { fam_1: 15, fam_2: 15 },
         settled: false,
         note: 'Snacks',
       },
@@ -361,6 +486,19 @@ function setSelect(
   act(() => {
     const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set
     setter?.call(element, value)
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
+function setMultiSelect(
+  element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
+  values: string[],
+): void {
+  if (!(element instanceof HTMLSelectElement) || element.disabled) return
+  act(() => {
+    for (const option of Array.from(element.options)) {
+      option.selected = values.includes(option.value)
+    }
     element.dispatchEvent(new Event('change', { bubbles: true }))
   })
 }
